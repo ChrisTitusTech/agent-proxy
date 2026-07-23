@@ -22,8 +22,8 @@ specification defines the narrower contract for the `agent-proxy` refactor.
 ## 2. Product goals
 
 1. Run as a durable, non-root Linux service.
-2. Present drop-in API endpoints to Claude Code, Codex, Grok Build, OpenAI
-   SDKs, and Anthropic SDKs.
+2. Present drop-in API endpoints to Claude Code, Codex, Grok Build, Open WebUI,
+   OpenAI SDKs, and Anthropic SDKs.
 3. Reuse CLI authentication already established for the service account.
 4. Route model aliases to one or more CLI backends with ordered fallback.
 5. Preserve streaming, tool calls, usage metadata, cancellation, and session
@@ -40,6 +40,8 @@ specification defines the narrower contract for the `agent-proxy` refactor.
 - Managing provider accounts, subscriptions, browser login, or credential
   refresh.
 - Circumventing provider terms, quotas, billing, or technical restrictions.
+- Replacing Open WebUI's embedding, speech, image-generation, or retrieval
+  engines when a CLI backend does not implement those endpoint types.
 - Providing public multi-tenant hosting without an external identity layer.
 - Claiming protocol compatibility before the relevant acceptance suite passes.
 - Supporting legacy Gemini CLI or GitHub Copilot CLI as built-in backends.
@@ -58,6 +60,14 @@ Uses an existing SDK or CLI against `agent-proxy` by changing its base URL and
 credential. The client should not require application code changes for the
 supported subset of its native protocol.
 
+### 4.3 Open WebUI user
+
+Uses a supported Open WebUI release as the chat frontend. Open WebUI connects
+with a proxy API key and never receives provider subscription credentials.
+The user can select advertised Codex and Grok aliases, stream text, cancel a
+request, and use only the tool capabilities explicitly enabled by the
+operator.
+
 ## 5. Compatibility contract
 
 ### 5.1 Required endpoints
@@ -65,7 +75,7 @@ supported subset of its native protocol.
 | Endpoint | Contract | Primary consumers |
 | --- | --- | --- |
 | `POST /v1/responses` | OpenAI Responses API subset | Codex, Grok, OpenAI SDKs |
-| `POST /v1/chat/completions` | OpenAI Chat Completions subset | General OpenAI-compatible clients |
+| `POST /v1/chat/completions` | OpenAI Chat Completions subset | Open WebUI and general OpenAI-compatible clients |
 | `POST /v1/messages` | Anthropic Messages API subset | Claude Code, Anthropic SDKs |
 | `GET /v1/models` | OpenAI model list | Discovery and client validation |
 | `GET /health` | Service and provider summary | Probes and operators |
@@ -153,6 +163,36 @@ Grok Build must be able to select an `agent-proxy` custom model with a
 configured `base_url` and environment-backed key. This follows xAI's documented
 [custom model configuration](https://docs.x.ai/build/overview).
 
+### 5.7 Open WebUI compatibility
+
+A supported Open WebUI release must connect through its standard
+OpenAI-compatible connection settings without a custom Pipe or middleware
+plugin. This follows Open WebUI's documented
+[OpenAI-compatible connection flow](https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-openai-compatible/).
+The compatibility contract includes:
+
+- `GET /v1/models` discovery with bearer authentication.
+- Non-streaming and streaming text through `POST /v1/chat/completions`.
+- Codex and Grok aliases backed by CLI subscription sessions owned by the
+  proxy service account.
+- Cancellation, timeout reporting, and isolation between concurrent Open
+  WebUI chats.
+- One complete Open WebUI function-tool loop for each backend that advertises
+  tool calling.
+- Clear behavior when a backend provides only buffered output.
+- A pinned Open WebUI version and documented native, Docker, and Podman
+  connection URLs.
+
+Optional Open WebUI capabilities such as embeddings, retrieval, speech, and
+image generation must use a separately configured compatible backend unless
+the selected provider explicitly implements the required endpoint. Unsupported
+capabilities must not be advertised as working.
+
+Open WebUI background work, including title, tag, follow-up, and memory-related
+model requests, must be documented. Operators must be able to route that work
+to a separate model or disable it so subscription usage is not multiplied
+without their knowledge.
+
 ## 6. Provider contract
 
 Every provider must implement:
@@ -166,6 +206,9 @@ Every provider must implement:
 - Child-process cleanup.
 - Debug metadata with secrets redacted.
 - Model and reasoning-option translation.
+- Authentication readiness reporting that distinguishes an unavailable
+  executable, a missing login, an expired login, and an upstream outage where
+  the CLI exposes enough information to do so safely.
 
 ### 6.1 Claude Code
 
@@ -189,6 +232,30 @@ buffered streaming fallback when the CLI does not emit incremental output.
 The adapter must support headless execution, model selection, reasoning effort,
 plain-text parsing, and buffered streaming fallback when incremental output is
 not available.
+
+### 6.5 Subscription-backed CLI authentication
+
+Codex and Grok subscription access is provided only through the official CLI
+authentication mechanisms documented by
+[Codex](https://learn.chatgpt.com/docs/auth) and
+[Grok Build](https://docs.x.ai/build/enterprise#authentication). The proxy
+must:
+
+- Run the CLI with the service account's own home and credential store.
+- Never copy a developer's cached credentials into the service account
+  automatically.
+- Never expose provider access or refresh tokens to Open WebUI, the dashboard,
+  logs, exports, or proxy API clients.
+- Validate login readiness during deployment and through an operator-invoked
+  diagnostic without printing secrets.
+- Treat provider-managed token refresh as a CLI responsibility.
+- Return a clear reauthentication error when a cached session is missing,
+  invalid, or expired.
+- Document separate login and verification steps for Codex ChatGPT accounts
+  and supported Grok subscription accounts.
+
+Live acceptance tests must use dedicated non-secret test sessions or an
+operator-approved account and must record only sanitized evidence.
 
 ## 7. Routing and sessions
 
@@ -221,6 +288,12 @@ not available.
 - The service runs as a dedicated non-root user.
 - Working directories are explicit and constrained by operator policy.
 - Child processes receive only the environment variables they require.
+- A chat-only execution profile uses a dedicated working directory and
+  read-only or equivalently constrained provider settings.
+- Provider-native tools that can modify files, execute commands, or access the
+  network require an explicit tool-enabled profile.
+- Open WebUI function tools and provider-native CLI tools are documented as
+  separate trust boundaries.
 
 ### 8.3 Data handling
 
@@ -238,6 +311,8 @@ distribution.
 
 Required operational behavior:
 
+- The runtime used by `ExecStart` satisfies the supported Node.js version
+  before installation or upgrade modifies the active release.
 - Configuration is loaded from an operator-owned file and environment file.
 - State and logs use Linux filesystem hierarchy locations selected at install
   time.
@@ -248,6 +323,12 @@ Required operational behavior:
 - Health checks distinguish server health from individual provider health.
 - A documented reverse-proxy example provides TLS and request-size limits.
 - Upgrade and rollback procedures preserve configuration and SQLite data.
+- Enabled CLI binaries are installed in paths visible to the hardened service
+  and are executable by the service account.
+- Codex and Grok authentication is completed and verified as the same account
+  and `HOME` used by systemd.
+- The operator runbook covers native Open WebUI and containerized Open WebUI
+  networking without exposing the proxy directly to an untrusted network.
 
 Containers are optional. A container deployment must explicitly provide CLI
 binaries and the authenticated service-user state; it must not imply that host
@@ -268,6 +349,10 @@ values must fail startup with a path-specific English error.
 The example configuration must include only supported built-in providers and
 must never contain real credentials.
 
+The example configuration must also document chat-only and tool-enabled
+provider profiles, including their working-directory, sandbox, permission, and
+network implications.
+
 ## 11. Observability
 
 Each request receives a request ID. Metrics and logs must expose:
@@ -278,6 +363,8 @@ Each request receives a request ID. Metrics and logs must expose:
 - Queue time and execution latency.
 - Fallback attempts.
 - Token usage when reported or clearly marked estimates when inferred.
+- Provider authentication availability without account identifiers or token
+  material.
 - Cancellation and timeout reason.
 - Active request and queue depth counts.
 
@@ -290,6 +377,8 @@ The dashboard is an optional operator interface over `/admin/*`. It must:
 - Remain English-only.
 - Require the admin token.
 - Show provider health, active requests, recent errors, and usage.
+- Distinguish missing or expired provider authentication from general provider
+  failure without displaying credential contents.
 - Manage keys, model mappings, rate limits, and allowed provider settings.
 - Clearly distinguish persisted settings from restart-required settings.
 - Avoid becoming a runtime dependency of data-plane endpoints.
@@ -315,6 +404,13 @@ Additional release gates:
   protocol error shapes.
 - End-to-end tests cover supported versions of Claude Code, Codex, and Grok
   against a real Linux service.
+- End-to-end tests cover a pinned Open WebUI release discovering Codex and Grok
+  aliases and completing text, streaming, cancellation, isolation, and one
+  advertised function-tool loop.
+- A deployment acceptance test runs the exact systemd runtime, service account,
+  CLI paths, `HOME`, and authentication state used in production.
+- Native, Docker, and Podman Open WebUI connection instructions are exercised
+  on the supported deployment matrix.
 - Antigravity backend smoke tests run when the CLI is available.
 
 ## 14. Open decisions
@@ -326,3 +422,6 @@ Additional release gates:
 4. Choose the production reverse proxy and packaging format.
 5. Define how Responses `previous_response_id` maps to provider-specific
    sessions and retention.
+6. Freeze the supported Open WebUI version and decide which optional Open WebUI
+   capabilities are included in the stable compatibility claim.
+7. Define the default chat-only and opt-in tool-enabled execution profiles.

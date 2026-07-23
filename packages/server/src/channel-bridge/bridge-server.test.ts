@@ -24,7 +24,7 @@ function baseOpts(overrides?: Partial<BridgeServerOptions>): BridgeServerOptions
   return {
     port: portCounter++,
     cliPath: 'claude',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: 'claude-sonnet-5',
     timeoutMs: 5000,
     ...overrides,
   };
@@ -50,7 +50,7 @@ describe('ChannelBridge HTTP', () => {
     const body = await res.json() as Record<string, unknown>;
     expect(body.ok).toBe(true);
     expect(body.service).toBe('agent-proxy-channel-bridge');
-    expect(body.model).toBe('claude-sonnet-4-6');
+    expect(body.model).toBe('claude-sonnet-5');
   });
 
   it('rejects job submission without bearer token when api_key set', async () => {
@@ -74,7 +74,7 @@ describe('ChannelBridge HTTP', () => {
     const res = await fetch(`${base}/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6' }),
+      body: JSON.stringify({ model: 'claude-sonnet-5' }),
     });
     expect(res.status).toBe(400);
     const body = await res.json() as Record<string, unknown>;

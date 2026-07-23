@@ -633,7 +633,7 @@ export default function ModelMappingsPage() {
                   value={form.actual_model}
                   onChange={(e) => { setForm({ ...form, actual_model: e.target.value }); setTestResult(null); }}
                   className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
-                  placeholder="claude-sonnet-4-6"
+                  placeholder="claude-sonnet-5"
                   required
                 />
               </div>

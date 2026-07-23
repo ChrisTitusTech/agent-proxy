@@ -37,11 +37,21 @@ describe('loads and validates configuration', () => {
     expect(config.server.port).toBe(DEFAULT_SERVER_PORT);
     expect(config.dashboard.port).toBe(DEFAULT_DASHBOARD_PORT);
     expect(config.providers.claude.cli_path).toBe('claude');
+    expect(config.providers.claude.default_model).toBe('claude-sonnet-5');
     expect(config.providers.claude.max_concurrent).toBe(DEFAULT_MAX_CONCURRENT);
     expect(config.providers.grok.default_model).toBe('grok-4.5');
     expect(config.providers.grok.max_concurrent).toBe(1);
     expect(config.rateLimits.global.rpm).toBe(DEFAULT_RATE_LIMIT_RPM);
-    expect(config.modelMappings.length).toBeGreaterThan(0);
+    expect(config.modelMappings).toContainEqual({
+      alias: 'claude-sonnet-5',
+      provider: 'claude',
+      actual_model: 'claude-sonnet-5',
+    });
+    expect(config.modelMappings).toContainEqual({
+      alias: 'gpt-5.6-sol',
+      provider: 'codex',
+      actual_model: 'gpt-5.6-sol',
+    });
     expect(config.modelMappings).toContainEqual(expect.objectContaining({
       alias: 'grok-build',
       provider: 'grok',
@@ -89,7 +99,7 @@ providers:
 model_mappings:
   - alias: "my-model"
     provider: "claude"
-    actual_model: "claude-sonnet-4-6"
+    actual_model: "claude-sonnet-5"
 `);
     const config = loadConfig(path);
 
@@ -105,7 +115,7 @@ model_mappings:
       {
         alias: 'my-model',
         provider: 'claude',
-        actual_model: 'claude-sonnet-4-6',
+        actual_model: 'claude-sonnet-5',
         reasoning_effort: undefined,
         provider_overrides: undefined,
       },
@@ -236,7 +246,7 @@ cache:
     const path = writeConfig(`
 model_mappings:
   - provider: "claude"
-    actual_model: "claude-sonnet-4-6"
+    actual_model: "claude-sonnet-5"
 `);
     expect(() => loadConfig(path)).toThrow(/model_mappings/);
   });
@@ -245,7 +255,7 @@ model_mappings:
     const path = writeConfig(`
 model_mappings:
   - alias: "my-model"
-    actual_model: "claude-sonnet-4-6"
+    actual_model: "claude-sonnet-5"
 `);
     expect(() => loadConfig(path)).toThrow(/model_mappings/);
   });
@@ -280,9 +290,23 @@ server:
 });
 
 describe('loads and validates configuration', () => {
-  it('loads and validates configuration', () => {
+  it.each([
+    '../../../../config.example.yaml',
+    '../../../../packaging/systemd/config.example.yaml',
+  ])('loads current model defaults from %s', (relativePath) => {
+    const config = loadConfig(join(import.meta.dirname, relativePath));
 
-    const examplePath = join(import.meta.dirname, '../../../../config.example.yaml');
-    expect(() => loadConfig(examplePath)).not.toThrow();
+    expect(config.providers.claude.default_model).toBe('claude-sonnet-5');
+    expect(config.providers.codex.default_model).toBe('gpt-5.6-sol');
+    expect(config.modelMappings).toContainEqual(expect.objectContaining({
+      alias: 'claude-sonnet-5',
+      provider: 'claude',
+      actual_model: 'claude-sonnet-5',
+    }));
+    expect(config.modelMappings).toContainEqual(expect.objectContaining({
+      alias: 'gpt-5.6-sol',
+      provider: 'codex',
+      actual_model: 'gpt-5.6-sol',
+    }));
   });
 });

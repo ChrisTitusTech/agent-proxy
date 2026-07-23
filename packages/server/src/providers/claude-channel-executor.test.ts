@@ -5,7 +5,7 @@ import { executeChannel, executeStreamChannel } from './claude-channel-executor.
 function createOptions(overrides?: Partial<ExecuteOptions>): ExecuteOptions {
   return {
     messages: [{ role: 'user', content: 'Say hello' }],
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-5',
     stream: false,
     ...overrides,
   };
@@ -13,7 +13,7 @@ function createOptions(overrides?: Partial<ExecuteOptions>): ExecuteOptions {
 
 function createConfig() {
   return {
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-5',
     timeoutMs: 30_000,
     channelOptions: {
       endpoint_url: 'http://127.0.0.1:8788',
@@ -43,7 +43,7 @@ describe('claude-channel-executor', () => {
       if (href.endsWith('/jobs') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body));
         expect(body.prompt).toContain('Say hello');
-        expect(body.model).toBe('claude-sonnet-4-6');
+        expect(body.model).toBe('claude-sonnet-5');
         expect(body.metadata.source).toBe('agent-proxy');
         return jsonResponse({
           ok: true,

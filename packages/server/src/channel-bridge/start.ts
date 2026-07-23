@@ -27,7 +27,7 @@ const options: BridgeServerOptions = {
   host: process.env.BRIDGE_HOST || '127.0.0.1',
   apiKey: process.env.BRIDGE_API_KEY || undefined,
   cliPath: process.env.BRIDGE_CLI_PATH || 'claude',
-  defaultModel: process.env.BRIDGE_DEFAULT_MODEL || 'claude-sonnet-4-6',
+  defaultModel: process.env.BRIDGE_DEFAULT_MODEL || 'claude-sonnet-5',
   workingDir: process.env.BRIDGE_WORKING_DIR || undefined,
   timeoutMs: envInt('BRIDGE_TIMEOUT_MS') ?? 300_000,
   extraArgs: parseExtraArgs(),

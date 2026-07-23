@@ -6,7 +6,7 @@ function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml
   return {
     enabled: true,
     cli_path: 'codex',
-    default_model: 'gpt-5.5',
+    default_model: 'gpt-5.6-sol',
     max_concurrent: 1,
     timeout_ms: 30000,
     extra_args: ['--skip-git-repo-check', '-s', 'workspace-write'],
@@ -17,7 +17,7 @@ function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml
 function baseOptions(extra: Partial<ExecuteOptions> = {}): ExecuteOptions {
   return {
     messages: [{ role: 'user', content: 'hi' }],
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
     stream: false,
     ...extra,
   };
@@ -87,7 +87,7 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     (provider as any).buildArgs(options);
     const sm = provider.getCliSessionManager();
     expect(sm).not.toBeNull();
-    sm!.set('client-a', 'tid-XYZ', 'gpt-5.5');
+    sm!.set('client-a', 'tid-XYZ', 'gpt-5.6-sol');
 
 
     const args2: string[] = (provider as any).buildArgs(options);
@@ -101,7 +101,7 @@ describe('CodexProvider buildArgs (resume branch)', () => {
 
     expect(args2).toContain('--skip-git-repo-check');
     expect(args2).toContain('-m');
-    expect(args2).toContain('gpt-5.5');
+    expect(args2).toContain('gpt-5.6-sol');
   });
 
   it('builds Codex resume arguments', () => {
@@ -143,7 +143,7 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     });
     (provider as any).buildArgs(opt('a'));
     const sm = provider.getCliSessionManager()!;
-    sm.set('a', 'tid-A', 'gpt-5.5');
+    sm.set('a', 'tid-A', 'gpt-5.6-sol');
 
     const argsB: string[] = (provider as any).buildArgs(opt('b'));
     expect(argsB).not.toContain('resume');

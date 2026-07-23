@@ -22,7 +22,7 @@ This guide covers how to integrate with agent-proxy's Codex CLI session reuse fe
 
 ## TL;DR
 
-1. **Create a mapping** with `cli_options.enable_session_reuse: true` (e.g. `gpt-5.5-chat`).
+1. **Create a mapping** with `cli_options.enable_session_reuse: true` (e.g. `gpt-5.6-sol-chat`).
 2. **Generate a unique session id per conversation** in your app (per `ChatRoom`, per `user_id x room_id`, etc.).
 3. **Send it as the `X-Agent-Proxy-Session-Id` request header** on every call for that conversation.
 4. **Optionally capture `X-Agent-Proxy-Thread-Id`** from the response (non-stream only) for debugging.
@@ -39,22 +39,22 @@ Add a mapping that enables session reuse (or use the dashboard's **Provider Over
 ```yaml
 # config.yaml
 model_mappings:
-  - alias: "gpt-5.5-chat"
+  - alias: "gpt-5.6-sol-chat"
     provider: "codex"
-    actual_model: "gpt-5.5"
+    actual_model: "gpt-5.6-sol"
     provider_overrides:
       cli_options:
         enable_session_reuse: true
         session_ttl_ms: 1800000   # 30 min (default)
 ```text
 
-Or keep a single one-shot mapping (`gpt-5.5`) and add a chat variant - same provider, different defaults.
+Or keep a single one-shot mapping (`gpt-5.6-sol`) and add a chat variant - same provider, different defaults.
 
 Verify with curl:
 
 ```bash
 curl -s http://localhost:8300/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN" | jq '.[] | select(.alias=="gpt-5.5-chat")'
+  -H "Authorization: Bearer $ADMIN_TOKEN" | jq '.[] | select(.alias=="gpt-5.6-sol-chat")'
 ```text
 
 ---
@@ -129,7 +129,7 @@ client = OpenAI(
 def send_in_room(room_session_id: str, message: str) -> str:
     """Send a message into a chat room. Context is kept across calls automatically."""
     response = client.chat.completions.create(
-        model="gpt-5.5-chat",
+        model="gpt-5.6-sol-chat",
         messages=[{"role": "user", "content": message}],
         # Optional: set max_tokens, temperature, etc.
         extra_headers={
@@ -154,7 +154,7 @@ print(reply2)
 
 ```python
 stream = client.chat.completions.create(
-    model="gpt-5.5-chat",
+    model="gpt-5.6-sol-chat",
     messages=[{"role": "user", "content": "Continue the story."}],
     stream=True,
     extra_headers={"X-Agent-Proxy-Session-Id": "user-42-room-7"},
@@ -181,7 +181,7 @@ const client = new OpenAI({
 async function sendInRoom(sessionId: string, content: string) {
   const response = await client.chat.completions.create(
     {
-      model: 'gpt-5.5-chat',
+      model: 'gpt-5.6-sol-chat',
       messages: [{ role: 'user', content }],
     },
     {
@@ -210,7 +210,7 @@ async function chat(sessionId: string, message: string): Promise<string> {
       'X-Agent-Proxy-Session-Id': sessionId,
     },
     body: JSON.stringify({
-      model: 'gpt-5.5-chat',
+      model: 'gpt-5.6-sol-chat',
       messages: [{ role: 'user', content: message }],
     }),
   });
@@ -227,7 +227,7 @@ curl -i http://localhost:8300/v1/chat/completions \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -H "X-Agent-Proxy-Session-Id: debug-test-1" \
-  -d '{"model":"gpt-5.5-chat","messages":[{"role":"user","content":"hi"}]}' \
+  -d '{"model":"gpt-5.6-sol-chat","messages":[{"role":"user","content":"hi"}]}' \
   | grep -i 'X-Agent-Proxy-Thread-Id'
 ```
 
@@ -252,7 +252,7 @@ app.post('/api/rooms/:roomId/messages', requireAuth, async (req, res) => {
   // 1. Send to agent-proxy with stable session id
   const reply = await client.chat.completions.create(
     {
-      model: 'gpt-5.5-chat',
+      model: 'gpt-5.6-sol-chat',
       messages: [{ role: 'user', content }],
     },
     { headers: { 'X-Agent-Proxy-Session-Id': room.agentProxySessionId } },
@@ -306,7 +306,7 @@ app.post('/api/rooms', requireAuth, async (req, res) => {
 
 | Need | Recommended config |
 | ------ | -------------------- |
-| Stateless one-shot (current default) | Mapping without `provider_overrides` (e.g. `gpt-5.5`) |
+| Stateless one-shot (current default) | Mapping without `provider_overrides` (e.g. `gpt-5.6-sol`) |
 | Session continuity per user / per room | Mapping with `enable_session_reuse: true` + `X-Agent-Proxy-Session-Id` header |
 | Highest throughput, single user | `mode: "app-server"` (experimental) |
 
@@ -332,7 +332,7 @@ When you ask an LLM coding agent (Claude Code, Codex, etc.) to implement the cha
 [ ] Add a `agent_proxy_session_id` column (text, unique per userxroom) to the chat_rooms table.
 [ ] When a room is created, generate `sess-<nanoid(24)>` and store it.
 [ ] When sending a message, send the OpenAI request with header `X-Agent-Proxy-Session-Id: <room.agent_proxy_session_id>`.
-[ ] Use a model alias that has `enable_session_reuse: true` (e.g. `gpt-5.5-chat`).
+[ ] Use a model alias that has `enable_session_reuse: true` (e.g. `gpt-5.6-sol-chat`).
 [ ] Continue to persist every message in your own DB (do not rely on Codex jsonl for retrieval).
 [ ] Do not retry with a *different* session id when a request fails - that creates a new thread.
 [ ] Treat the 30-minute TTL as soft: on long gaps, your app may need to re-prime context from your DB.

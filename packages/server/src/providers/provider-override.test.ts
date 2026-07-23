@@ -6,7 +6,7 @@ function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml
   return {
     enabled: true,
     cli_path: 'codex',
-    default_model: 'gpt-5.5',
+    default_model: 'gpt-5.6-sol',
     max_concurrent: 10,
     timeout_ms: 300000,
     extra_args: ['--skip-git-repo-check'],
@@ -97,7 +97,7 @@ describe('mergeProviderConfig', () => {
   it('merges provider overrides safely', () => {
     const base = baseConfig({
       cli_path: 'claude',
-      default_model: 'claude-sonnet-4-6',
+      default_model: 'claude-sonnet-5',
       channel_options: {
         endpoint_url: 'http://old.example',
         poll_interval_ms: 1000,

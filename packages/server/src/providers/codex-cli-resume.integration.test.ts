@@ -18,7 +18,7 @@ function baseCodexConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfi
   return {
     enabled: true,
     cli_path: 'codex',
-    default_model: 'gpt-5.5',
+    default_model: 'gpt-5.6-sol',
     max_concurrent: 1,
     timeout_ms: 120000,
     extra_args: ['--skip-git-repo-check', '-s', 'read-only'],
@@ -29,7 +29,7 @@ function baseCodexConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfi
 function baseOptions(extra: Partial<ExecuteOptions> = {}): ExecuteOptions {
   return {
     messages: [{ role: 'user', content: 'hi' }],
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
     stream: false,
     ...extra,
   };
@@ -80,7 +80,7 @@ describe.skipIf(!codexIntegrationEnabled)('CodexProvider CLI resume (integration
     expect(argsResume).not.toContain('resume');
 
 
-    if (sm) sm.set('shared-X', 'tid-DUMMY', 'gpt-5.5');
+    if (sm) sm.set('shared-X', 'tid-DUMMY', 'gpt-5.6-sol');
     const argsNoReuse = (provider as any).buildArgs(baseOptions({
       clientKey: 'shared-X',
       providerOverrides: { cli_options: { enable_session_reuse: false } },

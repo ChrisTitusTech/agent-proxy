@@ -129,7 +129,7 @@ const BUILTIN_DEFAULTS: Record<string, {
   defaultModel: string;
   maxConcurrent?: number;
 }> = {
-  claude: { cliPath: 'claude', defaultModel: 'claude-sonnet-4-6' },
+  claude: { cliPath: 'claude', defaultModel: 'claude-sonnet-5' },
   codex: { cliPath: 'codex', defaultModel: '' },
   agy: { cliPath: 'agy', defaultModel: 'antigravity' },
   grok: { cliPath: 'grok', defaultModel: 'grok-4.5', maxConcurrent: 1 },
@@ -247,10 +247,9 @@ export function loadConfig(configPath?: string): AppConfig {
       reasoning_effort: normalizeReasoningEffort(m.reasoning_effort),
       provider_overrides: normalizeProviderOverrides(m.provider_overrides, m.provider),
     })) ?? [
-      { alias: 'claude-sonnet', provider: 'claude', actual_model: 'claude-sonnet-4-6' },
+      { alias: 'claude-sonnet-5', provider: 'claude', actual_model: 'claude-sonnet-5' },
       { alias: 'claude-haiku', provider: 'claude', actual_model: 'claude-haiku-4-5-20251001' },
-      { alias: 'gpt-5.5', provider: 'codex', actual_model: 'gpt-5.5' },
-      { alias: 'gpt-5.4-mini', provider: 'codex', actual_model: 'gpt-5.4-mini' },
+      { alias: 'gpt-5.6-sol', provider: 'codex', actual_model: 'gpt-5.6-sol' },
       { alias: 'antigravity', provider: 'agy', actual_model: 'antigravity' },
       { alias: 'grok-build', provider: 'grok', actual_model: 'grok-4.5' },
     ],

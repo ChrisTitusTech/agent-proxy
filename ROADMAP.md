@@ -92,7 +92,7 @@ Acceptance criteria:
 Pause point: do not call the endpoint drop-in compatible until the Codex and
 Grok client tests in Phase 3 pass.
 
-## Phase 3: Native CLI client compatibility
+## Phase 3: Native CLI and Open WebUI compatibility
 
 Status: Planned
 
@@ -101,14 +101,30 @@ Scope:
 - Test Claude Code against `/v1/messages`.
 - Test Codex against `/v1/responses` with a custom model provider.
 - Test Grok Build against `/v1/responses` with a custom model.
+- Test a pinned Open WebUI release against `/v1/models` and
+  `/v1/chat/completions`.
+- Validate Codex ChatGPT and supported Grok subscription logins from the same
+  service account and `HOME` used by systemd.
+- Test Open WebUI in native, Docker, and Podman connection topologies.
 - Document exact supported client versions and configuration.
 - Add protocol fixtures captured from non-secret test sessions.
+- Document Open WebUI background model requests and separate configuration for
+  embeddings, retrieval, speech, and image generation.
 
 Acceptance criteria:
 
 - Unmodified Claude Code completes a text request and one tool loop.
 - Unmodified Codex completes a coding request and one tool loop.
 - Unmodified Grok completes a coding request and one tool loop.
+- Open WebUI discovers Codex and Grok aliases without a custom Pipe.
+- Open WebUI completes non-streaming text, streaming text, cancellation, and
+  one advertised function-tool loop.
+- Concurrent Open WebUI chats cannot observe each other's provider session
+  context.
+- Missing and expired subscription logins produce actionable, sanitized
+  reauthentication errors.
+- Native, Docker, and Podman connection instructions pass against the supported
+  host matrix.
 - Streaming output renders incrementally in every client that supports it.
 - Two concurrent client sessions cannot observe each other's context.
 - Compatibility failures identify the unsupported field or event.
@@ -129,6 +145,10 @@ Scope:
 - Harden Claude SDK and channel-worker isolation.
 - Validate Antigravity model labels at startup.
 - Add native Grok streaming when supported by the installed CLI.
+- Classify executable, authentication, quota, upstream, and model-availability
+  failures separately.
+- Bound Open WebUI background-request amplification and account for every
+  generated provider request.
 
 Acceptance criteria:
 
@@ -136,7 +156,15 @@ Acceptance criteria:
 - Provider crashes do not crash the API server.
 - Every request reaches one terminal state.
 - Retry and fallback do not duplicate global or per-key accounting.
+- Authentication expiry does not crash the service and recovery does not
+  require replacing the proxy API key.
+- Buffered providers are labeled accurately and produce one valid terminal
+  stream sequence.
 - Stress tests leave no zombie or orphan provider processes.
+
+Rollback: keep the last validated provider mode available, disable new session
+reuse or native-streaming paths independently, and retain bounded queues and
+process cleanup during rollback.
 
 ## Phase 5: Security and privacy
 
@@ -150,6 +178,12 @@ Scope:
 - Audit export/import for credential leakage.
 - Add request-size, prompt-size, and concurrency abuse tests.
 - Publish reverse-proxy TLS and firewall examples.
+- Define a chat-only provider profile with a dedicated working directory and
+  constrained filesystem, command, and network access.
+- Define a separate opt-in tool-enabled profile and document the trust boundary
+  between Open WebUI tools and provider-native CLI tools.
+- Verify hardened systemd settings still permit only the required CLI
+  executable, credential, state, and network access.
 
 Acceptance criteria:
 
@@ -157,8 +191,16 @@ Acceptance criteria:
 - Redaction tests cover all supported provider credential formats.
 - Debug capture is disabled by default.
 - Admin and data-plane credentials are independently revocable.
+- Open WebUI receives only a proxy key and cannot read provider credential
+  stores.
+- Chat-only acceptance tests cannot modify the repository or unrelated host
+  paths.
 - A documented threat model covers prompt injection, command injection, SSRF,
   cross-session data leakage, and denial of service.
+
+Pause point: review the chat-only defaults, tool-enabled opt-in, service
+hardening, and Open WebUI network exposure before changing production
+permission defaults.
 
 ## Phase 6: Observability and operations
 
@@ -171,6 +213,12 @@ Scope:
 - Distinguish process, provider, queue, and dependency health.
 - Add database backup and restore commands.
 - Add an operator runbook for common failures.
+- Add sanitized provider-authentication readiness and reauthentication
+  diagnostics.
+- Add deployment diagnostics for Node.js runtime mismatch, inaccessible CLI
+  paths, wrong service-account `HOME`, container networking, and Open WebUI
+  model-discovery failures.
+- Document how to control or reroute Open WebUI background model requests.
 
 Acceptance criteria:
 
@@ -178,9 +226,18 @@ Acceptance criteria:
   requests, and provider availability.
 - Logs correlate a request across routing and provider execution without prompt
   content.
+- Health and diagnostics distinguish missing login, expired login, quota
+  exhaustion, upstream outage, and executable failure where the CLI supports
+  that distinction.
 - Backup and restore are verified on a fresh instance.
 - Alert examples cover service down, provider down, queue saturation, and
   repeated authentication failures.
+- The Open WebUI runbook recovers model discovery, chat, and streaming from
+  each documented failure without exposing subscription credentials.
+
+Rollback: keep metrics exporters and enhanced diagnostics optional, preserve a
+pre-migration database backup, and retain the previous operator runbook until
+the new recovery rehearsal passes.
 
 ## Phase 7: Stable release
 
@@ -191,13 +248,27 @@ Scope:
 - Resolve the licensing decision and add the license file.
 - Decide the future of generic CLI and HTTP adapters.
 - Freeze the supported endpoint subset and CLI version matrix.
+- Freeze the supported Open WebUI version and optional-capability matrix.
 - Add release notes, checksums, and reproducible artifacts.
 - Run upgrade and rollback rehearsals.
+- Run the full systemd plus Open WebUI acceptance suite with authenticated
+  Codex and Grok subscription sessions.
 
 Acceptance criteria:
 
 - All quality gates in `SPEC.md` pass.
 - Documentation matches the shipped configuration and endpoints.
 - A clean install and an in-place upgrade both pass on supported Linux targets.
+- The exact Node.js runtime, service account, CLI paths, credential home, and
+  Open WebUI topology used by production pass preflight and live acceptance.
+- A pinned Open WebUI release discovers both subscription-backed models and
+  passes text, streaming, cancellation, isolation, and advertised tool-loop
+  tests.
+- Open WebUI optional capabilities and background-request behavior match the
+  published capability matrix.
 - Known limitations are explicit.
 - The release contains the required upstream attribution and license notices.
+
+Rollback: retain the previous signed release, configuration backup, and SQLite
+backup until clean-install, upgrade, rollback, and Open WebUI acceptance
+evidence is reviewed.

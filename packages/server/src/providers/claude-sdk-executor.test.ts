@@ -33,7 +33,7 @@ const { executeSdk, executeStreamSdk } = await import('./claude-sdk-executor.js'
 function createOptions(overrides?: Partial<ExecuteOptions>): ExecuteOptions {
   return {
     messages: [{ role: 'user', content: 'Hello' }],
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-5',
     stream: false,
     ...overrides,
   };
@@ -41,7 +41,7 @@ function createOptions(overrides?: Partial<ExecuteOptions>): ExecuteOptions {
 
 function createConfig(sdkOptions?: Partial<ClaudeSdkOptions>) {
   return {
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-5',
     sdkOptions: {
       max_turns: 5,
       permission_mode: 'bypassPermissions',
@@ -82,7 +82,7 @@ describe('claude-sdk-executor', () => {
       waitForAbort = true;
       const shutdownController = new AbortController();
       const sessionManager = new ClaudeSdkSessionManager();
-      sessionManager.set('client', 'existing-session', 'claude-sonnet-4-6');
+      sessionManager.set('client', 'existing-session', 'claude-sonnet-5');
       const execution = executeSdk(createOptions(), {
         ...createConfig(),
         shutdownSignal: shutdownController.signal,
@@ -116,7 +116,7 @@ describe('claude-sdk-executor', () => {
           type: 'system',
           subtype: 'init',
           session_id: 'sess-1',
-          model: 'claude-sonnet-4-6',
+          model: 'claude-sonnet-5',
           tools: [],
           mcp_servers: [],
         },
@@ -204,7 +204,7 @@ describe('claude-sdk-executor', () => {
       waitForAbort = true;
       const requestController = new AbortController();
       const sessionManager = new ClaudeSdkSessionManager();
-      sessionManager.set('client', 'existing-session', 'claude-sonnet-4-6');
+      sessionManager.set('client', 'existing-session', 'claude-sonnet-5');
       const stream = executeStreamSdk(createOptions({
         stream: true,
         signal: requestController.signal,
@@ -347,7 +347,7 @@ describe('claude-sdk-executor', () => {
 
       await executeSdk(createOptions(), config);
 
-      const session = sessionManager.get('test-client', 'claude-sonnet-4-6');
+      const session = sessionManager.get('test-client', 'claude-sonnet-5');
       expect(session).not.toBeNull();
       expect(session!.sessionId).toBe('new-session-123');
 
@@ -368,34 +368,34 @@ describe('ClaudeSdkSessionManager', () => {
   });
 
   it('executes Claude SDK requests', () => {
-    manager.set('client-1', 'sess-a', 'claude-sonnet-4-6');
-    const session = manager.get('client-1', 'claude-sonnet-4-6');
+    manager.set('client-1', 'sess-a', 'claude-sonnet-5');
+    const session = manager.get('client-1', 'claude-sonnet-5');
     expect(session).not.toBeNull();
     expect(session!.sessionId).toBe('sess-a');
   });
 
   it('executes Claude SDK requests', () => {
-    manager.set('client-1', 'sess-a', 'claude-sonnet-4-6');
+    manager.set('client-1', 'sess-a', 'claude-sonnet-5');
     const session = manager.get('client-1', 'claude-opus-4-6');
     expect(session).toBeNull();
   });
 
   it('executes Claude SDK requests', () => {
-    manager.set('client-1', 'sess-a', 'claude-sonnet-4-6');
+    manager.set('client-1', 'sess-a', 'claude-sonnet-5');
     manager.invalidate('client-1');
-    const session = manager.get('client-1', 'claude-sonnet-4-6');
+    const session = manager.get('client-1', 'claude-sonnet-5');
     expect(session).toBeNull();
   });
 
   it('executes Claude SDK requests', async () => {
     manager.destroy();
     manager = new ClaudeSdkSessionManager(50); // 50ms TTL
-    manager.set('client-1', 'sess-a', 'claude-sonnet-4-6');
+    manager.set('client-1', 'sess-a', 'claude-sonnet-5');
 
 
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const session = manager.get('client-1', 'claude-sonnet-4-6');
+    const session = manager.get('client-1', 'claude-sonnet-5');
     expect(session).toBeNull();
   });
 

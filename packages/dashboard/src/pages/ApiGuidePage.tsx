@@ -164,7 +164,7 @@ export default function ApiGuidePage() {
   -H "Authorization: Bearer sk-proxy-your-key-here" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "claude-sonnet",
+    "model": "claude-sonnet-5",
     "messages": [
       {"role": "user", "content": "Hello, how are you?"}
     ]
@@ -176,7 +176,7 @@ export default function ApiGuidePage() {
   -H "Authorization: Bearer sk-proxy-your-key-here" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "claude-sonnet",
+    "model": "claude-sonnet-5",
     "messages": [
       {"role": "user", "content": "Tell me a joke"}
     ],
@@ -194,7 +194,7 @@ client = OpenAI(
 
 # Non-streaming
 response = client.chat.completions.create(
-    model="claude-sonnet",
+    model="claude-sonnet-5",
     messages=[{"role": "user", "content": "Summarize this document"}],
 )
 print(response.choices[0].message.content)
@@ -221,7 +221,7 @@ const client = new OpenAI({
 
 // Non-streaming
 const response = await client.chat.completions.create({
-  model: 'claude-sonnet',
+  model: 'claude-sonnet-5',
   messages: [{ role: 'user', content: 'Hello' }],
 });
 console.log(response.choices[0].message.content);
@@ -269,7 +269,7 @@ for await (const chunk of stream) {
   "id": "chatcmpl-proxy-abc123",
   "object": "chat.completion",
   "created": 1710000000,
-  "model": "claude-sonnet",
+  "model": "claude-sonnet-5",
   "choices": [{
     "index": 0,
     "message": {

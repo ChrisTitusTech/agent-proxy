@@ -28,7 +28,7 @@ describe('loadEffectiveProviderConfigs', () => {
     const defaultConfig: ProviderConfigYaml = {
       enabled: false,
       cli_path: 'codex',
-      default_model: 'gpt-5.5',
+      default_model: 'gpt-5.6-sol',
       max_concurrent: 1,
       timeout_ms: 30_000,
       extra_args: [],
@@ -58,7 +58,7 @@ describe('loadEffectiveProviderConfigs', () => {
     const defaultConfig: ProviderConfigYaml = {
       enabled: false,
       cli_path: 'codex',
-      default_model: 'gpt-5.5',
+      default_model: 'gpt-5.6-sol',
       max_concurrent: 1,
       timeout_ms: 30_000,
       extra_args: [],

@@ -23,7 +23,7 @@ describe('inferEndpointTypeFromName', () => {
 
   it('handles endpoint type inference', () => {
     expect(inferEndpointTypeFromName('gemma-4-12b')).toBeNull();
-    expect(inferEndpointTypeFromName('claude-sonnet-4-6')).toBeNull();
+    expect(inferEndpointTypeFromName('claude-sonnet-5')).toBeNull();
     expect(inferEndpointTypeFromName('qwen3.6-27b-awq')).toBeNull();
     expect(inferEndpointTypeFromName('')).toBeNull();
   });

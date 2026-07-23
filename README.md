@@ -128,7 +128,7 @@ claude
 Codex can use a custom Responses provider in `~/.codex/config.toml`:
 
 ```toml
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_provider = "agent_proxy"
 
 [model_providers.agent_proxy]

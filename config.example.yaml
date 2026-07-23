@@ -25,7 +25,7 @@ providers:
   claude:
     enabled: false
     cli_path: "claude"
-    default_model: "claude-sonnet-4-6"
+    default_model: "claude-sonnet-5"
     max_concurrent: 4
     timeout_ms: 300000
     extra_args:
@@ -105,18 +105,15 @@ validation:
   body_limit_bytes: 16777216
 
 model_mappings:
-  - alias: "claude-sonnet"
+  - alias: "claude-sonnet-5"
     provider: "claude"
-    actual_model: "claude-sonnet-4-6"
+    actual_model: "claude-sonnet-5"
   - alias: "claude-haiku"
     provider: "claude"
     actual_model: "claude-haiku-4-5-20251001"
-  - alias: "gpt-5.5"
+  - alias: "gpt-5.6-sol"
     provider: "codex"
-    actual_model: "gpt-5.5"
-  - alias: "gpt-5.4-mini"
-    provider: "codex"
-    actual_model: "gpt-5.4-mini"
+    actual_model: "gpt-5.6-sol"
   - alias: "antigravity"
     provider: "agy"
     actual_model: "antigravity"

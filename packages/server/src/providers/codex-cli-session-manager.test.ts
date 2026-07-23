@@ -15,60 +15,60 @@ describe('CodexCliSessionManager', () => {
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-abc', 'gpt-5.5');
-    const session = manager.get('client-1', 'gpt-5.5');
+    manager.set('client-1', 'thread-abc', 'gpt-5.6-sol');
+    const session = manager.get('client-1', 'gpt-5.6-sol');
     expect(session?.threadId).toBe('thread-abc');
-    expect(session?.model).toBe('gpt-5.5');
+    expect(session?.model).toBe('gpt-5.6-sol');
   });
 
   it('manages Codex CLI sessions', () => {
-    expect(manager.get('unknown', 'gpt-5.5')).toBeNull();
+    expect(manager.get('unknown', 'gpt-5.6-sol')).toBeNull();
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-abc', 'gpt-5.5');
+    manager.set('client-1', 'thread-abc', 'gpt-5.6-sol');
     vi.advanceTimersByTime(1500);
-    expect(manager.get('client-1', 'gpt-5.5')).toBeNull();
+    expect(manager.get('client-1', 'gpt-5.6-sol')).toBeNull();
     expect(manager.size).toBe(0);
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-abc', 'gpt-5.5');
+    manager.set('client-1', 'thread-abc', 'gpt-5.6-sol');
     expect(manager.get('client-1', 'gpt-4o')).toBeNull();
 
-    expect(manager.get('client-1', 'gpt-5.5')).toBeNull();
+    expect(manager.get('client-1', 'gpt-5.6-sol')).toBeNull();
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-abc', 'gpt-5.5');
+    manager.set('client-1', 'thread-abc', 'gpt-5.6-sol');
     vi.advanceTimersByTime(700);
-    expect(manager.get('client-1', 'gpt-5.5')).not.toBeNull();
+    expect(manager.get('client-1', 'gpt-5.6-sol')).not.toBeNull();
     vi.advanceTimersByTime(700);
-    expect(manager.get('client-1', 'gpt-5.5')).not.toBeNull();
+    expect(manager.get('client-1', 'gpt-5.6-sol')).not.toBeNull();
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-abc', 'gpt-5.5');
+    manager.set('client-1', 'thread-abc', 'gpt-5.6-sol');
     manager.invalidate('client-1');
-    expect(manager.get('client-1', 'gpt-5.5')).toBeNull();
+    expect(manager.get('client-1', 'gpt-5.6-sol')).toBeNull();
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-old', 'gpt-5.5');
-    manager.set('client-1', 'thread-new', 'gpt-5.5');
-    const session = manager.get('client-1', 'gpt-5.5');
+    manager.set('client-1', 'thread-old', 'gpt-5.6-sol');
+    manager.set('client-1', 'thread-new', 'gpt-5.6-sol');
+    const session = manager.get('client-1', 'gpt-5.6-sol');
     expect(session?.threadId).toBe('thread-new');
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-a', 'gpt-5.5');
-    manager.set('client-2', 'thread-b', 'gpt-5.5');
-    expect(manager.get('client-1', 'gpt-5.5')?.threadId).toBe('thread-a');
-    expect(manager.get('client-2', 'gpt-5.5')?.threadId).toBe('thread-b');
+    manager.set('client-1', 'thread-a', 'gpt-5.6-sol');
+    manager.set('client-2', 'thread-b', 'gpt-5.6-sol');
+    expect(manager.get('client-1', 'gpt-5.6-sol')?.threadId).toBe('thread-a');
+    expect(manager.get('client-2', 'gpt-5.6-sol')?.threadId).toBe('thread-b');
   });
 
   it('manages Codex CLI sessions', () => {
-    manager.set('client-1', 'thread-abc', 'gpt-5.5');
+    manager.set('client-1', 'thread-abc', 'gpt-5.6-sol');
     manager.destroy();
     expect(manager.size).toBe(0);
   });
