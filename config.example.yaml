@@ -1,0 +1,124 @@
+---
+server:
+  host: "127.0.0.1"
+  port: 8300
+  cors:
+    origins:
+      - "http://localhost:5300"
+
+dashboard:
+  host: "127.0.0.1"
+  port: 5300
+
+database:
+  path: "./data/agent-proxy.db"
+
+auth:
+  enabled: true
+  admin_token: "${ADMIN_TOKEN}"
+  initial_keys:
+    - name: "default"
+      key: "${PROXY_API_KEY}"
+
+providers:
+  claude:
+    enabled: true
+    cli_path: "claude"
+    default_model: "claude-sonnet-4-6"
+    max_concurrent: 4
+    timeout_ms: 300000
+    extra_args:
+      - "--no-session-persistence"
+      - "--permission-mode"
+      - "bypassPermissions"
+    # Supported modes: cli, sdk, channel-worker.
+    # mode: "sdk"
+    # sdk_options:
+    #   max_turns: 50
+    #   permission_mode: "bypassPermissions"
+    #   enable_session_reuse: true
+    #   persist_session: false
+
+  codex:
+    enabled: true
+    cli_path: "codex"
+    default_model: "gpt-5.5"
+    max_concurrent: 4
+    timeout_ms: 300000
+    extra_args:
+      - "--skip-git-repo-check"
+      - "--sandbox"
+      - "workspace-write"
+    cli_options:
+      ephemeral: true
+      enable_session_reuse: false
+      session_ttl_ms: 1800000
+    # mode: "app-server"
+    # app_server_options:
+    #   transport: "stdio"
+    #   enable_session_reuse: true
+    #   session_ttl_ms: 1800000
+    #   auto_restart: true
+
+  agy:
+    enabled: true
+    cli_path: "agy"
+    default_model: "antigravity"
+    max_concurrent: 2
+    timeout_ms: 300000
+    extra_args: []
+
+  grok:
+    enabled: true
+    cli_path: "grok"
+    default_model: "grok-4.5"
+    # Start with one worker; some Grok CLI sessions can stall when launched concurrently.
+    max_concurrent: 1
+    timeout_ms: 300000
+    extra_args: []
+
+rate_limits:
+  global:
+    rpm: 60
+    rpd: 1000
+  per_provider:
+    claude:
+      rpm: 20
+    codex:
+      rpm: 20
+    agy:
+      rpm: 10
+    grok:
+      rpm: 10
+
+cache:
+  enabled: true
+  ttl_seconds: 3600
+  max_entries: 1000
+
+validation:
+  max_message_count: 800
+  max_message_length: 250000
+  max_prompt_length: 1000000
+  max_response_length: 300000
+  body_limit_bytes: 16777216
+
+model_mappings:
+  - alias: "claude-sonnet"
+    provider: "claude"
+    actual_model: "claude-sonnet-4-6"
+  - alias: "claude-haiku"
+    provider: "claude"
+    actual_model: "claude-haiku-4-5-20251001"
+  - alias: "gpt-5.5"
+    provider: "codex"
+    actual_model: "gpt-5.5"
+  - alias: "gpt-5.4-mini"
+    provider: "codex"
+    actual_model: "gpt-5.4-mini"
+  - alias: "antigravity"
+    provider: "agy"
+    actual_model: "antigravity"
+  - alias: "grok-build"
+    provider: "grok"
+    actual_model: "grok-4.5"

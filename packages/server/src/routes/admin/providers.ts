@@ -1,0 +1,257 @@
+import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
+import type { ProviderConfigYaml } from '@agent-proxy/shared';
+import { getDatabase } from '../../db/client.js';
+import { providerHealth, settings } from '../../db/schema.js';
+
+import type { HealthChecker } from '../../services/health-checker.js';
+import type { QueueManager } from '../../services/queue.js';
+import type { ProviderRegistry } from '../../providers/provider-registry.js';
+import { readCodexCliDefaults } from '../../providers/codex-toml-defaults.js';
+
+interface ProviderDeps {
+  registry: ProviderRegistry;
+  healthChecker: HealthChecker;
+  queueManager: QueueManager;
+  defaultConfigs: Record<string, ProviderConfigYaml>;
+}
+
+
+const PROVIDER_CONFIG_PREFIX = 'provider_config:';
+const BUILTIN_PROVIDER_NAMES = new Set(['claude', 'codex', 'agy', 'grok']);
+const BUILTIN_RUNTIME_MUTABLE_FIELDS = new Set([
+  'enabled',
+  'default_model',
+  'max_concurrent',
+  'timeout_ms',
+  'mode',
+  'sdk_options',
+  'channel_options',
+  'app_server_options',
+  'cli_options',
+]);
+
+export function sanitizeRuntimeProviderConfig(
+  name: string,
+  partial: Partial<ProviderConfigYaml>,
+  strict = false,
+): Partial<ProviderConfigYaml> {
+  if (!BUILTIN_PROVIDER_NAMES.has(name)) {
+    return partial;
+  }
+
+  const sanitized: Partial<ProviderConfigYaml> = {};
+  const rejected: string[] = [];
+
+  for (const [key, value] of Object.entries(partial)) {
+    if (BUILTIN_RUNTIME_MUTABLE_FIELDS.has(key)) {
+      (sanitized as Record<string, unknown>)[key] = value;
+    } else {
+      rejected.push(key);
+    }
+  }
+
+  if (strict && rejected.length > 0) {
+    throw new Error(
+      `Built-in provider "${name}" only supports runtime updates for: ${Array.from(BUILTIN_RUNTIME_MUTABLE_FIELDS).join(', ')}.`,
+    );
+  }
+
+  return sanitized;
+}
+
+
+export async function loadProviderConfigFromDb(
+  name: string,
+): Promise<Partial<ProviderConfigYaml> | null> {
+  const db = getDatabase();
+  const key = `${PROVIDER_CONFIG_PREFIX}${name}`;
+  const rows = await db
+    .select()
+    .from(settings)
+    .where(eq(settings.key, key))
+    .limit(1);
+
+  if (rows.length === 0) return null;
+  try {
+    return JSON.parse(rows[0].value) as Partial<ProviderConfigYaml>;
+  } catch {
+    return null;
+  }
+}
+
+
+async function saveProviderConfigToDb(
+  name: string,
+  config: Partial<ProviderConfigYaml>,
+): Promise<void> {
+  const db = getDatabase();
+  const key = `${PROVIDER_CONFIG_PREFIX}${name}`;
+  const now = new Date().toISOString();
+  const value = JSON.stringify(config);
+
+  const existing = await db
+    .select()
+    .from(settings)
+    .where(eq(settings.key, key))
+    .limit(1);
+
+  if (existing.length === 0) {
+    await db.insert(settings).values({ key, value, updatedAt: now });
+  } else {
+    await db
+      .update(settings)
+      .set({ value, updatedAt: now })
+      .where(eq(settings.key, key));
+  }
+}
+
+export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps): void {
+
+  app.get('/admin/providers', async (_request, reply) => {
+    const db = getDatabase();
+    const healthData = await db.select().from(providerHealth);
+    const healthMap = new Map(healthData.map((h) => [h.provider, h]));
+
+    const providers = deps.registry.getAll().map((p) => {
+      const health = healthMap.get(p.name);
+      const queueStatus = deps.queueManager.getStatus(p.name);
+
+      return {
+        name: p.name,
+        status: health?.status ?? 'unknown',
+        lastCheckAt: health?.lastCheckAt,
+        lastSuccessAt: health?.lastSuccessAt,
+        consecutiveFailures: health?.consecutiveFailures ?? 0,
+        queue: queueStatus,
+      };
+    });
+
+    return reply.send(providers);
+  });
+
+
+  app.get<{ Params: { name: string } }>('/admin/providers/:name/config', async (request, reply) => {
+    const { name } = request.params;
+    const config = deps.registry.getProviderConfig(name);
+
+    if (!config) {
+      return reply.status(404).send({ error: { message: `Provider "${name}" not found.` } });
+    }
+
+    return reply.send(config);
+  });
+
+
+
+  app.get('/admin/providers/codex/cli-defaults', async (_request, reply) => {
+    return reply.send(readCodexCliDefaults());
+  });
+
+
+  app.put<{ Params: { name: string }; Body: Partial<ProviderConfigYaml> }>(
+    '/admin/providers/:name',
+    async (request, reply) => {
+      const { name } = request.params;
+
+      if (!deps.registry.has(name)) {
+        return reply.status(404).send({ error: { message: `Provider "${name}" not found.` } });
+      }
+
+      let partial: Partial<ProviderConfigYaml>;
+      try {
+        partial = sanitizeRuntimeProviderConfig(name, request.body, true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply.status(400).send({ error: { message } });
+      }
+
+
+      const updated = deps.registry.updateProviderConfig(name, partial);
+      if (!updated) {
+        return reply.status(500).send({ error: { message: `Failed to update provider "${name}" config.` } });
+      }
+
+
+      if (partial.max_concurrent !== undefined) {
+        deps.queueManager.updateConcurrency(name, partial.max_concurrent);
+      }
+
+
+      const existingOverride = await loadProviderConfigFromDb(name);
+      const merged = { ...existingOverride, ...partial };
+      await saveProviderConfigToDb(name, merged);
+
+
+      const newConfig = deps.registry.getProviderConfig(name);
+      return reply.send(newConfig);
+    },
+  );
+
+
+  app.post<{ Params: { name: string } }>('/admin/providers/:name/test', async (request, reply) => {
+    const { name } = request.params;
+    const provider = deps.registry.get(name);
+
+    if (!provider) {
+      return reply.status(404).send({ error: { message: `Provider "${name}" not found.` } });
+    }
+
+    const config = deps.registry.getProviderConfig(name);
+    const model = config?.default_model ?? '';
+
+    if (!model) {
+      return reply.status(400).send({
+        success: false,
+        error: 'No default_model configured for this provider.',
+      });
+    }
+
+    const startTime = Date.now();
+
+
+    const endpointTypes = (provider as unknown as { endpointTypes?: string[] }).endpointTypes;
+    const isNonChat = endpointTypes && !endpointTypes.includes('chat');
+
+    const testPrompt = isNonChat && endpointTypes?.includes('images')
+      ? 'A simple test image: blue circle on white background'
+      : 'Say "OK" and nothing else.';
+
+    try {
+      const result = await provider.execute({
+        messages: [{ role: 'user', content: testPrompt }],
+        model,
+        stream: false,
+      });
+
+      const latencyMs = Date.now() - startTime;
+
+      return reply.send({
+        success: true,
+        response: result.content.substring(0, 200),
+        latencyMs,
+        usage: result.usage,
+      });
+    } catch (err) {
+      const latencyMs = Date.now() - startTime;
+      const message = err instanceof Error ? err.message : String(err);
+
+      return reply.send({
+        success: false,
+        error: message,
+        latencyMs,
+      });
+    }
+  });
+
+
+  app.post<{ Params: { name: string } }>('/admin/providers/:name/health-check', async (request, reply) => {
+    const { name } = request.params;
+    if (!deps.registry.has(name)) {
+      return reply.status(404).send({ error: { message: `Provider "${name}" not found.` } });
+    }
+
+    const status = await deps.healthChecker.checkProvider(name);
+    return reply.send({ provider: name, status });
+  });
+}

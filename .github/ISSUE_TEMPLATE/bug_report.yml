@@ -1,0 +1,86 @@
+---
+name: Bug report
+description: Report a reproducible agent-proxy problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials, prompt content, and private paths from logs before
+        submitting.
+
+  - type: input
+    id: version
+    attributes:
+      label: agent-proxy version or commit
+      placeholder: v1.3.0 or commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - Claude Code
+        - Codex
+        - Google Antigravity
+        - Grok
+        - Generic CLI
+        - HTTP adapter
+        - Not provider-specific
+    validations:
+      required: true
+
+  - type: input
+    id: cli_version
+    attributes:
+      label: CLI version
+      description: Include the provider CLI version when applicable.
+      placeholder: codex-cli 0.145.0
+
+  - type: input
+    id: environment
+    attributes:
+      label: Linux and Node.js versions
+      placeholder: Ubuntu 24.04, Node.js 24.4.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe what happened and what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Configure ...
+        2. Send ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Do not include tokens, credentials, prompts, or private paths.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed secrets, credentials, prompts, and private data.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true

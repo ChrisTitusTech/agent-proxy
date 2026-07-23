@@ -1,0 +1,25 @@
+export const DEFAULT_SERVER_PORT = 8300;
+export const DEFAULT_DASHBOARD_PORT = 5300;
+export const DEFAULT_HOST = '127.0.0.1';
+
+export const API_KEY_PREFIX = 'sk-proxy-';
+export const API_KEY_PREFIX_LENGTH = 12;
+
+export const DEFAULT_MAX_CONCURRENT = 10;
+export const DEFAULT_TIMEOUT_MS = 300_000;
+
+export const DEFAULT_CACHE_TTL_SECONDS = 3600;
+export const DEFAULT_CACHE_MAX_ENTRIES = 1000;
+
+export const DEFAULT_RATE_LIMIT_RPM = 60;
+export const DEFAULT_RATE_LIMIT_RPD = 1000;
+
+export const PROVIDER_NAMES = ['claude', 'codex', 'agy', 'grok'] as const;
+
+
+export const DEFAULT_MAX_MESSAGE_COUNT = 800;
+export const DEFAULT_MAX_MESSAGE_LENGTH = 250_000;     // ~62K tokens
+export const DEFAULT_MAX_PROMPT_LENGTH = 1_000_000;    // ~250K tokens
+export const DEFAULT_MAX_RESPONSE_LENGTH = 300_000;    // ~75K tokens
+export const DEFAULT_BODY_LIMIT_BYTES = 16 * 1024 * 1024; // 16MB
+export const ALLOWED_ROLES = ['system', 'user', 'assistant', 'developer', 'tool'] as const;

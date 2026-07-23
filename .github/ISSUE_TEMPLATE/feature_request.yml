@@ -1,0 +1,56 @@
+---
+name: Feature request
+description: Propose a focused capability or compatibility improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What operator or client problem should this solve?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - OpenAI Responses API
+        - OpenAI Chat Completions API
+        - Anthropic Messages API
+        - Claude Code provider
+        - Codex provider
+        - Google Antigravity provider
+        - Grok provider
+        - Linux deployment
+        - Dashboard
+        - Security or observability
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the expected API or operator behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: This request does not depend on bypassing provider terms or limits.
+          required: true
+        - label: I checked SPEC.md and ROADMAP.md for an existing plan.
+          required: true

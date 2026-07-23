@@ -1,0 +1,1227 @@
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useTranslation } from '../i18n/context';
+import {
+  fetchDebugConfig,
+  updateDebugConfig,
+  fetchDebugLogs,
+  deleteDebugLog,
+  deleteDebugLogsBatch,
+  clearDebugLogs,
+  fetchModelMappings,
+  type DebugConfig,
+  type DebugLog,
+} from '../api/client';
+
+
+function rebuildClaudeStdin(messages: Array<{ role: string; content: string }>): string {
+  const nonSystem = messages.filter((m) => m.role !== 'system');
+  if (nonSystem.length === 1 && nonSystem[0].role === 'user') {
+    return nonSystem[0].content;
+  }
+  const parts: string[] = [];
+  for (const msg of messages) {
+    if (msg.role === 'system') continue;
+    if (msg.role === 'user') parts.push(`<|user|> ${msg.content}`);
+    else if (msg.role === 'assistant') parts.push(`<|assistant|> ${msg.content}`);
+  }
+  return parts.join('\n\n');
+}
+
+function rebuildSinglePrompt(messages: Array<{ role: string; content: string }>): string {
+  const nonSystem = messages.filter((m) => m.role !== 'system');
+  const systemMsg = messages.find((m) => m.role === 'system');
+
+  let userPrompt: string;
+  if (nonSystem.length === 1 && nonSystem[0].role === 'user') {
+    userPrompt = nonSystem[0].content;
+  } else {
+    const parts: string[] = [];
+    for (const msg of messages) {
+      if (msg.role === 'system') continue;
+      if (msg.role === 'user') parts.push(`<|user|> ${msg.content}`);
+      else if (msg.role === 'assistant') parts.push(`<|assistant|> ${msg.content}`);
+    }
+    userPrompt = parts.join('\n\n');
+  }
+
+  if (systemMsg) {
+    return `<|system|> ${systemMsg.content}\n\n${userPrompt}`;
+  }
+  return userPrompt;
+}
+
+
+function escapeShellArg(a: string): string {
+  if (a.includes("'")) return `"${a.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')}"`;
+  if (a.includes(' ') || a.includes('"') || a.includes('\\') || a.includes('$') || a.includes('`')) return `'${a}'`;
+  return a;
+}
+
+
+const isWindows = navigator.platform.startsWith('Win');
+
+
+// macOS/Linux: printf 'text' | cmd
+// Windows: echo text | cmd
+function wrapWithStdinPipe(stdinData: string, cmd: string): string {
+  if (isWindows) {
+
+    const escaped = stdinData
+      .replace(/\n/g, ' ')
+      .replace(/"/g, '\\"');
+    return `echo "${escaped}" | ${cmd}`;
+  }
+
+  const escaped = stdinData
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "'\\''")
+    .replace(/\n/g, '\\n');
+  return `printf '${escaped}' | ${cmd}`;
+}
+
+
+function buildTerminalCommand(log: { cliArgs: string | null; httpRequest?: string | null; provider: string; requestMessages?: string | null }): string {
+
+  if (log.httpRequest) {
+    return buildCurlCommand(log.httpRequest);
+  }
+
+  if (!log.cliArgs) return '';
+
+  try {
+    const args = JSON.parse(log.cliArgs) as string[];
+    const provider = log.provider;
+
+
+    const firstIsFlag = args[0]?.startsWith('-');
+    const cmdArgs = firstIsFlag ? [provider, ...args] : args;
+
+    let messages: Array<{ role: string; content: string }> | null = null;
+    if (log.requestMessages) {
+      try { messages = JSON.parse(log.requestMessages); } catch { /* ignore */ }
+    }
+
+    if (provider === 'claude') {
+      const cmd = cmdArgs.map(escapeShellArg).join(' ');
+      if (messages) {
+        return wrapWithStdinPipe(rebuildClaudeStdin(messages), cmd);
+      }
+      return cmd;
+    }
+
+    if (provider === 'codex') {
+
+      const cmd = cmdArgs.map(escapeShellArg).join(' ');
+      if (messages) {
+        return wrapWithStdinPipe(rebuildSinglePrompt(messages), cmd);
+      }
+      return cmd;
+    }
+
+    if (provider === 'agy') {
+
+      return cmdArgs.map(escapeShellArg).join(' ');
+    }
+
+    if (provider === 'grok') {
+
+      return cmdArgs.map(escapeShellArg).join(' ');
+    }
+
+
+    const cmd = cmdArgs.map(escapeShellArg).join(' ');
+    if (messages) {
+      return wrapWithStdinPipe(rebuildSinglePrompt(messages), cmd);
+    }
+    return cmd;
+  } catch {
+    return log.cliArgs;
+  }
+}
+
+
+function buildCurlCommand(httpRequestJson: string): string {
+  try {
+    const req = JSON.parse(httpRequestJson) as {
+      method: string;
+      url: string;
+      headers: Record<string, string>;
+      body: unknown;
+    };
+
+    if (isWindows) {
+      return buildCurlWindows(req);
+    }
+    return buildCurlUnix(req);
+  } catch {
+    return httpRequestJson;
+  }
+}
+
+interface HttpReqInfo {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+}
+
+// macOS/Linux: curl -X POST 'url' -H 'header' -d 'body'
+function buildCurlUnix(req: HttpReqInfo): string {
+  const parts: string[] = ['curl'];
+
+  if (req.method !== 'GET') {
+    parts.push(`-X ${req.method}`);
+  }
+
+  parts.push(escapeShellArg(req.url));
+
+  for (const [key, value] of Object.entries(req.headers)) {
+    parts.push(`-H ${escapeShellArg(`${key}: ${value}`)}`);
+  }
+
+  if (req.body) {
+    const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    parts.push(`-d ${escapeShellArg(bodyStr)}`);
+  }
+
+  return parts.join(' \\\n  ');
+}
+
+// Windows PowerShell: curl.exe -X POST "url" -H "header" -d "body"
+function buildCurlWindows(req: HttpReqInfo): string {
+  const parts: string[] = ['curl.exe'];
+
+  if (req.method !== 'GET') {
+    parts.push(`-X ${req.method}`);
+  }
+
+  parts.push(`"${req.url}"`);
+
+  for (const [key, value] of Object.entries(req.headers)) {
+    parts.push(`-H "${key}: ${value}"`);
+  }
+
+  if (req.body) {
+    const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    const escaped = bodyStr.replace(/"/g, '\\"');
+    parts.push(`-d "${escaped}"`);
+  }
+
+  return parts.join(' `\n  ');
+}
+
+
+function formatLatency(ms: number | null): string {
+  if (ms === null || ms === undefined) return '-';
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.round((ms % 60_000) / 1000);
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+}
+
+
+function extractSessionFromArgs(cliArgs: string | null): { sessionId: string | null; reused: boolean } {
+  if (!cliArgs) return { sessionId: null, reused: false };
+  try {
+    const args = JSON.parse(cliArgs) as string[];
+    let sessionId: string | null = null;
+    let reused = false;
+    for (const arg of args) {
+      if (arg.startsWith('session=')) sessionId = arg.slice(8);
+      if (arg === 'reused=true') reused = true;
+    }
+    return { sessionId: sessionId === 'none' ? null : sessionId, reused };
+  } catch {
+    return { sessionId: null, reused: false };
+  }
+}
+
+export default function DebugPage() {
+  const { t } = useTranslation();
+  const [config, setConfig] = useState<DebugConfig | null>(null);
+  const [logs, setLogs] = useState<DebugLog[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [filterModel, setFilterModel] = useState('');
+  const [searchText, setSearchText] = useState('');
+  const [searchScope, setSearchScope] = useState<'all' | 'request' | 'response'>('all');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [sessionModalId, setSessionModalId] = useState<string | null>(null);
+  const PAGE_SIZE = 20;
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+
+  useEffect(() => {
+    debounceRef.current = setTimeout(() => {
+      setDebouncedSearch(searchText);
+      setPage(0);
+    }, 400);
+    return () => clearTimeout(debounceRef.current);
+  }, [searchText]);
+
+  const loadConfig = useCallback(() => {
+    fetchDebugConfig().then(setConfig).catch((e) => setError(e.message));
+  }, []);
+
+  const loadLogs = useCallback(() => {
+    fetchDebugLogs({
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      model: filterModel || undefined,
+      search: debouncedSearch || undefined,
+      searchScope: debouncedSearch ? searchScope : undefined,
+    })
+      .then((res) => {
+        setLogs(res.data);
+        setTotal(res.pagination.total);
+      })
+      .catch((e) => setError(e.message));
+  }, [filterModel, debouncedSearch, searchScope, page]);
+
+  useEffect(() => {
+    loadConfig();
+    loadLogs();
+    fetchModelMappings()
+      .then((mappings) => {
+        const aliases = [...new Set(mappings.map((m) => m.alias))];
+        setModels(aliases);
+      })
+      .catch(() => {});
+  }, [loadConfig, loadLogs]);
+
+  const toggleGlobal = async () => {
+    if (!config) return;
+    try {
+      const updated = await updateDebugConfig({ global: !config.global });
+      setConfig(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
+    }
+  };
+
+  const toggleModel = async (alias: string) => {
+    if (!config) return;
+    try {
+      const updated = await updateDebugConfig({ model: alias, enabled: !config.models[alias] });
+      setConfig(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteDebugLog(id);
+      setLogs((prev) => prev.filter((l) => l.id !== id));
+      if (expandedId === id) setExpandedId(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
+    }
+  };
+
+  const handleClear = async () => {
+    if (!confirm(t('debug.confirmClear'))) return;
+    try {
+      await clearDebugLogs();
+      setLogs([]);
+      setTotal(0);
+      setSelectedIds(new Set());
+      setPage(0);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(t('debug.confirmDeleteSelected').replace('{count}', String(selectedIds.size)))) return;
+    try {
+      await deleteDebugLogsBatch([...selectedIds]);
+      setSelectedIds(new Set());
+      loadLogs();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === logs.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(logs.map((l) => l.id)));
+    }
+  };
+
+  const handleFilterChange = (model: string) => {
+    setFilterModel(model);
+    setPage(0);
+    setSelectedIds(new Set());
+  };
+
+  const handleSearchScopeChange = (scope: 'all' | 'request' | 'response') => {
+    setSearchScope(scope);
+    setPage(0);
+    setSelectedIds(new Set());
+  };
+
+  const handleRefresh = () => {
+    setSelectedIds(new Set());
+    loadLogs();
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t('debug.title')}</h2>
+
+      {error && (
+        <div className="flex items-center justify-between bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-lg px-4 py-2">
+          <p className="text-red-500 dark:text-red-400 text-sm">{error}</p>
+          <button onClick={() => setError(null)} className="text-red-400/60 hover:text-red-400 text-xs">{t('common.dismiss')}</button>
+        </div>
+      )}
+
+
+      {config && (
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('debug.debugCapture')}</h3>
+
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{t('debug.globalToggle')}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">{t('debug.globalDescription')}</p>
+            </div>
+            <ToggleSwitch enabled={config.global} onToggle={toggleGlobal} />
+          </div>
+
+
+          {models.length > 0 && (
+            <div className="border-t border-gray-200 dark:border-gray-800 pt-3 space-y-2">
+              <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">{t('debug.perModel')}</p>
+              <div className="flex flex-wrap gap-2">
+                {models.map((alias) => {
+                  const active = config.global || !!config.models[alias];
+                  return (
+                    <button
+                      key={alias}
+                      onClick={() => toggleModel(alias)}
+                      disabled={config.global}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-mono border transition-colors ${
+                        config.global
+                          ? 'opacity-50 cursor-not-allowed border-green-300 dark:border-green-500/30 bg-green-50 dark:bg-green-500/10 text-green-600 dark:text-green-400'
+                          : active
+                            ? 'border-green-300 dark:border-green-500/50 bg-green-50 dark:bg-green-500/15 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-500/25'
+                            : 'border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-500 hover:border-gray-400 dark:hover:border-gray-600 hover:text-gray-600 dark:hover:text-gray-400'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-green-500 dark:bg-green-400' : 'bg-gray-400 dark:bg-gray-600'}`} />
+                      {alias}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{t('debug.debugLogs')}</h3>
+            <span className="text-xs text-gray-400 dark:text-gray-500">{total} {t('debug.entries')}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRefresh}
+              className="px-3 py-1 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 rounded text-xs transition-colors text-gray-600 dark:text-gray-300"
+            >
+              {t('common.refresh')}
+            </button>
+            {selectedIds.size > 0 && (
+              <button
+                onClick={handleDeleteSelected}
+                className="px-3 py-1 bg-red-100 dark:bg-red-900/50 hover:bg-red-200 dark:hover:bg-red-800/50 text-red-600 dark:text-red-400 rounded text-xs transition-colors"
+              >
+                {t('debug.deleteSelected').replace('{count}', String(selectedIds.size))}
+              </button>
+            )}
+            <button
+              onClick={handleClear}
+              className="px-3 py-1 bg-red-100 dark:bg-red-900/50 hover:bg-red-200 dark:hover:bg-red-800/50 text-red-600 dark:text-red-400 rounded text-xs transition-colors"
+            >
+              {t('common.clearAll')}
+            </button>
+          </div>
+        </div>
+
+
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 max-w-md">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder={t('debug.searchPlaceholder')}
+              className="w-full pl-8 pr-3 py-1.5 bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-xs text-gray-700 dark:text-gray-300 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+            />
+            {searchText && (
+              <button
+                onClick={() => setSearchText('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+
+          <div className="flex rounded border border-gray-300 dark:border-gray-700 overflow-hidden">
+            {(['all', 'request', 'response'] as const).map((scope) => (
+              <button
+                key={scope}
+                onClick={() => handleSearchScopeChange(scope)}
+                className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  searchScope === scope
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
+                }`}
+              >
+                {t(`debug.searchScope${scope.charAt(0).toUpperCase() + scope.slice(1)}` as keyof typeof t)}
+              </button>
+            ))}
+          </div>
+
+
+          <select
+            value={filterModel}
+            onChange={(e) => handleFilterChange(e.target.value)}
+            className="bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300"
+          >
+            <option value="">{t('debug.allModels')}</option>
+            {models.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+
+      {logs.length > 0 && (
+        <div className="flex items-center gap-2 px-1">
+          <input
+            type="checkbox"
+            checked={selectedIds.size === logs.length && logs.length > 0}
+            onChange={toggleSelectAll}
+            className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 accent-blue-500"
+          />
+          <span className="text-xs text-gray-400 dark:text-gray-500">{t('debug.selectAll')}</span>
+        </div>
+      )}
+
+
+      <div className="space-y-2">
+        {logs.map((log) => (
+          <DebugLogEntry
+            key={log.id}
+            log={log}
+            expanded={expandedId === log.id}
+            selected={selectedIds.has(log.id)}
+            onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
+            onDelete={() => handleDelete(log.id)}
+            onSelect={() => toggleSelect(log.id)}
+            onSessionClick={(sid) => setSessionModalId(sid)}
+          />
+        ))}
+        {logs.length === 0 && (
+          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl px-4 py-8 text-center text-gray-400 dark:text-gray-600">
+            {config?.global || Object.keys(config?.models ?? {}).length > 0
+              ? t('debug.noLogs')
+              : t('debug.disabled')}
+          </div>
+        )}
+      </div>
+
+
+      {totalPages > 1 && (
+        <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
+      )}
+
+
+      {sessionModalId && (
+        <SessionModal
+          sessionId={sessionModalId}
+          logs={logs}
+          onClose={() => setSessionModalId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DebugLogEntry({
+  log,
+  expanded,
+  selected,
+  onToggle,
+  onDelete,
+  onSelect,
+  onSessionClick,
+}: {
+  log: DebugLog;
+  expanded: boolean;
+  selected: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+  onSelect: () => void;
+  onSessionClick: (sessionId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyCommand = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!log.cliArgs && !log.httpRequest) return;
+    const command = buildTerminalCommand({
+      cliArgs: log.cliArgs,
+      httpRequest: log.httpRequest,
+      provider: log.provider,
+      requestMessages: log.requestMessages,
+    });
+    navigator.clipboard.writeText(command).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const statusColor = log.status === 'pending'
+    ? 'text-blue-500 dark:text-blue-400 animate-pulse'
+    : log.status === 'success'
+      ? 'text-green-500 dark:text-green-400'
+      : log.status === 'timeout'
+        ? 'text-yellow-500 dark:text-yellow-400'
+        : 'text-red-500 dark:text-red-400';
+
+  const time = formatTime(log.createdAt);
+  const payload = calcPayloadSizes(log);
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
+
+      <div className="w-full flex items-center gap-3 px-4 py-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => { e.stopPropagation(); onSelect(); }}
+          className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 accent-blue-500 shrink-0"
+        />
+        <button
+          onClick={onToggle}
+          className="flex-1 flex items-center gap-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors rounded -m-1 p-1"
+        >
+        <span className={`text-xs font-mono font-bold ${statusColor}`}>
+          {log.status.toUpperCase()}
+        </span>
+        <span className="text-sm font-mono text-blue-600 dark:text-blue-400">{log.modelAlias}</span>
+        <span className="text-xs text-gray-400 dark:text-gray-600">-&gt;</span>
+        <span className="text-xs font-mono text-gray-500">{log.provider}:{log.actualModel}</span>
+        {log.reasoningEffort && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400" title="reasoning_effort">
+            {log.reasoningEffort}
+          </span>
+        )}
+
+        {(() => {
+          const { sessionId, reused } = extractSessionFromArgs(log.cliArgs);
+          if (!sessionId) return null;
+          return (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSessionClick(sessionId); }}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                reused
+                  ? 'bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 hover:bg-purple-200 dark:hover:bg-purple-500/25'
+                  : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+              }`}
+              title={`Session: ${sessionId}`}
+            >
+              <span className={`w-1 h-1 rounded-full ${reused ? 'bg-purple-500' : 'bg-gray-400'}`} />
+              {sessionId.slice(0, 8)}
+            </button>
+          );
+        })()}
+        <span className="text-xs text-gray-400 dark:text-gray-600 ml-auto">
+          {log.isStream ? 'stream' : 'sync'}
+        </span>
+        <span className="text-xs text-gray-400 dark:text-gray-500">{formatLatency(log.latencyMs)}</span>
+        <span className="text-xs font-mono text-gray-400 dark:text-gray-600" title="Request → Response payload size">
+          <span className="text-orange-400 dark:text-orange-500">↑{payload.req}</span>
+          <span className="mx-0.5">/</span>
+          <span className="text-teal-400 dark:text-teal-500">↓{payload.res}</span>
+        </span>
+        <span className="text-xs text-gray-400 dark:text-gray-600">{time}</span>
+        {(log.cliArgs || log.httpRequest) && (
+          <button
+            onClick={handleCopyCommand}
+            className={`transition-colors ${copied ? 'text-green-500 dark:text-green-400' : 'text-gray-300 dark:text-gray-700 hover:text-blue-500 dark:hover:text-blue-400'}`}
+            title={copied ? t('debug.copied') : log.httpRequest ? t('debug.copyCurl') : t('debug.copyCommand')}
+          >
+            {copied ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            )}
+          </button>
+        )}
+        <button
+          onClick={(e) => { e.stopPropagation(); exportDebugLog(log); }}
+          className="text-gray-300 dark:text-gray-700 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
+          title="Export"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+          </svg>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="text-gray-300 dark:text-gray-700 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+          title="Delete"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <svg
+          className={`w-4 h-4 text-gray-400 dark:text-gray-600 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+        </button>
+      </div>
+
+
+      {expanded && (
+        <div className="border-t border-gray-200 dark:border-gray-800 p-4 space-y-4">
+
+          {log.cliArgs && (
+            <DetailSection title={t('debug.cliCommand')}>
+              <pre className="text-green-600 dark:text-green-300 whitespace-pre-wrap break-all">
+                {(() => {
+                  try {
+                    const args = JSON.parse(log.cliArgs) as string[];
+                    return args.map((a) => (a.includes(' ') ? `'${a}'` : a)).join(' \\\n  ');
+                  } catch { return log.cliArgs; }
+                })()}
+              </pre>
+            </DetailSection>
+          )}
+
+
+          {log.requestMessages && (
+            <DetailSection title={t('debug.requestMessages')}>
+              <pre className="text-yellow-600 dark:text-yellow-200 whitespace-pre-wrap break-all">
+                {formatJson(log.requestMessages)}
+              </pre>
+            </DetailSection>
+          )}
+
+
+          {log.rawStdout && (
+            <DetailSection title={t('debug.rawStdout')}>
+              <pre className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">{formatNdjson(log.rawStdout)}</pre>
+            </DetailSection>
+          )}
+
+          {log.rawStderr && (
+            <DetailSection title={t('debug.rawStderr')}>
+              <pre className="text-red-500 dark:text-red-300 whitespace-pre-wrap break-all">{log.rawStderr}</pre>
+            </DetailSection>
+          )}
+
+
+          {log.httpRequest && (
+            <>
+              <DetailSection title="curl">
+                <pre className="text-green-600 dark:text-green-300 whitespace-pre-wrap break-all">
+                  {buildCurlCommand(log.httpRequest)}
+                </pre>
+              </DetailSection>
+              <DetailSection title={t('debug.httpRequest')}>
+                <pre className="text-orange-600 dark:text-orange-300 whitespace-pre-wrap break-all">
+                  {formatJson(log.httpRequest)}
+                </pre>
+              </DetailSection>
+            </>
+          )}
+
+          {/* HTTP Response */}
+          {log.httpResponse && (
+            <DetailSection title={t('debug.httpResponse')}>
+              <pre className="text-purple-600 dark:text-purple-300 whitespace-pre-wrap break-all">
+                {formatJson(log.httpResponse)}
+              </pre>
+            </DetailSection>
+          )}
+
+          {/* HTTP Stream Lines */}
+          {log.httpStreamLines && (
+            <DetailSection title={t('debug.httpStreamLines')}>
+              <pre className="text-indigo-600 dark:text-indigo-300 whitespace-pre-wrap break-all">
+                {formatNdjson(log.httpStreamLines)}
+              </pre>
+            </DetailSection>
+          )}
+
+
+          {log.rawResponseText && (
+            <DetailSection title={t('debug.rawResponse')}>
+              <pre className="text-amber-600 dark:text-amber-300 whitespace-pre-wrap break-all">{log.rawResponseText}</pre>
+            </DetailSection>
+          )}
+
+
+          {log.parsedContent && (
+            <DetailSection title={t('debug.parsedResponse')}>
+              <pre className="text-blue-600 dark:text-blue-200 whitespace-pre-wrap break-words">{log.parsedContent}</pre>
+              {isImageUrl(log.parsedContent) && (
+                <div className="mt-2">
+                  <img
+                    src={log.parsedContent.trim()}
+                    alt="Generated image"
+                    className="max-w-md rounded-lg border border-gray-200 dark:border-gray-700"
+                    loading="lazy"
+                  />
+                </div>
+              )}
+            </DetailSection>
+          )}
+
+
+          {log.tokenUsage && (
+            <DetailSection title={t('debug.tokenUsage')}>
+              <pre className="text-cyan-600 dark:text-cyan-300 whitespace-pre-wrap">{formatJson(log.tokenUsage)}</pre>
+            </DetailSection>
+          )}
+
+
+          {log.errorMessage && (
+            <DetailSection title={t('debug.error')}>
+              <pre className="text-red-500 dark:text-red-400">{log.errorMessage}</pre>
+            </DetailSection>
+          )}
+
+          <div className="text-xs text-gray-400 dark:text-gray-600 font-mono">
+            {t('debug.requestId')}: {log.requestId}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1">{title}</p>
+      <div className="bg-gray-50 dark:bg-gray-950 rounded px-3 py-2 text-xs font-mono overflow-x-auto max-h-96 overflow-y-auto">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+
+function SessionModal({ sessionId, logs, onClose }: {
+  sessionId: string;
+  logs: DebugLog[];
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+
+
+  const sessionLogs = logs
+    .filter((log) => {
+      const { sessionId: sid } = extractSessionFromArgs(log.cliArgs);
+      return sid === sessionId;
+    })
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  const statusColor = (status: string) =>
+    status === 'success'
+      ? 'text-green-500 dark:text-green-400'
+      : status === 'pending'
+        ? 'text-blue-500 dark:text-blue-400'
+        : status === 'timeout'
+          ? 'text-yellow-500 dark:text-yellow-400'
+          : 'text-red-500 dark:text-red-400';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {t('debug.sessionHistory')}
+            </h3>
+            <p className="text-[10px] font-mono text-purple-600 dark:text-purple-400 mt-0.5">
+              {sessionId}
+            </p>
+            <p className="text-[10px] text-gray-400 dark:text-gray-600 mt-0.5">
+              {t('debug.sessionRequests').replace('{count}', String(sessionLogs.length))}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          >
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+
+        <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+          {sessionLogs.length === 0 ? (
+            <p className="text-xs text-gray-400 dark:text-gray-600 text-center py-8">
+              This session has no logs on the current page.
+            </p>
+          ) : (
+            sessionLogs.map((log, idx) => {
+              const { reused } = extractSessionFromArgs(log.cliArgs);
+              return (
+                <div key={log.id} className="flex items-start gap-3 group">
+
+                  <div className="flex flex-col items-center pt-1">
+                    <span className={`w-2.5 h-2.5 rounded-full border-2 ${
+                      log.status === 'success'
+                        ? 'border-green-500 bg-green-100 dark:bg-green-500/20'
+                        : log.status === 'pending'
+                          ? 'border-blue-500 bg-blue-100 dark:bg-blue-500/20 animate-pulse'
+                          : 'border-red-500 bg-red-100 dark:bg-red-500/20'
+                    }`} />
+                    {idx < sessionLogs.length - 1 && (
+                      <div className="w-px flex-1 bg-gray-200 dark:bg-gray-700 mt-1" />
+                    )}
+                  </div>
+
+                  <div className="flex-1 pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold font-mono ${statusColor(log.status)}`}>
+                        {log.status.toUpperCase()}
+                      </span>
+                      <span className="text-xs font-mono text-blue-600 dark:text-blue-400">
+                        {log.modelAlias}
+                      </span>
+                      <span className="text-[10px] text-gray-400 dark:text-gray-600">
+                        {log.isStream ? 'stream' : 'sync'}
+                      </span>
+                      <span className={`text-[10px] px-1 py-0.5 rounded ${
+                        reused
+                          ? 'bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+                      }`}>
+                        {reused ? t('debug.sessionReused') : t('debug.sessionNew')}
+                      </span>
+                      <span className="text-[10px] text-gray-400 dark:text-gray-500 ml-auto">
+                        {formatLatency(log.latencyMs)}
+                      </span>
+                      <span className="text-[10px] text-gray-400 dark:text-gray-600">
+                        {formatTime(log.createdAt)}
+                      </span>
+                    </div>
+                    {log.parsedContent && (
+                      <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-1 line-clamp-2 leading-relaxed">
+                        {log.parsedContent.slice(0, 200)}{log.parsedContent.length > 200 ? '...' : ''}
+                      </p>
+                    )}
+                    {log.tokenUsage && (() => {
+                      try {
+                        const u = JSON.parse(log.tokenUsage);
+                        return (
+                          <p className="text-[10px] text-gray-400 dark:text-gray-600 mt-0.5">
+                            {u.promptTokens} in / {u.completionTokens} out
+                          </p>
+                        );
+                      } catch { return null; }
+                    })()}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+
+        <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 rounded-lg text-xs text-gray-700 dark:text-gray-300 transition-colors"
+          >
+            {t('debug.closeModal')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ToggleSwitch({
+  enabled,
+  onToggle,
+  disabled,
+}: {
+  enabled: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      disabled={disabled}
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+        disabled ? 'opacity-50 cursor-not-allowed' : ''
+      } ${enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+      title={disabled ? 'Controlled by global toggle' : enabled ? 'Click to disable' : 'Click to enable'}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+          enabled ? 'translate-x-4' : 'translate-x-0.5'
+        }`}
+      />
+    </button>
+  );
+}
+
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+
+function calcPayloadSizes(log: DebugLog): { req: string; res: string } {
+  const reqBytes = log.requestMessages?.length ?? 0;
+
+  const resBytes = log.rawResponseText?.length ?? log.rawStdout?.length ?? log.parsedContent?.length ?? 0;
+  return { req: formatBytes(reqBytes), res: formatBytes(resBytes) };
+}
+
+function formatTime(dateStr: string): string {
+  const normalized = dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
+  const d = new Date(normalized);
+  if (isNaN(d.getTime())) return dateStr;
+  return d.toLocaleTimeString();
+}
+
+
+function exportDebugLog(log: DebugLog): void {
+  const divider = '='.repeat(60);
+  const sections: string[] = [];
+
+  sections.push(`${divider}`);
+  sections.push(`Debug Log Export`);
+  sections.push(`${divider}`);
+  sections.push(``);
+  sections.push(`Request ID : ${log.requestId}`);
+  sections.push(`Model      : ${log.modelAlias} -> ${log.provider}:${log.actualModel}`);
+  if (log.reasoningEffort) sections.push(`Reasoning  : ${log.reasoningEffort}`);
+  sections.push(`Status     : ${log.status.toUpperCase()}`);
+  sections.push(`Mode       : ${log.isStream ? 'stream' : 'sync'}`);
+  sections.push(`Latency    : ${formatLatency(log.latencyMs)} (${log.latencyMs}ms)`);
+  sections.push(`Time       : ${log.createdAt}`);
+  if (log.errorMessage) {
+    sections.push(`Error      : ${log.errorMessage}`);
+  }
+
+  if (log.cliArgs) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`CLI Command`);
+    sections.push(`${divider}`);
+    try {
+      const args = JSON.parse(log.cliArgs) as string[];
+      sections.push(args.map((a) => (a.includes(' ') ? `'${a}'` : a)).join(' \\\n  '));
+    } catch {
+      sections.push(log.cliArgs);
+    }
+  }
+
+  if (log.requestMessages) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`Request Messages`);
+    sections.push(`${divider}`);
+    sections.push(formatJson(log.requestMessages));
+  }
+
+  if (log.rawStdout) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`Raw STDOUT`);
+    sections.push(`${divider}`);
+    sections.push(formatNdjson(log.rawStdout));
+  }
+
+  if (log.rawStderr) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`Raw STDERR`);
+    sections.push(`${divider}`);
+    sections.push(log.rawStderr);
+  }
+
+  if (log.rawResponseText) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`Raw Response`);
+    sections.push(`${divider}`);
+    sections.push(log.rawResponseText);
+  }
+
+  if (log.parsedContent) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`Parsed Response`);
+    sections.push(`${divider}`);
+    sections.push(log.parsedContent);
+  }
+
+  if (log.tokenUsage) {
+    sections.push(``);
+    sections.push(`${divider}`);
+    sections.push(`Token Usage`);
+    sections.push(`${divider}`);
+    sections.push(formatJson(log.tokenUsage));
+  }
+
+  const text = sections.join('\n');
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `debug-${log.modelAlias}-${log.requestId}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function isImageUrl(text: string): boolean {
+  const trimmed = text.trim();
+  try {
+    const url = new URL(trimmed);
+    return /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(url.pathname)
+      || url.hostname.includes('blob.core.windows.net');
+  } catch {
+    return false;
+  }
+}
+
+
+function formatNdjson(str: string): string {
+  const lines = str.split('\n').filter((l) => l.trim());
+  const formatted = lines.map((line) => {
+    try {
+      const obj = JSON.parse(line);
+      return JSON.stringify(obj, null, 2).replace(/\\n/g, '\n');
+    } catch {
+      return line;
+    }
+  });
+  return formatted.join('\n\n---\n\n');
+}
+
+function formatJson(str: string): string {
+  try {
+    const parsed = JSON.parse(str);
+    const formatted = JSON.stringify(parsed, null, 2);
+
+    return formatted.replace(/\\n/g, '\n');
+  } catch {
+
+    return str.replace(/\\n/g, '\n');
+  }
+}
+
+
+function getPageNumbers(current: number, total: number): (number | '...')[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i);
+
+  const pages: (number | '...')[] = [];
+
+  pages.push(0);
+
+  const start = Math.max(1, current - 1);
+  const end = Math.min(total - 2, current + 1);
+
+  if (start > 1) pages.push('...');
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (end < total - 2) pages.push('...');
+
+
+  pages.push(total - 1);
+  return pages;
+}
+
+function Pagination({ currentPage, totalPages, onPageChange }: {
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}) {
+  const btnBase = 'px-2.5 py-1 rounded text-xs transition-colors';
+  const btnNav = `${btnBase} bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 disabled:opacity-40 disabled:pointer-events-none`;
+  const btnPage = (active: boolean) =>
+    active
+      ? `${btnBase} bg-blue-600 text-white`
+      : `${btnBase} bg-gray-100 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300`;
+
+  const pages = getPageNumbers(currentPage, totalPages);
+
+  return (
+    <div className="flex items-center justify-center gap-1">
+      <button onClick={() => onPageChange(0)} disabled={currentPage === 0} className={btnNav}>«</button>
+      <button onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 0} className={btnNav}>‹</button>
+      {pages.map((p, i) =>
+        p === '...' ? (
+          <span key={`ellipsis-${i}`} className="px-1.5 text-xs text-gray-400 dark:text-gray-600">…</span>
+        ) : (
+          <button key={p} onClick={() => onPageChange(p)} className={btnPage(p === currentPage)}>
+            {p + 1}
+          </button>
+        ),
+      )}
+      <button onClick={() => onPageChange(currentPage + 1)} disabled={currentPage >= totalPages - 1} className={btnNav}>›</button>
+      <button onClick={() => onPageChange(totalPages - 1)} disabled={currentPage >= totalPages - 1} className={btnNav}>»</button>
+    </div>
+  );
+}

@@ -1,0 +1,13 @@
+.git
+.github
+.env
+config.yaml
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+coverage
+data
+logs
+*.log
+*.pid

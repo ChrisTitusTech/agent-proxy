@@ -1,0 +1,1368 @@
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useTranslation } from '../i18n/context';
+import { Modal } from '../components/Modal';
+import { ProviderBadge, getProviderStyle } from '../components/ProviderBadge';
+import {
+  fetchModelMappings,
+  createModelMapping,
+  updateModelMapping,
+  deleteModelMapping,
+  testModel,
+  fetchProviders,
+  fetchProviderConfig,
+  fetchCodexCliDefaults,
+  type CodexCliDefaults,
+  type ModelMapping,
+  type ProviderConfig,
+  type ProviderOverrides,
+  type ReasoningEffort,
+  type TestModelResult,
+} from '../api/client';
+
+
+type SortKey = 'alias' | 'provider' | 'priority';
+type SortDir = 'asc' | 'desc';
+
+
+interface Toast {
+  rowId: string;
+  success: boolean;
+  alias: string;
+  model: string;
+}
+
+type ReasoningEffortValue = ReasoningEffort | '';
+
+const REASONING_EFFORT_OPTIONS: ReasoningEffortValue[] = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+
+type TriState = '' | 'true' | 'false';
+
+interface MappingFormState {
+  alias: string;
+  provider: string;
+  actual_model: string;
+  reasoning_effort: ReasoningEffortValue;
+
+  include_reasoning: TriState;
+
+  extra_body_text: string;
+  priority: number;
+
+  override_ephemeral: TriState;
+  override_enable_session_reuse: TriState;
+  override_session_ttl_ms: string;
+  override_extra_args: string;
+  override_timeout_ms: string;
+  override_working_dir: string;
+}
+
+
+
+// enable_session_reuse=false, session_ttl_ms=1800000 (CodexCliSessionManager DEFAULT_SESSION_TTL_MS).
+const KNOWN_CODEX_DEFAULTS = {
+  cli_options: {
+    ephemeral: true,
+    enable_session_reuse: false,
+    session_ttl_ms: 1800000,
+  },
+} as const;
+
+const EMPTY_FORM: MappingFormState = {
+  alias: '',
+  provider: 'claude',
+  actual_model: '',
+  reasoning_effort: '',
+  include_reasoning: '',
+  extra_body_text: '',
+  priority: 0,
+  override_ephemeral: '',
+  override_enable_session_reuse: '',
+  override_session_ttl_ms: '',
+  override_extra_args: '',
+  override_timeout_ms: '',
+  override_working_dir: '',
+};
+
+
+
+function buildOverridesPayload(form: MappingFormState): ProviderOverrides | null {
+
+  if (form.provider !== 'codex') return null;
+  const out: ProviderOverrides = {};
+  const cli: NonNullable<ProviderOverrides['cli_options']> = {};
+  if (form.override_ephemeral) cli.ephemeral = form.override_ephemeral === 'true';
+  if (form.override_enable_session_reuse) cli.enable_session_reuse = form.override_enable_session_reuse === 'true';
+  if (form.override_session_ttl_ms.trim()) {
+    const n = Number(form.override_session_ttl_ms);
+    if (Number.isFinite(n) && n > 0) cli.session_ttl_ms = n;
+  }
+  if (Object.keys(cli).length > 0) out.cli_options = cli;
+  const args = form.override_extra_args.split('\n').map((a) => a.trim()).filter(Boolean);
+  if (args.length > 0) out.extra_args = args;
+  if (form.override_timeout_ms.trim()) {
+    const n = Number(form.override_timeout_ms);
+    if (Number.isFinite(n) && n > 0) out.timeout_ms = n;
+  }
+  if (form.override_working_dir.trim()) out.working_dir = form.override_working_dir.trim();
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+
+function applyOverridesToForm(overrides: ProviderOverrides | null): Partial<MappingFormState> {
+  if (!overrides) return {};
+  const cli = overrides.cli_options;
+  return {
+    override_ephemeral: cli?.ephemeral === undefined ? '' : (cli.ephemeral ? 'true' : 'false'),
+    override_enable_session_reuse: cli?.enable_session_reuse === undefined ? '' : (cli.enable_session_reuse ? 'true' : 'false'),
+    override_session_ttl_ms: cli?.session_ttl_ms !== undefined ? String(cli.session_ttl_ms) : '',
+    override_extra_args: overrides.extra_args ? overrides.extra_args.join('\n') : '',
+    override_timeout_ms: overrides.timeout_ms !== undefined ? String(overrides.timeout_ms) : '',
+    override_working_dir: overrides.working_dir ?? '',
+  };
+}
+
+export default function ModelMappingsPage() {
+  const { t } = useTranslation();
+  const [mappings, setMappings] = useState<ModelMapping[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<MappingFormState>({ ...EMPTY_FORM });
+  const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestModelResult | null>(null);
+  const [rowTesting, setRowTesting] = useState<string | null>(null);
+  const [rowTestResult, setRowTestResult] = useState<{ id: string; result: TestModelResult } | null>(null);
+  const [providerNames, setProviderNames] = useState<string[]>(['claude', 'codex', 'agy', 'grok']);
+
+  const [overrideMutexNotice, setOverrideMutexNotice] = useState(false);
+  const mutexNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [codexDefaults, setCodexDefaults] = useState<ProviderConfig | null>(null);
+
+  const [codexCliDefaults, setCodexCliDefaults] = useState<CodexCliDefaults | null>(null);
+
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterProvider, setFilterProvider] = useState<string>('');
+  const [filterEffort, setFilterEffort] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<'' | 'on' | 'off'>('');
+
+
+  const [sortKey, setSortKey] = useState<SortKey>('priority');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+
+
+
+  const [testModalRowId, setTestModalRowId] = useState<string | null>(null);
+
+
+  const [toast, setToast] = useState<Toast | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+
+  const [formDirty, setFormDirty] = useState(false);
+
+  const filteredMappings = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = mappings.filter((m) => {
+      if (filterProvider && m.provider !== filterProvider) return false;
+      if (filterEffort) {
+        const cur = m.reasoningEffort ?? '';
+        if (filterEffort === '__default__' ? cur !== '' : cur !== filterEffort) return false;
+      }
+      if (filterStatus === 'on' && !m.enabled) return false;
+      if (filterStatus === 'off' && m.enabled) return false;
+      if (q) {
+        const hay = `${m.alias} ${m.actualModel} ${m.displayName ?? ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+
+    const dirMul = sortDir === 'asc' ? 1 : -1;
+    const sorted = [...filtered].sort((a, b) => {
+      if (sortKey === 'alias') {
+        return a.alias.localeCompare(b.alias) * dirMul;
+      }
+      if (sortKey === 'provider') {
+        const c = a.provider.localeCompare(b.provider);
+        if (c !== 0) return c * dirMul;
+        return a.alias.localeCompare(b.alias);
+      }
+
+      const c = (a.priority - b.priority) * dirMul;
+      if (c !== 0) return c;
+      return a.alias.localeCompare(b.alias);
+    });
+    return sorted;
+  }, [mappings, searchQuery, filterProvider, filterEffort, filterStatus, sortKey, sortDir]);
+
+
+  const handleSort = useCallback((key: SortKey) => {
+    setSortKey((prev) => {
+      if (prev === key) {
+        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+        return prev;
+      }
+      setSortDir('asc');
+      return key;
+    });
+  }, []);
+
+  const filtersActive = !!(searchQuery || filterProvider || filterEffort || filterStatus);
+  const clearFilters = () => {
+    setSearchQuery('');
+    setFilterProvider('');
+    setFilterEffort('');
+    setFilterStatus('');
+  };
+
+  // AbortController refs
+  const formTestAbortRef = useRef<AbortController | null>(null);
+  const rowTestAbortRef = useRef<AbortController | null>(null);
+
+  const load = () => {
+    fetchModelMappings().then(setMappings).catch((e) => setError(e.message));
+  };
+
+  useEffect(load, []);
+
+
+  useEffect(() => {
+    fetchProviders()
+      .then((providers) => setProviderNames(providers.map((p) => p.name)))
+      .catch(() => { });
+  }, []);
+
+
+
+  useEffect(() => {
+    fetchProviderConfig('codex')
+      .then(setCodexDefaults)
+      .catch(() => setCodexDefaults(null));
+    fetchCodexCliDefaults()
+      .then(setCodexCliDefaults)
+      .catch(() => setCodexCliDefaults(null));
+  }, []);
+
+  useEffect(() => {
+    if (showForm) {
+      fetchProviderConfig('codex').then(setCodexDefaults).catch(() => { /* keep last */ });
+      fetchCodexCliDefaults().then(setCodexCliDefaults).catch(() => { /* keep last */ });
+    }
+  }, [showForm]);
+
+
+  const defaultLabel = useCallback((value: unknown): string => {
+    if (value === undefined || value === null || value === '') return t('models.overrides.useDefault');
+    if (typeof value === 'boolean') return `${t('models.overrides.defaultPrefix')}: ${value ? 'true' : 'false'}`;
+    if (Array.isArray(value)) {
+      return value.length === 0
+        ? t('models.overrides.useDefault')
+        : `${t('models.overrides.defaultPrefix')}: ${value.join(' ')}`;
+    }
+    return `${t('models.overrides.defaultPrefix')}: ${String(value)}`;
+  }, [t]);
+
+
+
+  const resolveEffectiveBool = (formVal: TriState, baseVal: boolean | undefined): boolean | undefined => {
+    if (formVal === 'true') return true;
+    if (formVal === 'false') return false;
+    return baseVal;
+  };
+
+
+  const effectiveSessionReuseBase =
+    codexDefaults?.cli_options?.enable_session_reuse ?? KNOWN_CODEX_DEFAULTS.cli_options.enable_session_reuse;
+  const effectiveEphemeralBase =
+    codexDefaults?.cli_options?.ephemeral ?? KNOWN_CODEX_DEFAULTS.cli_options.ephemeral;
+  const effectiveSessionTtlBase =
+    codexDefaults?.cli_options?.session_ttl_ms ?? KNOWN_CODEX_DEFAULTS.cli_options.session_ttl_ms;
+
+  const effectiveSessionReuse = resolveEffectiveBool(
+    form.override_enable_session_reuse,
+    effectiveSessionReuseBase,
+  );
+
+  const baseEphemeral = resolveEffectiveBool(form.override_ephemeral, effectiveEphemeralBase);
+
+
+  const effectiveEphemeral = effectiveSessionReuse === true ? false : baseEphemeral;
+  const ephemeralIsForced = effectiveSessionReuse === true && baseEphemeral !== false;
+
+
+  useEffect(() => {
+    return () => {
+      formTestAbortRef.current?.abort();
+      rowTestAbortRef.current?.abort();
+      if (mutexNoticeTimerRef.current) clearTimeout(mutexNoticeTimerRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+
+
+  useEffect(() => {
+    if (!rowTestResult) return;
+    if (testModalRowId === rowTestResult.id) return;
+    const mapping = mappings.find((m) => m.id === rowTestResult.id);
+    if (!mapping) return;
+    setToast({
+      rowId: rowTestResult.id,
+      success: rowTestResult.result.success,
+      alias: mapping.alias,
+      model: rowTestResult.result.model,
+    });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 6000);
+  }, [rowTestResult, testModalRowId, mappings]);
+
+
+  const formSnapshotRef = useRef<string>('');
+  useEffect(() => {
+    if (showForm) {
+
+      formSnapshotRef.current = JSON.stringify(form);
+    }
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showForm]);
+
+  useEffect(() => {
+    if (!showForm) {
+      setFormDirty(false);
+      return;
+    }
+    setFormDirty(JSON.stringify(form) !== formSnapshotRef.current);
+  }, [form, showForm]);
+
+
+
+
+  const handleEphemeralChange = (next: TriState) => {
+    let nextReuse = form.override_enable_session_reuse;
+    let triggered = false;
+    if (next === 'true' && form.override_enable_session_reuse === 'true') {
+      nextReuse = 'false';
+      triggered = true;
+    }
+    setForm({ ...form, override_ephemeral: next, override_enable_session_reuse: nextReuse });
+    if (triggered) showMutexNotice();
+  };
+
+  const handleSessionReuseChange = (next: TriState) => {
+    let nextEphemeral = form.override_ephemeral;
+    let triggered = false;
+    if (next === 'true' && form.override_ephemeral === 'true') {
+      nextEphemeral = 'false';
+      triggered = true;
+    }
+    setForm({ ...form, override_enable_session_reuse: next, override_ephemeral: nextEphemeral });
+    if (triggered) showMutexNotice();
+  };
+
+  const showMutexNotice = () => {
+    setOverrideMutexNotice(true);
+    if (mutexNoticeTimerRef.current) clearTimeout(mutexNoticeTimerRef.current);
+    mutexNoticeTimerRef.current = setTimeout(() => setOverrideMutexNotice(false), 5000);
+  };
+
+
+  const cancelFormTest = useCallback(() => {
+    if (formTestAbortRef.current) {
+      formTestAbortRef.current.abort();
+      formTestAbortRef.current = null;
+    }
+    setTesting(false);
+  }, []);
+
+
+  const cancelRowTest = useCallback(() => {
+    if (rowTestAbortRef.current) {
+      rowTestAbortRef.current.abort();
+      rowTestAbortRef.current = null;
+    }
+    setRowTesting(null);
+  }, []);
+
+
+  const closeForm = useCallback(() => {
+    cancelFormTest();
+    setShowForm(false);
+    setEditingId(null);
+    setTestResult(null);
+    setForm({ ...EMPTY_FORM });
+  }, [cancelFormTest]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    cancelFormTest();
+
+    const reasoningEffort: ReasoningEffort | null = form.reasoning_effort === ''
+      ? null
+      : form.reasoning_effort;
+    const includeReasoning: boolean | null = form.include_reasoning === ''
+      ? null
+      : form.include_reasoning === 'true';
+
+
+    let extraBody: Record<string, unknown> | null = null;
+    const extraText = form.extra_body_text.trim();
+    if (extraText) {
+      try {
+        const parsed = JSON.parse(extraText);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          setError('extra_body must be a JSON object.');
+          return;
+        }
+        extraBody = parsed as Record<string, unknown>;
+      } catch {
+        setError('extra_body is not valid JSON.');
+        return;
+      }
+    }
+
+    const payload = {
+      alias: form.alias,
+      provider: form.provider,
+      actual_model: form.actual_model,
+      reasoning_effort: reasoningEffort,
+      provider_overrides: buildOverridesPayload(form),
+      include_reasoning: includeReasoning,
+      extra_body: extraBody,
+      priority: form.priority,
+    };
+    try {
+      if (editingId) {
+        await updateModelMapping(editingId, payload);
+      } else {
+        await createModelMapping(payload);
+      }
+      closeForm();
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed');
+    }
+  };
+
+  const handleEdit = (m: ModelMapping) => {
+    cancelFormTest();
+    setEditingId(m.id);
+    setForm({
+      ...EMPTY_FORM,
+      alias: m.alias,
+      provider: m.provider,
+      actual_model: m.actualModel,
+      reasoning_effort: m.reasoningEffort ?? '',
+      include_reasoning: m.includeReasoning === null || m.includeReasoning === undefined
+        ? ''
+        : (m.includeReasoning ? 'true' : 'false'),
+      extra_body_text: m.extraBody ? JSON.stringify(m.extraBody, null, 2) : '',
+      priority: m.priority,
+      ...applyOverridesToForm(m.providerOverrides),
+    });
+    setShowForm(true);
+    setTestResult(null);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this mapping?')) return;
+    await deleteModelMapping(id);
+    load();
+  };
+
+  const handleToggle = async (m: ModelMapping) => {
+    await updateModelMapping(m.id, { enabled: !m.enabled });
+    load();
+  };
+
+
+  const handleTest = async () => {
+    if (!form.provider || !form.actual_model) {
+      setTestResult({ success: false, provider: form.provider, model: form.actual_model, error: 'Provider and Actual Model are required.', latencyMs: 0 });
+      return;
+    }
+
+    cancelFormTest();
+    const controller = new AbortController();
+    formTestAbortRef.current = controller;
+    setTesting(true);
+    setTestResult(null);
+
+    try {
+      const result = await testModel(form.provider, form.actual_model, controller.signal);
+      if (!controller.signal.aborted) {
+        setTestResult(result);
+      }
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      setTestResult({ success: false, provider: form.provider, model: form.actual_model, error: err instanceof Error ? err.message : 'Test failed', latencyMs: 0 });
+    } finally {
+      if (!controller.signal.aborted) {
+        setTesting(false);
+      }
+      if (formTestAbortRef.current === controller) {
+        formTestAbortRef.current = null;
+      }
+    }
+  };
+
+
+  const handleRowTest = async (m: ModelMapping) => {
+    cancelRowTest();
+    const controller = new AbortController();
+    rowTestAbortRef.current = controller;
+    setRowTesting(m.id);
+    setRowTestResult(null);
+    setTestModalRowId(m.id);
+
+    try {
+      const result = await testModel(m.provider, m.actualModel, controller.signal);
+      if (!controller.signal.aborted) {
+        setRowTestResult({ id: m.id, result });
+      }
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      setRowTestResult({ id: m.id, result: { success: false, provider: m.provider, model: m.actualModel, error: err instanceof Error ? err.message : 'Test failed', latencyMs: 0 } });
+    } finally {
+      if (!controller.signal.aborted) {
+        setRowTesting(null);
+      }
+      if (rowTestAbortRef.current === controller) {
+        rowTestAbortRef.current = null;
+      }
+    }
+  };
+
+
+  const handleToastView = useCallback(() => {
+    if (!toast) return;
+    setTestModalRowId(toast.rowId);
+    setToast(null);
+  }, [toast]);
+
+
+  const closeTestModal = useCallback(() => {
+    setTestModalRowId(null);
+  }, []);
+
+
+  const cancelTestFromModal = useCallback(() => {
+    cancelRowTest();
+    setTestModalRowId(null);
+  }, [cancelRowTest]);
+
+  const openCreate = useCallback(() => {
+    cancelFormTest();
+    setShowForm(true);
+    setEditingId(null);
+    setForm({ ...EMPTY_FORM });
+    setTestResult(null);
+  }, [cancelFormTest]);
+
+
+  const handleBeforeFormClose = useCallback((): boolean => {
+    if (!formDirty) return true;
+    return confirm(t('models.editUnsavedConfirm'));
+  }, [formDirty, t]);
+
+
+  const testModalMapping = useMemo(
+    () => testModalRowId ? mappings.find((m) => m.id === testModalRowId) ?? null : null,
+    [testModalRowId, mappings],
+  );
+  const testModalIsRunning = !!testModalRowId && rowTesting === testModalRowId;
+  const testModalResult = rowTestResult?.id === testModalRowId ? rowTestResult.result : null;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{t('models.title')}</h2>
+        <button
+          onClick={openCreate}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm text-white transition-colors shadow-sm"
+        >
+          {t('models.addMapping')}
+        </button>
+      </div>
+
+      {error && <p className="text-red-500 dark:text-red-400 text-sm">{error}</p>}
+
+
+      <Modal
+        open={showForm}
+        onClose={closeForm}
+        onBeforeClose={handleBeforeFormClose}
+        size="lg"
+        title={editingId ? t('models.editTitle') : t('models.createTitle')}
+        subtitle={editingId ? form.alias : undefined}
+        headerActions={form.provider ? <ProviderBadge provider={form.provider} size="md" /> : undefined}
+      >
+        <div className="space-y-3">
+          <form onSubmit={handleSubmit}>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">{t('models.aliasLabel')}</label>
+                <input
+                  value={form.alias}
+                  onChange={(e) => setForm({ ...form, alias: e.target.value })}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+                  placeholder="gpt-4"
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">{t('models.providerLabel')}</label>
+                <select
+                  value={form.provider}
+                  onChange={(e) => { setForm({ ...form, provider: e.target.value }); setTestResult(null); }}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+                >
+                  {providerNames.map((name) => (
+                    <option key={name} value={name}>{name.charAt(0).toUpperCase() + name.slice(1)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">{t('models.actualModelLabel')}</label>
+                <input
+                  value={form.actual_model}
+                  onChange={(e) => { setForm({ ...form, actual_model: e.target.value }); setTestResult(null); }}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+                  placeholder="claude-sonnet-4-6"
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">
+                  {t('models.reasoningEffortLabel')}
+                  {(() => {
+
+
+
+
+                    if (form.reasoning_effort) {
+                      return (
+                        <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                          {t('models.overrides.effectiveLabel')}: {form.reasoning_effort}
+                        </span>
+                      );
+                    }
+                    if (form.provider === 'codex' && codexCliDefaults?.modelReasoningEffort) {
+                      return (
+                        <span
+                          className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700"
+                          title={`from ${codexCliDefaults.configPath}`}
+                        >
+                          {t('models.overrides.effectiveLabel')}: {codexCliDefaults.modelReasoningEffort} <span className="opacity-70">(~/.codex/config.toml)</span>
+                        </span>
+                      );
+                    }
+                    return (
+                      <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                        {t('models.overrides.effectiveLabel')}: CLI default
+                      </span>
+                    );
+                  })()}
+                </label>
+                <select
+                  value={form.reasoning_effort}
+                  onChange={(e) => setForm({ ...form, reasoning_effort: e.target.value as ReasoningEffortValue })}
+                  disabled={form.provider === 'agy'}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={form.provider === 'agy' ? t('models.reasoningEffortUnsupported') : t('models.reasoningEffortHelp')}
+                >
+                  {REASONING_EFFORT_OPTIONS.map((value) => (
+                    <option key={value || 'default'} value={value}>
+                      {value === ''
+                        ? (form.provider === 'codex' && codexCliDefaults?.modelReasoningEffort
+                            ? `${t('models.reasoningEffortDefault')} → ${codexCliDefaults.modelReasoningEffort}`
+                            : t('models.reasoningEffortDefault'))
+                        : value}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">
+                  {t('models.includeReasoningLabel')}
+                  <span
+                    className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700"
+                    title={t('models.includeReasoningHelp')}
+                  >
+                    {t('models.overrides.effectiveLabel')}:{' '}
+                    {form.include_reasoning === '' ? 'inherit' : form.include_reasoning}
+                  </span>
+                </label>
+                <select
+                  value={form.include_reasoning}
+                  onChange={(e) => setForm({ ...form, include_reasoning: e.target.value as TriState })}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+                  title={t('models.includeReasoningHelp')}
+                >
+                  <option value="">{t('models.includeReasoningInherit')}</option>
+                  <option value="true">{t('models.includeReasoningTrue')}</option>
+                  <option value="false">{t('models.includeReasoningFalse')}</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">
+                  {t('models.extraBodyLabel')}
+                  <span className="ml-2 text-[10px] text-gray-400 dark:text-gray-500 font-normal">
+                    {t('models.extraBodyHint')}
+                  </span>
+                </label>
+                <textarea
+                  value={form.extra_body_text}
+                  onChange={(e) => setForm({ ...form, extra_body_text: e.target.value })}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-xs font-mono text-gray-800 dark:text-gray-200"
+                  rows={4}
+                  placeholder='{"chat_template_kwargs": {"enable_thinking": false}}'
+                />
+                <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                  {t('models.extraBodyHelp')}
+                </p>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 block mb-1">{t('models.priorityLabel')}</label>
+                <input
+                  type="number"
+                  value={form.priority}
+                  onChange={(e) => setForm({ ...form, priority: parseInt(e.target.value) || 0 })}
+                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+                />
+              </div>
+            </div>
+
+            {form.provider === 'codex' && (
+              <details className="mt-4 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900/60">
+                <summary className="px-4 py-3 text-sm font-semibold text-gray-800 dark:text-gray-100 cursor-pointer select-none hover:bg-gray-50 dark:hover:bg-gray-800/60 rounded-t-lg">
+                  {t('models.overrides.title')}
+                </summary>
+                <div className="px-4 py-4 border-t border-gray-300 dark:border-gray-600 space-y-4">
+                  <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                    {t('models.overrides.help')}
+                  </p>
+                  {overrideMutexNotice && (
+                    <div
+                      role="alert"
+                      className="px-3 py-2 bg-amber-50 dark:bg-amber-900/30 border-l-4 border-amber-500 dark:border-amber-400 rounded text-sm text-amber-900 dark:text-amber-100 flex items-start gap-2"
+                    >
+                      <span aria-hidden className="text-base leading-none">⚠️</span>
+                      <span className="font-medium">{t('models.overrides.mutexNotice')}</span>
+                    </div>
+                  )}
+
+                  {effectiveSessionReuse === true && (
+                    <div
+                      role="alert"
+                      className="px-4 py-3 bg-rose-50 dark:bg-rose-900/30 border-l-4 border-rose-500 dark:border-rose-400 rounded text-sm text-rose-900 dark:text-rose-100"
+                    >
+                      <div className="flex items-start gap-2">
+                        <span aria-hidden className="text-base leading-none">🚨</span>
+                        <div className="flex-1">
+                          <div className="font-bold mb-1">{t('models.overrides.sessionReuseClientWarningTitle')}</div>
+                          <p className="leading-relaxed">{t('models.overrides.sessionReuseClientWarningBody')}</p>
+                          <p className="mt-2 text-xs">
+                            <a
+                              href="https://github.com/Starhunter-9/agent-proxy/blob/main/docs/client-integration-session-reuse.md"
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline font-semibold hover:text-rose-700 dark:hover:text-rose-50"
+                            >
+                              {t('models.overrides.sessionReuseClientWarningCta')}
+                            </a>
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+
+                  <fieldset className="border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50/60 dark:bg-gray-800/40 px-4 py-3">
+                    <legend className="px-2 text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300">
+                      {t('models.overrides.groupSession')}
+                    </legend>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-800 dark:text-gray-100 block mb-1.5">
+                          {t('models.overrides.ephemeralLabel')}
+                          <span className="ml-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 font-normal">ephemeral</span>
+
+                          {effectiveEphemeral !== undefined && (
+                            <span
+                              className={`ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                                ephemeralIsForced
+                                  ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700'
+                                  : 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700'
+                              }`}
+                            >
+                              {ephemeralIsForced ? t('models.overrides.autoLabel') : t('models.overrides.effectiveLabel')}: {String(effectiveEphemeral)}
+                            </span>
+                          )}
+                        </label>
+                        <select
+                          value={form.override_ephemeral}
+                          onChange={(e) => handleEphemeralChange(e.target.value as TriState)}
+                          disabled={ephemeralIsForced}
+                          className={`w-full bg-white dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded px-3 py-2 text-sm text-gray-900 dark:text-gray-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none ${
+                            ephemeralIsForced ? 'opacity-60 cursor-not-allowed' : ''
+                          }`}
+                        >
+                          <option value="">{defaultLabel(effectiveEphemeralBase)}</option>
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                        {ephemeralIsForced ? (
+                          <p
+                            role="note"
+                            className="mt-1.5 px-2 py-1.5 rounded border-l-4 border-amber-500 dark:border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-900 dark:text-amber-100 leading-relaxed"
+                          >
+                            ⚠️ {t('models.overrides.ephemeralForcedNote')}
+                          </p>
+                        ) : (
+                          <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                            {t('models.overrides.ephemeralHelp')}
+                          </p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-gray-800 dark:text-gray-100 block mb-1.5">
+                          {t('models.overrides.sessionReuseLabel')}
+                          <span className="ml-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 font-normal">enable_session_reuse</span>
+                          {effectiveSessionReuse !== undefined && (
+                            <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700">
+                              {t('models.overrides.effectiveLabel')}: {String(effectiveSessionReuse)}
+                            </span>
+                          )}
+                        </label>
+                        <select
+                          value={form.override_enable_session_reuse}
+                          onChange={(e) => handleSessionReuseChange(e.target.value as TriState)}
+                          className="w-full bg-white dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded px-3 py-2 text-sm text-gray-900 dark:text-gray-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        >
+                          <option value="">{defaultLabel(effectiveSessionReuseBase)}</option>
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                        <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                          {t('models.overrides.sessionReuseHelp')}
+                        </p>
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="text-sm font-semibold text-gray-800 dark:text-gray-100 block mb-1.5">
+                          {t('models.overrides.sessionTtlLabel')}
+                          <span className="ml-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 font-normal">session_ttl_ms</span>
+                        </label>
+                        <input
+                          type="number"
+                          placeholder={defaultLabel(effectiveSessionTtlBase)}
+                          value={form.override_session_ttl_ms}
+                          onChange={(e) => setForm({ ...form, override_session_ttl_ms: e.target.value })}
+                          className="w-full bg-white dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded px-3 py-2 text-sm text-gray-900 dark:text-gray-50 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                        <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                          {t('models.overrides.sessionTtlHelp')}
+                        </p>
+                      </div>
+                    </div>
+                  </fieldset>
+
+
+                  <fieldset className="border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50/60 dark:bg-gray-800/40 px-4 py-3">
+                    <legend className="px-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                      {t('models.overrides.groupExecution')}
+                    </legend>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-800 dark:text-gray-100 block mb-1.5">
+                          {t('models.overrides.timeoutLabel')}
+                          <span className="ml-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 font-normal">timeout_ms</span>
+                        </label>
+                        <input
+                          type="number"
+                          placeholder={defaultLabel(codexDefaults?.timeout_ms)}
+                          value={form.override_timeout_ms}
+                          onChange={(e) => setForm({ ...form, override_timeout_ms: e.target.value })}
+                          className="w-full bg-white dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded px-3 py-2 text-sm text-gray-900 dark:text-gray-50 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                        <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                          {t('models.overrides.timeoutHelp')}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-gray-800 dark:text-gray-100 block mb-1.5">
+                          {t('models.overrides.workingDirLabel')}
+                          <span className="ml-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 font-normal">working_dir</span>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={defaultLabel(codexDefaults?.working_dir)}
+                          value={form.override_working_dir}
+                          onChange={(e) => setForm({ ...form, override_working_dir: e.target.value })}
+                          className="w-full bg-white dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded px-3 py-2 text-sm text-gray-900 dark:text-gray-50 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                        <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                          {t('models.overrides.workingDirHelp')}
+                        </p>
+                      </div>
+                    </div>
+                  </fieldset>
+
+
+                  <fieldset className="border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50/60 dark:bg-gray-800/40 px-4 py-3">
+                    <legend className="px-2 text-xs font-semibold uppercase tracking-wider text-purple-700 dark:text-purple-300">
+                      {t('models.overrides.groupArgs')}
+                    </legend>
+                    <div className="mt-2">
+                      <label className="text-sm font-semibold text-gray-800 dark:text-gray-100 block mb-1.5">
+                        {t('models.overrides.extraArgsLabel')}
+                        <span className="ml-1.5 text-[11px] font-mono text-gray-500 dark:text-gray-400 font-normal">extra_args</span>
+                      </label>
+                      <textarea
+                        rows={3}
+                        placeholder={
+                          codexDefaults?.extra_args && codexDefaults.extra_args.length > 0
+                            ? `${t('models.overrides.defaultPrefix')}:\n${codexDefaults.extra_args.join('\n')}`
+                            : t('models.overrides.extraArgsPlaceholder')
+                        }
+                        value={form.override_extra_args}
+                        onChange={(e) => setForm({ ...form, override_extra_args: e.target.value })}
+                        className="w-full bg-white dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded px-3 py-2 text-sm text-gray-900 dark:text-gray-50 placeholder:text-gray-400 dark:placeholder:text-gray-500 font-mono focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  </fieldset>
+                </div>
+              </details>
+            )}
+
+            <div className="flex gap-2 mt-3">
+              {testing ? (
+                <button
+                  type="button"
+                  onClick={cancelFormTest}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded text-sm text-white transition-colors"
+                >
+                  {t('common.cancelTest')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleTest}
+                  disabled={!form.provider || !form.actual_model}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed rounded text-sm text-white transition-colors"
+                >
+                  {t('common.test')}
+                </button>
+              )}
+              <button type="submit" disabled={testing} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 rounded text-sm text-white">
+                {editingId ? t('common.update') : t('common.create')}
+              </button>
+              <button type="button" onClick={closeForm} className="px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded text-sm text-gray-700 dark:text-gray-200">
+                {t('common.cancel')}
+              </button>
+            </div>
+          </form>
+
+
+          {testing && (
+            <div className="mt-3 px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                  <span className="inline-block w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                  {t('models.testing')} {form.provider} / {form.actual_model} ...
+                </div>
+                <button
+                  onClick={cancelFormTest}
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-400 transition-colors"
+                >
+                  {t('common.cancel')}
+                </button>
+              </div>
+            </div>
+          )}
+
+
+          {testResult && (
+            <div className={`mt-3 px-4 py-3 rounded-lg border ${testResult.success ? 'bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30' : 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30'}`}>
+              <div className="flex items-center justify-between mb-1">
+                <span className={`text-sm font-semibold ${testResult.success ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                  {testResult.success ? t('models.testPassed') : t('models.testFailed')}
+                </span>
+                <span className="text-xs text-gray-400 dark:text-gray-500">{testResult.latencyMs}ms</span>
+              </div>
+              {testResult.success && testResult.response && (
+                <div className="mt-1">
+                  <p className="text-sm text-gray-700 dark:text-gray-300">
+                    {t('models.response')}: <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-green-600 dark:text-green-300">{testResult.response}</code>
+                  </p>
+                  {isImageUrl(testResult.response) && (
+                    <img
+                      src={testResult.response.trim()}
+                      alt="Generated image"
+                      className="mt-2 max-w-sm rounded-lg border border-gray-200 dark:border-gray-700"
+                      loading="lazy"
+                    />
+                  )}
+                </div>
+              )}
+              {testResult.success && testResult.usage && (
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  {t('models.tokens')}: {testResult.usage.promptTokens} {t('models.tokensIn')} / {testResult.usage.completionTokens} {t('models.tokensOut')}
+                </p>
+              )}
+              {!testResult.success && testResult.error && (
+                <p className="text-sm text-red-500 dark:text-red-300 mt-1">{testResult.error}</p>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+
+      <Modal
+        open={!!testModalRowId}
+        onClose={closeTestModal}
+        size="sm"
+        title={t('models.testTitle')}
+        subtitle={testModalMapping ? `${testModalMapping.alias} → ${testModalMapping.actualModel}` : undefined}
+        headerActions={testModalMapping ? <ProviderBadge provider={testModalMapping.provider} size="md" /> : undefined}
+      >
+        <div className="space-y-3">
+          {testModalIsRunning && (
+            <div className="px-4 py-6 flex flex-col items-center gap-3 text-center">
+              <span className="inline-block w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                {t('models.testing')}...
+              </div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 max-w-xs leading-relaxed">
+                {t('models.testBackgroundHint')}
+              </p>
+              <button
+                onClick={cancelTestFromModal}
+                className="mt-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 text-red-600 dark:text-red-300 rounded text-xs font-medium transition-colors"
+              >
+                {t('common.cancelTest')}
+              </button>
+            </div>
+          )}
+          {!testModalIsRunning && testModalResult && (
+            <div className={`px-4 py-3 rounded-lg border ${testModalResult.success ? 'bg-green-50 dark:bg-green-500/10 border-green-200 dark:border-green-500/30' : 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30'}`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-sm font-semibold ${testModalResult.success ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                  {testModalResult.success ? t('models.testPassed') : t('models.testFailed')}
+                </span>
+                <span className="text-xs text-gray-400 dark:text-gray-500">{testModalResult.latencyMs}ms</span>
+              </div>
+              {testModalResult.success && testModalResult.response && (
+                <div className="mt-2">
+                  <p className="text-sm text-gray-700 dark:text-gray-300 break-words">
+                    {t('models.response')}: <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-green-600 dark:text-green-300">{testModalResult.response}</code>
+                  </p>
+                  {isImageUrl(testModalResult.response) && (
+                    <img
+                      src={testModalResult.response.trim()}
+                      alt="Generated image"
+                      className="mt-2 max-w-full rounded-lg border border-gray-200 dark:border-gray-700"
+                      loading="lazy"
+                    />
+                  )}
+                </div>
+              )}
+              {testModalResult.success && testModalResult.usage && (
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+                  {t('models.tokens')}: {testModalResult.usage.promptTokens} {t('models.tokensIn')} / {testModalResult.usage.completionTokens} {t('models.tokensOut')}
+                </p>
+              )}
+              {!testModalResult.success && testModalResult.error && (
+                <p className="text-sm text-red-500 dark:text-red-300 mt-1 break-words">{testModalResult.error}</p>
+              )}
+              <div className="flex justify-end gap-2 mt-3">
+                {testModalMapping && (
+                  <button
+                    onClick={() => handleRowTest(testModalMapping)}
+                    className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-500/10 dark:hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 rounded text-xs font-medium transition-colors"
+                  >
+                    {t('common.test')}
+                  </button>
+                )}
+                <button
+                  onClick={closeTestModal}
+                  className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded text-xs font-medium transition-colors"
+                >
+                  {t('common.dismiss')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-3 flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px]">
+          <svg className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+          </svg>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={t('models.searchPlaceholder')}
+            className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded pl-9 pr-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+          />
+        </div>
+        <select
+          value={filterProvider}
+          onChange={(e) => setFilterProvider(e.target.value)}
+          className="bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+          title={t('models.filterProvider')}
+        >
+          <option value="">{t('models.filterAllProviders')}</option>
+          {providerNames.map((name) => (
+            <option key={name} value={name}>{name.charAt(0).toUpperCase() + name.slice(1)}</option>
+          ))}
+        </select>
+        <select
+          value={filterEffort}
+          onChange={(e) => setFilterEffort(e.target.value)}
+          className="bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+          title={t('models.filterEffort')}
+        >
+          <option value="">{t('models.filterAllEfforts')}</option>
+          <option value="__default__">{t('models.reasoningEffortDefault')}</option>
+          {(['low', 'medium', 'high', 'xhigh', 'max'] as const).map((v) => (
+            <option key={v} value={v}>{v}</option>
+          ))}
+        </select>
+        <select
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value as '' | 'on' | 'off')}
+          className="bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm text-gray-800 dark:text-gray-200"
+          title={t('models.filterStatus')}
+        >
+          <option value="">{t('models.filterAllStatuses')}</option>
+          <option value="on">{t('common.on')}</option>
+          <option value="off">{t('common.off')}</option>
+        </select>
+        <div className="text-xs text-gray-500 dark:text-gray-400 ml-auto flex items-center gap-2">
+          <span>{t('models.filterCount', { shown: String(filteredMappings.length), total: String(mappings.length) })}</span>
+          {filtersActive && (
+            <button
+              onClick={clearFilters}
+              className="text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 underline"
+            >
+              {t('models.clearFilters')}
+            </button>
+          )}
+        </div>
+      </div>
+
+
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
+        <div className="max-h-[calc(100vh-280px)] overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 z-10 bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/80 dark:supports-[backdrop-filter]:bg-gray-900/80">
+            <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wider">
+              <SortableTh label={t('models.alias')} sortKey="alias" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableTh label={t('models.provider')} sortKey="provider" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <th className="text-left px-4 py-3">{t('models.actualModel')}</th>
+              <th className="text-left px-4 py-3">{t('models.reasoningEffort')}</th>
+              <SortableTh label={t('models.priority')} sortKey="priority" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <th className="text-left px-4 py-3">{t('models.status')}</th>
+              <th className="text-right px-4 py-3">{t('models.actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredMappings.map((m, idx) => {
+              const style = getProviderStyle(m.provider);
+
+              const prevSameProvider = idx > 0 && filteredMappings[idx - 1].provider === m.provider;
+              const groupBorder = sortKey === 'provider' && !prevSameProvider
+                ? 'border-t-2 border-t-gray-300 dark:border-t-gray-700'
+                : 'border-t border-t-gray-100 dark:border-t-gray-800/50';
+              return (
+              <tr
+                key={m.id}
+                className={`${groupBorder} hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors group ${!m.enabled ? 'opacity-60' : ''}`}
+              >
+                <td className="relative px-4 py-3 font-mono text-blue-600 dark:text-blue-300 font-semibold">
+
+                  <span aria-hidden className={`absolute left-0 top-0 bottom-0 w-1 ${style.accent} opacity-60 group-hover:opacity-100 transition-opacity`} />
+                  <span className="ml-1">{m.alias}</span>
+                </td>
+                <td className="px-4 py-3">
+                  <ProviderBadge provider={m.provider} />
+                </td>
+                <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400">{m.actualModel}</td>
+                <td className="px-4 py-3 text-xs">
+                  {m.reasoningEffort ? (
+                    <span className="px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300 font-mono">
+                      {m.reasoningEffort}
+                    </span>
+                  ) : (
+                    <span className="text-gray-300 dark:text-gray-600">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-gray-400 dark:text-gray-500 tabular-nums">{m.priority}</td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => handleToggle(m)}
+                    className={`px-2 py-0.5 rounded text-xs font-medium ${m.enabled ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300' : 'bg-gray-200 dark:bg-gray-700 text-gray-500'}`}
+                  >
+                    {m.enabled ? t('common.on') : t('common.off')}
+                  </button>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    {rowTesting === m.id ? (
+                      <button
+                        onClick={cancelRowTest}
+                        title={t('common.cancel')}
+                        aria-label={t('common.cancel')}
+                        className="p-1.5 rounded text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <rect x="6" y="6" width="12" height="12" rx="1" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRowTest(m)}
+                        title={t('common.test')}
+                        aria-label={t('common.test')}
+                        className="p-1.5 rounded text-gray-400 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
+                        </svg>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleEdit(m)}
+                      title={t('common.edit')}
+                      aria-label={t('common.edit')}
+                      className="p-1.5 rounded text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => handleDelete(m.id)}
+                      title={t('common.delete')}
+                      aria-label={t('common.delete')}
+                      className="p-1.5 rounded text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a2 2 0 012-2h2a2 2 0 012 2v3" />
+                      </svg>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              );
+            })}
+            {filteredMappings.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-gray-400 dark:text-gray-600">
+                  {mappings.length === 0
+                    ? t('models.noMappings')
+                    : t('models.noMatches')}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-6 right-6 z-40 max-w-sm px-4 py-3 rounded-xl shadow-lg border backdrop-blur-sm flex items-start gap-3 ${
+            toast.success
+              ? 'bg-green-50/95 dark:bg-green-900/40 border-green-300 dark:border-green-700 text-green-900 dark:text-green-100'
+              : 'bg-red-50/95 dark:bg-red-900/40 border-red-300 dark:border-red-700 text-red-900 dark:text-red-100'
+          }`}
+        >
+          <span aria-hidden className="text-lg leading-none mt-0.5">
+            {toast.success ? '✓' : '✕'}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold truncate">
+              {(toast.success
+                ? t('models.testToastSuccess', { model: toast.alias })
+                : t('models.testToastFailure', { model: toast.alias }))}
+            </div>
+            <div className="text-xs opacity-80 truncate font-mono">{toast.model}</div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={handleToastView}
+              className="px-2 py-1 text-xs font-medium rounded bg-white/60 dark:bg-black/30 hover:bg-white dark:hover:bg-black/50 transition-colors"
+            >
+              {t('models.testToastView')}
+            </button>
+            <button
+              onClick={() => setToast(null)}
+              aria-label={t('models.testToastDismiss')}
+              className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+interface SortableThProps {
+  label: string;
+  sortKey: SortKey;
+  current: SortKey;
+  dir: SortDir;
+  onSort: (key: SortKey) => void;
+}
+
+function SortableTh({ label, sortKey, current, dir, onSort }: SortableThProps) {
+  const active = current === sortKey;
+  return (
+    <th className="text-left px-4 py-3 select-none">
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1 text-xs uppercase tracking-wider transition-colors ${
+          active
+            ? 'text-blue-600 dark:text-blue-300 font-semibold'
+            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+        }`}
+      >
+        {label}
+        <span aria-hidden className={`text-[10px] ${active ? 'opacity-100' : 'opacity-30'}`}>
+          {active ? (dir === 'asc' ? '↑' : '↓') : '↕'}
+        </span>
+      </button>
+    </th>
+  );
+}
+
+function isImageUrl(text: string): boolean {
+  const trimmed = text.trim();
+  try {
+    const url = new URL(trimmed);
+    return /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(url.pathname)
+      || url.hostname.includes('blob.core.windows.net');
+  } catch {
+    return false;
+  }
+}
