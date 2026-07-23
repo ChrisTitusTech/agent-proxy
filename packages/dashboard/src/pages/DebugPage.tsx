@@ -11,7 +11,10 @@ import {
   type DebugConfig,
   type DebugLog,
 } from '../api/client';
-import { escapePosixShellArg as escapeShellArg } from '../utils/shell';
+import {
+  escapePosixShellArg as escapeShellArg,
+  pipeTextToCommand as wrapWithStdinPipe,
+} from '../utils/shell';
 import { isImageUrl } from '../utils/url';
 
 
@@ -51,29 +54,6 @@ function rebuildSinglePrompt(messages: Array<{ role: string; content: string }>)
   }
   return userPrompt;
 }
-
-
-const isWindows = navigator.platform.startsWith('Win');
-
-
-// macOS/Linux: printf 'text' | cmd
-// Windows: echo text | cmd
-function wrapWithStdinPipe(stdinData: string, cmd: string): string {
-  if (isWindows) {
-
-    const escaped = stdinData
-      .replace(/\n/g, ' ')
-      .replace(/"/g, '\\"');
-    return `echo "${escaped}" | ${cmd}`;
-  }
-
-  const escaped = stdinData
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "'\\''")
-    .replace(/\n/g, '\\n');
-  return `printf '${escaped}' | ${cmd}`;
-}
-
 
 function buildTerminalCommand(log: { cliArgs: string | null; httpRequest?: string | null; provider: string; requestMessages?: string | null }): string {
 

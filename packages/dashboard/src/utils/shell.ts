@@ -4,3 +4,7 @@ export function escapePosixShellArg(value: string): string {
   }
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
+
+export function pipeTextToCommand(stdinData: string, command: string): string {
+  return `printf '%s' ${escapePosixShellArg(stdinData)} | ${command}`;
+}

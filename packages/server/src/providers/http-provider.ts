@@ -20,6 +20,18 @@ import {
   stripTrailingSlashes,
 } from '../utils/outbound-http.js';
 
+function scheduleAbort(controller: AbortController, timeoutMs: number): () => void {
+  const deadline = Date.now() + clampHttpTimeoutMs(timeoutMs);
+  const intervalId = setInterval(() => {
+    if (Date.now() >= deadline) {
+      clearInterval(intervalId);
+      controller.abort();
+    }
+  }, 1_000);
+  intervalId.unref();
+  return () => clearInterval(intervalId);
+}
+
 export class HttpProvider extends BaseProvider {
   readonly name: string;
   override readonly endpointTypes = ['chat', 'embeddings', 'tts', 'rerank'] as const;
@@ -161,7 +173,7 @@ export class HttpProvider extends BaseProvider {
 
     const controller = new AbortController();
     const timeoutMs = this.timeoutMs;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelTimeout = scheduleAbort(controller, timeoutMs);
 
 
     if (options.signal) {
@@ -243,7 +255,7 @@ export class HttpProvider extends BaseProvider {
         finishReason: mapFinishReason(choice?.finish_reason),
       };
     } catch (error) {
-      clearTimeout(timeoutId);
+      cancelTimeout();
       if (error instanceof Error && error.name === 'AbortError') {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
@@ -256,7 +268,7 @@ export class HttpProvider extends BaseProvider {
       }
       throw error;
     } finally {
-      clearTimeout(timeoutId);
+      cancelTimeout();
     }
   }
 
@@ -282,7 +294,7 @@ export class HttpProvider extends BaseProvider {
 
     const controller = new AbortController();
     const timeoutMs = this.timeoutMs;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelTimeout = scheduleAbort(controller, timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
@@ -358,7 +370,7 @@ export class HttpProvider extends BaseProvider {
         await reader.cancel().catch(() => {});
       }
     } finally {
-      clearTimeout(timeoutId);
+      cancelTimeout();
       if (captureDebug) {
         debugInfo.httpStreamLines = streamLines;
         debugInfo.rawResponseText = streamLines.join('\n');
@@ -391,7 +403,7 @@ export class HttpProvider extends BaseProvider {
 
     const controller = new AbortController();
     const timeoutMs = this.timeoutMs;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelTimeout = scheduleAbort(controller, timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
@@ -450,7 +462,7 @@ export class HttpProvider extends BaseProvider {
         },
       };
     } catch (error) {
-      clearTimeout(timeoutId);
+      cancelTimeout();
       if (error instanceof Error && error.name === 'AbortError') {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
@@ -462,7 +474,7 @@ export class HttpProvider extends BaseProvider {
       }
       throw error;
     } finally {
-      clearTimeout(timeoutId);
+      cancelTimeout();
     }
   }
 
@@ -492,7 +504,7 @@ export class HttpProvider extends BaseProvider {
 
     const controller = new AbortController();
     const timeoutMs = this.timeoutMs;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelTimeout = scheduleAbort(controller, timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
@@ -563,7 +575,7 @@ export class HttpProvider extends BaseProvider {
         },
       };
     } catch (error) {
-      clearTimeout(timeoutId);
+      cancelTimeout();
       if (error instanceof Error && error.name === 'AbortError') {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
@@ -575,7 +587,7 @@ export class HttpProvider extends BaseProvider {
       }
       throw error;
     } finally {
-      clearTimeout(timeoutId);
+      cancelTimeout();
     }
   }
 
@@ -604,7 +616,7 @@ export class HttpProvider extends BaseProvider {
 
     const controller = new AbortController();
     const timeoutMs = this.timeoutMs;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelTimeout = scheduleAbort(controller, timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
@@ -641,7 +653,7 @@ export class HttpProvider extends BaseProvider {
 
       return { audio, contentType };
     } catch (error) {
-      clearTimeout(timeoutId);
+      cancelTimeout();
       if (error instanceof Error && error.name === 'AbortError') {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
@@ -653,7 +665,7 @@ export class HttpProvider extends BaseProvider {
       }
       throw error;
     } finally {
-      clearTimeout(timeoutId);
+      cancelTimeout();
     }
   }
 
