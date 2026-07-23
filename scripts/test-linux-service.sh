@@ -37,10 +37,10 @@ server.listen(0, "127.0.0.1", () => {
 cat >"$TEST_DIR/fake-grok" <<'EOF'
 #!/usr/bin/env bash
 set -eu
-printf '%s\n' "$$" >"$FAKE_PID_FILE"
+printf '%s\n' "$$" >"$XDG_RUNTIME_DIR/fake-grok.pid"
 trap 'exit 0' TERM INT
 sleep 60 &
-printf '%s\n' "$!" >"$FAKE_CHILD_PID_FILE"
+printf '%s\n' "$!" >"$XDG_RUNTIME_DIR/fake-grok-child.pid"
 wait
 EOF
 chmod 0700 "$TEST_DIR/fake-grok"
@@ -79,8 +79,9 @@ EOF
 export CONFIG_PATH="$TEST_DIR/config.yaml"
 export TEST_DATABASE_PATH="$TEST_DIR/state/agent-proxy.db"
 export TEST_FAKE_CLI="$TEST_DIR/fake-grok"
-export FAKE_PID_FILE="$TEST_DIR/fake-grok.pid"
-export FAKE_CHILD_PID_FILE="$TEST_DIR/fake-grok-child.pid"
+export XDG_RUNTIME_DIR="$TEST_DIR"
+FAKE_PID_FILE="$XDG_RUNTIME_DIR/fake-grok.pid"
+FAKE_CHILD_PID_FILE="$XDG_RUNTIME_DIR/fake-grok-child.pid"
 export ADMIN_TOKEN=service-smoke-admin-token
 export PROXY_API_KEY=sk-proxy-service-smoke-key
 export AGENT_PROXY_PORT="$PORT"
