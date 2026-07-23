@@ -1,0 +1,53 @@
+[Unit]
+Description=agent-proxy AI CLI API gateway
+Documentation=https://github.com/ChrisTitusTech/agent-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent-proxy
+Group=agent-proxy
+WorkingDirectory=/var/lib/agent-proxy
+Environment=HOME=/var/lib/agent-proxy
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/agent-proxy/agent-proxy.env
+ExecStartPre=/usr/bin/node /opt/agent-proxy/current/packages/server/dist/index.js --check
+ExecStart=/usr/bin/node /opt/agent-proxy/current/packages/server/dist/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=mixed
+UMask=0077
+
+NoNewPrivileges=true
+RemoveIPC=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+SystemCallArchitectures=native
+StateDirectory=agent-proxy
+StateDirectoryMode=0700
+LogsDirectory=agent-proxy
+LogsDirectoryMode=0700
+RuntimeDirectory=agent-proxy
+RuntimeDirectoryMode=0700
+ReadWritePaths=/var/lib/agent-proxy /var/log/agent-proxy /run/agent-proxy
+
+[Install]
+WantedBy=multi-user.target

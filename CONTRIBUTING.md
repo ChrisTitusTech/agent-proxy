@@ -8,7 +8,7 @@ and aligned with [SPEC.md](./SPEC.md) and [ROADMAP.md](./ROADMAP.md).
 Requirements:
 
 - Linux
-- Node.js 20 or newer
+- Node.js 24 or newer
 - npm
 - Optional authenticated provider CLIs for live integration tests
 
@@ -19,9 +19,17 @@ npm ci
 npm run typecheck
 npm test
 npm run build
-bash -n start.sh
-shellcheck start.sh
-shfmt -d start.sh
+for script in start.sh scripts/*.sh; do
+  bash -n "$script"
+done
+shellcheck start.sh scripts/*.sh
+shfmt -d start.sh scripts/*.sh
+scripts/test-linux-install.sh
+scripts/test-linux-service.sh
+scripts/test-release.sh
+systemd-analyze verify packaging/systemd/agent-proxy.service
+systemd-analyze security --offline=yes \
+  packaging/systemd/agent-proxy.service
 ```
 
 Tests that need an unavailable CLI must skip cleanly. Unit tests must not read,

@@ -17,21 +17,22 @@ import type {
 } from '@agent-proxy/shared';
 import { streamChunkToEvents } from '@agent-proxy/shared';
 import { getParserForProvider } from '../utils/stream-transformer.js';
+import { getProviderEnvironment } from '../utils/provider-env.js';
 
 
 const activeProcesses = new Set<ChildProcess>();
+const processGroupChildren = new WeakSet<ChildProcess>();
 
-export function trackProcess(child: ChildProcess): void {
+export function trackProcess(child: ChildProcess, terminateProcessGroup = false): void {
   activeProcesses.add(child);
+  if (terminateProcessGroup) processGroupChildren.add(child);
   child.on('close', () => activeProcesses.delete(child));
   child.on('error', () => activeProcesses.delete(child));
 }
 
-export function killAllChildProcesses(): void {
-  for (const child of activeProcesses) {
-    gracefulKill(child);
-  }
-  activeProcesses.clear();
+export async function killAllChildProcesses(timeoutMs = 3_000): Promise<void> {
+  const children = Array.from(activeProcesses);
+  await Promise.allSettled(children.map((child) => terminateChildProcess(child, timeoutMs)));
 }
 
 export function getActiveProcessCount(): number {
@@ -60,6 +61,11 @@ export abstract class BaseProvider {
 
   getConfig(): ProviderConfigYaml {
     return { ...this.config };
+  }
+
+  async shutdown(): Promise<void> {
+    // Most providers only own request-scoped processes, which are handled by
+    // the global process registry after the bounded request drain.
   }
 
   protected initParser() {
@@ -176,14 +182,7 @@ export abstract class BaseProvider {
 
 
   protected getCleanEnv(): Record<string, string | undefined> {
-    const env = { ...process.env };
-    delete env.CLAUDECODE;
-    delete env.CLAUDE_CODE_ENTRYPOINT;
-    delete env.CLAUDE_CODE_SESSION_ACCESS_TOKEN;
-    delete env.CLAUDE_CODE_SSE_PORT;
-    delete env.CLAUDE_CODE_ENABLE_TASKS;
-    delete env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-    return env;
+    return getProviderEnvironment(this.name);
   }
 
   protected get workingDir(): string {
@@ -198,8 +197,9 @@ export abstract class BaseProvider {
       env: this.getCleanEnv(),
       cwd: this.workingDir,
       shell: isWin,
+      detached: !isWin,
     });
-    trackProcess(child);
+    trackProcess(child, !isWin);
     return child;
   }
 
@@ -296,15 +296,112 @@ export abstract class BaseProvider {
 
 
 export function gracefulKill(child: ChildProcess, timeoutMs = 3000): void {
-  if (child.killed) return;
-  child.kill('SIGTERM');
-  const killTimer = setTimeout(() => {
-    if (!child.killed) {
-      child.kill('SIGKILL');
-    }
-  }, timeoutMs);
+  void terminateChildProcess(child, timeoutMs);
+}
 
-  child.on('close', () => clearTimeout(killTimer));
+export async function terminateChildProcess(
+  child: ChildProcess,
+  timeoutMs = 3_000,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    activeProcesses.delete(child);
+    return;
+  }
+
+  if (
+    process.platform !== 'win32'
+    && processGroupChildren.has(child)
+    && child.pid
+  ) {
+    await terminateProcessGroup(child.pid, timeoutMs);
+    activeProcesses.delete(child);
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      if (exitTimer) clearTimeout(exitTimer);
+      activeProcesses.delete(child);
+      resolve();
+    };
+    const killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          signalChild(child, 'SIGKILL');
+        } catch {
+          finish();
+          return;
+        }
+      }
+      exitTimer = setTimeout(finish, 1_000);
+    }, timeoutMs);
+
+    child.once('exit', finish);
+    child.once('error', finish);
+    try {
+      signalChild(child, 'SIGTERM');
+    } catch {
+      finish();
+    }
+  });
+}
+
+function signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && processGroupChildren.has(child) && child.pid) {
+    process.kill(-child.pid, signal);
+    return;
+  }
+  child.kill(signal);
+}
+
+async function terminateProcessGroup(
+  processGroupId: number,
+  timeoutMs: number,
+): Promise<void> {
+  try {
+    process.kill(-processGroupId, 'SIGTERM');
+  } catch {
+    return;
+  }
+
+  if (await waitForProcessGroupExit(processGroupId, timeoutMs)) {
+    return;
+  }
+
+  try {
+    process.kill(-processGroupId, 'SIGKILL');
+  } catch {
+    return;
+  }
+  await waitForProcessGroupExit(processGroupId, 1_000);
+}
+
+function waitForProcessGroupExit(
+  processGroupId: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const check = () => {
+      try {
+        process.kill(-processGroupId, 0);
+      } catch {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      setTimeout(check, 25);
+    };
+    check();
+  });
 }
 
 

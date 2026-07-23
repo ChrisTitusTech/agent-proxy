@@ -28,6 +28,19 @@ export class ProviderRegistry {
     return this.providers.delete(name);
   }
 
+  async shutdownAll(): Promise<void> {
+    const providers = Array.from(this.providers.values());
+    const results = await Promise.allSettled(
+      providers.map((provider) => provider.shutdown()),
+    );
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(`[${providers[index].name}] provider shutdown failed:`, result.reason);
+      }
+    });
+  }
+
 
   getProviderConfig(name: string): ProviderConfigYaml | undefined {
     const provider = this.providers.get(name);

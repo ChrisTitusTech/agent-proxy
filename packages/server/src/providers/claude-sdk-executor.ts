@@ -42,6 +42,7 @@ export interface SdkExecutorConfig {
 
   sessionManager?: ClaudeSdkSessionManager;
   clientKey?: string;
+  shutdownSignal?: AbortSignal;
 
   onSdkMeta?: (meta: SdkMeta) => void;
 }
@@ -72,19 +73,29 @@ function buildQueryOptions(
   options: ExecuteOptions,
   config: SdkExecutorConfig,
   resumeSessionId?: string,
-): { prompt: string; options: SdkQueryOptions } {
+): {
+  query: { prompt: string; options: SdkQueryOptions };
+  cleanup: () => void;
+} {
   const { systemPrompt, userPrompt } = convertMessages(options.messages);
   const { sdkOptions } = config;
 
   const abortController = new AbortController();
 
 
-  if (options.signal) {
-    options.signal.addEventListener('abort', () => abortController.abort(), { once: true });
-  }
+  const abort = () => abortController.abort();
+  options.signal?.addEventListener('abort', abort, { once: true });
+  config.shutdownSignal?.addEventListener('abort', abort, { once: true });
   const timeoutId = setTimeout(() => abortController.abort(), config.timeoutMs);
-
-  abortController.signal.addEventListener('abort', () => clearTimeout(timeoutId), { once: true });
+  const cleanup = () => {
+    clearTimeout(timeoutId);
+    options.signal?.removeEventListener('abort', abort);
+    config.shutdownSignal?.removeEventListener('abort', abort);
+  };
+  abortController.signal.addEventListener('abort', cleanup, { once: true });
+  if (options.signal?.aborted || config.shutdownSignal?.aborted) {
+    abortController.abort();
+  }
 
   const permissionMode = sdkOptions.permission_mode ?? 'bypassPermissions';
 
@@ -123,7 +134,10 @@ function buildQueryOptions(
     queryOptions.systemPrompt = systemPrompt;
   }
 
-  return { prompt: userPrompt, options: queryOptions };
+  return {
+    query: { prompt: userPrompt, options: queryOptions },
+    cleanup,
+  };
 }
 
 
@@ -223,7 +237,7 @@ export async function executeSdk(
   let retried = false;
 
   try {
-    for await (const rawMsg of sdk.query(queryParams)) {
+    for await (const rawMsg of sdk.query(queryParams.query)) {
       const msg = rawMsg as Record<string, unknown>;
 
 
@@ -272,6 +286,9 @@ export async function executeSdk(
       config.sessionManager.set(config.clientKey, capturedSessionId, config.model);
     }
   } catch (err) {
+    if (options.signal?.aborted || config.shutdownSignal?.aborted) {
+      throw err;
+    }
 
     if (existingSession && config.sessionManager && config.clientKey) {
       config.sessionManager.invalidate(config.clientKey);
@@ -283,7 +300,7 @@ export async function executeSdk(
       capturedSessionId = null;
 
       try {
-        for await (const rawMsg of sdk.query(retryParams)) {
+        for await (const rawMsg of sdk.query(retryParams.query)) {
           const msg = rawMsg as Record<string, unknown>;
 
           if (!capturedSessionId) {
@@ -306,10 +323,14 @@ export async function executeSdk(
         }
       } catch (retryErr) {
         throw new Error(`Claude SDK execution failed after retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+      } finally {
+        retryParams.cleanup();
       }
     } else {
       throw new Error(`Claude SDK execution failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  } finally {
+    queryParams.cleanup();
   }
 
   return {
@@ -401,7 +422,7 @@ export async function* executeStreamSdk(
   let capturedSessionId: string | null = null;
 
   try {
-    for await (const rawMsg of sdk.query(queryParams)) {
+    for await (const rawMsg of sdk.query(queryParams.query)) {
       const msg = rawMsg as Record<string, unknown>;
 
       if (!capturedSessionId) {
@@ -426,6 +447,9 @@ export async function* executeStreamSdk(
       retried: false,
     });
   } catch (err) {
+    if (options.signal?.aborted || config.shutdownSignal?.aborted) {
+      throw err;
+    }
 
     if (existingSession && config.sessionManager && config.clientKey) {
       config.sessionManager.invalidate(config.clientKey);
@@ -434,7 +458,7 @@ export async function* executeStreamSdk(
       capturedSessionId = null;
 
       try {
-        for await (const rawMsg of sdk.query(retryParams)) {
+        for await (const rawMsg of sdk.query(retryParams.query)) {
           const msg = rawMsg as Record<string, unknown>;
 
           if (!capturedSessionId) {
@@ -460,10 +484,14 @@ export async function* executeStreamSdk(
       } catch (retryErr) {
         yield { type: 'error', error: `Claude SDK execution failed after retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}` };
         yield { type: 'done' };
+      } finally {
+        retryParams.cleanup();
       }
     } else {
       yield { type: 'error', error: `Claude SDK execution failed: ${err instanceof Error ? err.message : String(err)}` };
       yield { type: 'done' };
     }
+  } finally {
+    queryParams.cleanup();
   }
 }

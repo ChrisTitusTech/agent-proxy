@@ -29,6 +29,7 @@ export class ClaudeProvider extends BaseProvider {
 
 
   private sessionManager: ClaudeSdkSessionManager | null = null;
+  private readonly shutdownController = new AbortController();
 
   constructor(config: ProviderConfigYaml) {
     super(config);
@@ -70,6 +71,7 @@ export class ClaudeProvider extends BaseProvider {
       cliPath: effective.cli_path,
       sessionManager: this.ensureSdkSessionManager(effective.sdk_options?.session_ttl_ms),
       clientKey,
+      shutdownSignal: this.shutdownController.signal,
     };
   }
 
@@ -255,5 +257,11 @@ export class ClaudeProvider extends BaseProvider {
       this.sessionManager.destroy();
       this.sessionManager = null;
     }
+  }
+
+  override async shutdown(): Promise<void> {
+    this.shutdownController.abort();
+    this.sessionManager?.destroy();
+    this.sessionManager = null;
   }
 }

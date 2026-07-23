@@ -17,14 +17,8 @@ concurrency:
 
 jobs:
   test:
-    name: Node.js ${{ matrix.node }}
+    name: Node.js 24
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node:
-          - 20
-          - 24
 
     steps:
       - name: Check out repository
@@ -33,7 +27,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -48,6 +42,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify Linux service restart and persistence
+        run: scripts/test-linux-service.sh
+
+      - name: Verify production release archive
+        run: scripts/test-release.sh
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
@@ -59,16 +59,33 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up production Node.js runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Expose the production Node.js path
+        run: |
+          if [[ ! -e /usr/bin/node ]]; then
+            sudo ln --symbolic "$(command -v node)" /usr/bin/node
+          fi
+
       - name: Install shell tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes shellcheck shfmt
 
-      - name: Validate start script
+      - name: Validate shell scripts and systemd packaging
         run: |
-          bash -n start.sh
-          shellcheck start.sh
-          shfmt -d start.sh
+          for script in start.sh scripts/*.sh; do
+            bash -n "$script"
+          done
+          shellcheck start.sh scripts/*.sh
+          shfmt -d start.sh scripts/*.sh
+          scripts/test-linux-install.sh
+          systemd-analyze verify packaging/systemd/agent-proxy.service
+          systemd-analyze security --offline=yes \
+            packaging/systemd/agent-proxy.service
 
   container:
     name: Container build

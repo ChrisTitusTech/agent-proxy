@@ -59,7 +59,7 @@ must be between 1 and 600 seconds, and redirects are rejected.
 ## Requirements
 
 - Linux
-- Node.js 20 or newer
+- Node.js 24 or newer
 - npm
 - At least one supported CLI installed and authenticated for the service user
 - A writable directory for SQLite data and logs
@@ -182,6 +182,10 @@ bash -n start.sh
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the complete contributor workflow
 and [SECURITY.md](./SECURITY.md) for private vulnerability reporting.
+
+Production systemd installation, upgrades, rollback, backup, restore, and
+uninstall are documented in the
+[Linux service operations runbook](./docs/linux-service.md).
 
 ## References
 

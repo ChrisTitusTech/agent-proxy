@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import type { AppConfig } from '@agent-proxy/shared';
 import { initDatabase } from './db/client.js';
@@ -20,11 +21,11 @@ import { registerResponsesRoute } from './routes/v1/responses.js';
 import { registerModelMappingsRoutes } from './routes/admin/model-mappings.js';
 import { registerApiKeysRoutes } from './routes/admin/api-keys.js';
 import { registerStatsRoutes } from './routes/admin/stats.js';
-import { registerProvidersRoutes, sanitizeRuntimeProviderConfig } from './routes/admin/providers.js';
+import { registerProvidersRoutes, loadEffectiveProviderConfigs } from './routes/admin/providers.js';
 import { registerChannelBridgeRoutes, maybeAutoStartBridge } from './routes/admin/channel-bridge.js';
+import { channelBridgeManager } from './channel-bridge/manager.js';
 import { registerTestModelRoute } from './routes/admin/test-model.js';
 import { registerRateLimitsRoutes, loadRateLimitsFromDb } from './routes/admin/rate-limits.js';
-import { loadProviderConfigFromDb } from './routes/admin/providers.js';
 import { registerDashboardRoute } from './routes/admin/dashboard.js';
 import { ActiveRequestTracker } from './services/active-requests.js';
 import { ResponseCache } from './services/cache.js';
@@ -39,15 +40,32 @@ import { loadHttpProviders } from './providers/http-provider-loader.js';
 import { seedDatabase } from './db/seed.js';
 import type { ValidationConfig } from '@agent-proxy/shared';
 
-export async function createApp(config: AppConfig) {
+export type AgentProxyApp = FastifyInstance & {
+  stopProviderProcesses: () => Promise<void>;
+};
+
+export interface CreateAppOptions {
+  databaseInitialized?: boolean;
+}
+
+export async function createApp(
+  config: AppConfig,
+  options: CreateAppOptions = {},
+): Promise<AgentProxyApp> {
 
   if (!config.auth.adminToken) {
     throw new Error('ADMIN_TOKEN must be set. Set it in .env or config.yaml.');
   }
 
 
-  await initDatabase(config.database.path);
+  if (!options.databaseInitialized) {
+    await initDatabase(config.database.path);
+  }
 
+  config = {
+    ...config,
+    providers: await loadEffectiveProviderConfigs(config.providers),
+  };
 
   await seedDatabase(config);
 
@@ -90,20 +108,6 @@ export async function createApp(config: AppConfig) {
     info: (msg) => console.log(msg),
     warn: (msg) => console.warn(msg),
   });
-
-
-  for (const provider of registry.getAll()) {
-    const override = await loadProviderConfigFromDb(provider.name);
-    if (override) {
-      const sanitizedOverride = sanitizeRuntimeProviderConfig(provider.name, override);
-      if (Object.keys(sanitizedOverride).length === 0) continue;
-
-      registry.updateProviderConfig(provider.name, sanitizedOverride);
-      if (sanitizedOverride.max_concurrent !== undefined) {
-        queueManager.updateConcurrency(provider.name, sanitizedOverride.max_concurrent);
-      }
-    }
-  }
 
 
   const app = Fastify({
@@ -257,7 +261,6 @@ export async function createApp(config: AppConfig) {
   });
   registerChannelBridgeRoutes(app, { defaultConfigs: config.providers });
 
-  void maybeAutoStartBridge({ defaultConfigs: config.providers });
   registerTestModelRoute(app, registry);
   registerRateLimitsRoutes(app, rateLimiter, config.rateLimits);
   registerDebugRoutes(app, debug);
@@ -302,11 +305,25 @@ export async function createApp(config: AppConfig) {
   }, 5 * 60 * 1000);
 
 
+  let providerStopPromise: Promise<void> | null = null;
+  const stopProviderProcesses = (): Promise<void> => {
+    providerStopPromise ??= Promise.all([
+      registry.shutdownAll(),
+      channelBridgeManager.stop(),
+    ]).then(() => undefined);
+    return providerStopPromise;
+  };
+  const lifecycleApp = app as unknown as AgentProxyApp;
+  lifecycleApp.stopProviderProcesses = stopProviderProcesses;
+
   app.addHook('onClose', async () => {
     healthChecker.stop();
     await rateLimiter.destroy();
     clearInterval(cacheCleanupTimer);
+    await stopProviderProcesses();
   });
 
-  return app;
+  await maybeAutoStartBridge({ defaultConfigs: config.providers });
+
+  return lifecycleApp;
 }
