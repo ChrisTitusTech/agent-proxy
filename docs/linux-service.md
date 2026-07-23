@@ -7,7 +7,7 @@ under `/opt`, operator configuration under `/etc`, persistent state under
 ## Prerequisites
 
 - A current systemd-based Linux distribution.
-- Node.js 20 or newer.
+- Node.js 24 or newer.
 - `npm`, `tar`, `curl`, `openssl`, `sudo`, and standard account-management
   tools.
 - At least one supported CLI installed and authenticated for the

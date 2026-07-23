@@ -8,7 +8,7 @@ and aligned with [SPEC.md](./SPEC.md) and [ROADMAP.md](./ROADMAP.md).
 Requirements:
 
 - Linux
-- Node.js 20 or newer
+- Node.js 24 or newer
 - npm
 - Optional authenticated provider CLIs for live integration tests
 

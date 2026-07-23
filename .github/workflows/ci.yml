@@ -17,14 +17,8 @@ concurrency:
 
 jobs:
   test:
-    name: Node.js ${{ matrix.node }}
+    name: Node.js 24
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node:
-          - 20
-          - 24
 
     steps:
       - name: Check out repository
@@ -33,7 +27,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -49,11 +43,9 @@ jobs:
         run: npm run build
 
       - name: Verify Linux service restart and persistence
-        if: matrix.node == 20
         run: scripts/test-linux-service.sh
 
       - name: Verify production release archive
-        if: matrix.node == 20
         run: scripts/test-release.sh
 
       - name: Audit production dependencies
@@ -70,7 +62,7 @@ jobs:
       - name: Set up production Node.js runtime
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Expose the production Node.js path
         run: |

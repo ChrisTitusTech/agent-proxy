@@ -128,13 +128,13 @@ ensure_runtime() {
 		return
 	fi
 	if [[ ! -x /usr/bin/node ]]; then
-		printf 'Node.js 20 or newer must be installed at /usr/bin/node.\n' >&2
+		printf 'Node.js 24 or newer must be installed at /usr/bin/node.\n' >&2
 		exit 1
 	fi
 	local node_major
 	node_major=$(/usr/bin/node -p 'Number(process.versions.node.split(".")[0])')
-	if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 20)); then
-		printf 'Node.js 20 or newer is required; /usr/bin/node reports major version %s.\n' "$node_major" >&2
+	if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 24)); then
+		printf 'Node.js 24 or newer is required; /usr/bin/node reports major version %s.\n' "$node_major" >&2
 		exit 1
 	fi
 }
