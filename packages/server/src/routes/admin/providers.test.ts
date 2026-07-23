@@ -7,6 +7,7 @@ import { closeDatabase, getDatabase, initDatabase } from '../../db/client.js';
 import { settings } from '../../db/schema.js';
 import {
   loadEffectiveProviderConfigs,
+  mergeProviderConfigPartials,
   validateRuntimeProviderConfig,
 } from './providers.js';
 
@@ -75,5 +76,24 @@ describe('loadEffectiveProviderConfigs', () => {
       { enabled: 'yes' },
       true,
     )).toThrow(/Invalid provider configuration/);
+  });
+
+  it('rejects unknown nested fields and preserves nested siblings', () => {
+    expect(() => validateRuntimeProviderConfig(
+      'codex',
+      { cli_options: { ephemeral: false, unknown_option: true } },
+      true,
+    )).toThrow(/Invalid provider configuration/);
+
+    expect(mergeProviderConfigPartials(
+      { cli_options: { ephemeral: true, session_ttl_ms: 30_000 } },
+      { cli_options: { enable_session_reuse: true } },
+    )).toEqual({
+      cli_options: {
+        ephemeral: true,
+        enable_session_reuse: true,
+        session_ttl_ms: 30_000,
+      },
+    });
   });
 });

@@ -110,7 +110,7 @@ export class ChannelBridgeManager {
     this.launchCommand = label;
 
     const env: NodeJS.ProcessEnv = {
-      ...getProviderEnvironment(),
+      ...getProviderEnvironment('claude'),
       BRIDGE_PORT: String(port),
       BRIDGE_HOST: host,
       BRIDGE_CLI_PATH: opts.cliPath,

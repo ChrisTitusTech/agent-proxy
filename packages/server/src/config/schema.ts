@@ -59,7 +59,7 @@ const sdkOptionsSchema = z.object({
   session_ttl_ms: opt(positiveInt),
   enable_session_reuse: opt(z.boolean()),
   persist_session: opt(z.boolean()),
-});
+}).strict();
 
 const channelOptionsSchema = z.object({
   endpoint_url: opt(z.string()),
@@ -72,7 +72,7 @@ const channelOptionsSchema = z.object({
   auto_start: opt(z.boolean()),
   bridge_port: opt(positiveInt),
   bridge_command: opt(z.string()),
-});
+}).strict();
 
 const appServerOptionsSchema = z.object({
   transport: opt(z.enum(['stdio', 'websocket'])),
@@ -82,13 +82,13 @@ const appServerOptionsSchema = z.object({
   max_turns: opt(positiveInt),
   auto_restart: opt(z.boolean()),
   max_restart_count: opt(positiveInt),
-});
+}).strict();
 
 const cliOptionsSchema = z.object({
   ephemeral: opt(z.boolean()),
   enable_session_reuse: opt(z.boolean()),
   session_ttl_ms: opt(positiveInt),
-});
+}).strict();
 
 export const providerSchema = z.object({
   enabled: opt(z.boolean()),
@@ -103,7 +103,7 @@ export const providerSchema = z.object({
   channel_options: opt(channelOptionsSchema),
   app_server_options: opt(appServerOptionsSchema),
   cli_options: opt(cliOptionsSchema),
-});
+}).strict();
 
 const rateLimitsSchema = z.object({
   global: opt(

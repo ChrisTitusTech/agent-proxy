@@ -116,25 +116,35 @@ export async function loadEffectiveProviderConfigs(
   for (const [name, defaultConfig] of Object.entries(defaultConfigs)) {
     const override = await loadProviderConfigFromDb(name);
     const sanitizedOverride = override ?? {};
-    effectiveConfigs[name] = {
-      ...defaultConfig,
-      ...sanitizedOverride,
-      sdk_options: sanitizedOverride.sdk_options
-        ? { ...defaultConfig.sdk_options, ...sanitizedOverride.sdk_options }
-        : defaultConfig.sdk_options,
-      channel_options: sanitizedOverride.channel_options
-        ? { ...defaultConfig.channel_options, ...sanitizedOverride.channel_options }
-        : defaultConfig.channel_options,
-      app_server_options: sanitizedOverride.app_server_options
-        ? { ...defaultConfig.app_server_options, ...sanitizedOverride.app_server_options }
-        : defaultConfig.app_server_options,
-      cli_options: sanitizedOverride.cli_options
-        ? { ...defaultConfig.cli_options, ...sanitizedOverride.cli_options }
-        : defaultConfig.cli_options,
-    };
+    effectiveConfigs[name] = mergeProviderConfigPartials(
+      defaultConfig,
+      sanitizedOverride,
+    ) as ProviderConfigYaml;
   }
 
   return effectiveConfigs;
+}
+
+export function mergeProviderConfigPartials(
+  current: Partial<ProviderConfigYaml>,
+  partial: Partial<ProviderConfigYaml>,
+): Partial<ProviderConfigYaml> {
+  return {
+    ...current,
+    ...partial,
+    sdk_options: partial.sdk_options
+      ? { ...current.sdk_options, ...partial.sdk_options }
+      : current.sdk_options,
+    channel_options: partial.channel_options
+      ? { ...current.channel_options, ...partial.channel_options }
+      : current.channel_options,
+    app_server_options: partial.app_server_options
+      ? { ...current.app_server_options, ...partial.app_server_options }
+      : current.app_server_options,
+    cli_options: partial.cli_options
+      ? { ...current.cli_options, ...partial.cli_options }
+      : current.cli_options,
+  };
 }
 
 
@@ -236,7 +246,7 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
 
 
       const existingOverride = await loadProviderConfigFromDb(name);
-      const merged = { ...existingOverride, ...partial };
+      const merged = mergeProviderConfigPartials(existingOverride ?? {}, partial);
       await saveProviderConfigToDb(name, merged);
 
 

@@ -80,7 +80,7 @@ function sanitizeInteractiveArgs(args: string[]): { kept: string[]; dropped: str
 }
 
 function cleanClaudeEnv(): NodeJS.ProcessEnv {
-  return getProviderEnvironment();
+  return getProviderEnvironment('claude');
 }
 
 export async function runClaudeJob(

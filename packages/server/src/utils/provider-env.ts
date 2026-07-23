@@ -1,16 +1,7 @@
 const ALLOWED_PROVIDER_ENVIRONMENT_KEYS = new Set([
   'ALL_PROXY',
-  'ANTHROPIC_API_KEY',
-  'CLAUDE_CONFIG_DIR',
-  'CLOUDSDK_CONFIG',
-  'CODEX_HOME',
   'COLORTERM',
   'FORCE_COLOR',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'GOOGLE_CLOUD_PROJECT',
-  'GROK_API_KEY',
   'HOME',
   'HTTPS_PROXY',
   'HTTP_PROXY',
@@ -22,7 +13,6 @@ const ALLOWED_PROVIDER_ENVIRONMENT_KEYS = new Set([
   'NODE_EXTRA_CA_CERTS',
   'NO_COLOR',
   'NO_PROXY',
-  'OPENAI_API_KEY',
   'PATH',
   'SHELL',
   'SSL_CERT_DIR',
@@ -33,7 +23,6 @@ const ALLOWED_PROVIDER_ENVIRONMENT_KEYS = new Set([
   'TMPDIR',
   'TZ',
   'USER',
-  'XAI_API_KEY',
   'XDG_CACHE_HOME',
   'XDG_CONFIG_HOME',
   'XDG_DATA_HOME',
@@ -45,12 +34,39 @@ const ALLOWED_PROVIDER_ENVIRONMENT_KEYS = new Set([
   'no_proxy',
 ]);
 
+const PROVIDER_ENVIRONMENT_KEYS: Record<string, ReadonlySet<string>> = {
+  claude: new Set([
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CONFIG_DIR',
+  ]),
+  codex: new Set([
+    'CODEX_HOME',
+    'OPENAI_API_KEY',
+  ]),
+  agy: new Set([
+    'CLOUDSDK_CONFIG',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'GOOGLE_CLOUD_PROJECT',
+  ]),
+  grok: new Set([
+    'GROK_API_KEY',
+    'XAI_API_KEY',
+  ]),
+};
+
 export function getProviderEnvironment(
+  provider: string,
   source: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
+  const providerKeys = PROVIDER_ENVIRONMENT_KEYS[provider] ?? new Set<string>();
   for (const [key, value] of Object.entries(source)) {
-    if (ALLOWED_PROVIDER_ENVIRONMENT_KEYS.has(key)) {
+    if (
+      ALLOWED_PROVIDER_ENVIRONMENT_KEYS.has(key) ||
+      providerKeys.has(key)
+    ) {
       environment[key] = value;
     }
   }

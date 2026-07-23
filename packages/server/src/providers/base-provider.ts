@@ -182,7 +182,7 @@ export abstract class BaseProvider {
 
 
   protected getCleanEnv(): Record<string, string | undefined> {
-    return getProviderEnvironment();
+    return getProviderEnvironment(this.name);
   }
 
   protected get workingDir(): string {
