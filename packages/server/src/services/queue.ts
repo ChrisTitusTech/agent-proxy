@@ -27,7 +27,6 @@ export class QueueManager {
 
     return queue.add(fn, {
       timeout: timeoutMs,
-      throwOnTimeout: true,
     }) as Promise<T>;
   }
 
