@@ -13,7 +13,7 @@
     "@agent-proxy/shared": "*",
     "@anthropic-ai/claude-agent-sdk": "^0.2.85",
     "@fastify/cors": "^11.0.0",
-    "@libsql/client": "^0.17.2",
+    "@libsql/client": "^0.17.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.5.0",
     "drizzle-orm": "^0.45.2",
