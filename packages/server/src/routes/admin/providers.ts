@@ -8,6 +8,7 @@ import type { HealthChecker } from '../../services/health-checker.js';
 import type { QueueManager } from '../../services/queue.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import { readCodexCliDefaults } from '../../providers/codex-toml-defaults.js';
+import { providerSchema } from '../../config/schema.js';
 
 interface ProviderDeps {
   registry: ProviderRegistry;
@@ -60,6 +61,33 @@ export function sanitizeRuntimeProviderConfig(
   return sanitized;
 }
 
+export function validateRuntimeProviderConfig(
+  name: string,
+  value: unknown,
+  strict = false,
+): Partial<ProviderConfigYaml> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (strict) {
+      throw new Error(`Invalid provider configuration for "${name}": expected an object.`);
+    }
+    return {};
+  }
+
+  const sanitized = sanitizeRuntimeProviderConfig(
+    name,
+    value as Partial<ProviderConfigYaml>,
+    strict,
+  );
+  const parsed = providerSchema.safeParse(sanitized);
+  if (!parsed.success) {
+    if (strict) {
+      throw new Error(`Invalid provider configuration for "${name}": ${parsed.error.message}`);
+    }
+    return {};
+  }
+  return parsed.data as Partial<ProviderConfigYaml>;
+}
+
 
 export async function loadProviderConfigFromDb(
   name: string,
@@ -74,10 +102,39 @@ export async function loadProviderConfigFromDb(
 
   if (rows.length === 0) return null;
   try {
-    return JSON.parse(rows[0].value) as Partial<ProviderConfigYaml>;
+    return validateRuntimeProviderConfig(name, JSON.parse(rows[0].value));
   } catch {
     return null;
   }
+}
+
+export async function loadEffectiveProviderConfigs(
+  defaultConfigs: Record<string, ProviderConfigYaml>,
+): Promise<Record<string, ProviderConfigYaml>> {
+  const effectiveConfigs: Record<string, ProviderConfigYaml> = {};
+
+  for (const [name, defaultConfig] of Object.entries(defaultConfigs)) {
+    const override = await loadProviderConfigFromDb(name);
+    const sanitizedOverride = override ?? {};
+    effectiveConfigs[name] = {
+      ...defaultConfig,
+      ...sanitizedOverride,
+      sdk_options: sanitizedOverride.sdk_options
+        ? { ...defaultConfig.sdk_options, ...sanitizedOverride.sdk_options }
+        : defaultConfig.sdk_options,
+      channel_options: sanitizedOverride.channel_options
+        ? { ...defaultConfig.channel_options, ...sanitizedOverride.channel_options }
+        : defaultConfig.channel_options,
+      app_server_options: sanitizedOverride.app_server_options
+        ? { ...defaultConfig.app_server_options, ...sanitizedOverride.app_server_options }
+        : defaultConfig.app_server_options,
+      cli_options: sanitizedOverride.cli_options
+        ? { ...defaultConfig.cli_options, ...sanitizedOverride.cli_options }
+        : defaultConfig.cli_options,
+    };
+  }
+
+  return effectiveConfigs;
 }
 
 
@@ -160,7 +217,7 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
 
       let partial: Partial<ProviderConfigYaml>;
       try {
-        partial = sanitizeRuntimeProviderConfig(name, request.body, true);
+        partial = validateRuntimeProviderConfig(name, request.body, true);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return reply.status(400).send({ error: { message } });

@@ -5,9 +5,10 @@ import { config as dotenvConfig } from 'dotenv';
 import { loadConfig } from './config/loader.js';
 import { runPreflightChecks } from './config/preflight.js';
 import { createApp } from './app.js';
-import { closeDatabase } from './db/client.js';
+import { closeDatabase, initDatabase } from './db/client.js';
 import { killAllChildProcesses } from './providers/base-provider.js';
 import { shutdownServer } from './services/shutdown.js';
+import { loadEffectiveProviderConfigs } from './routes/admin/providers.js';
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +28,12 @@ function shutdownTimeoutMs(): number {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const configPath = process.env.CONFIG_PATH ?? resolve(PROJECT_ROOT, 'config.yaml');
-  const config = loadConfig(configPath);
+  let config = loadConfig(configPath);
+  await initDatabase(config.database.path);
+  config = {
+    ...config,
+    providers: await loadEffectiveProviderConfigs(config.providers),
+  };
   const preflight = runPreflightChecks(config, { configPath });
   const drainTimeoutMs = shutdownTimeoutMs();
 
@@ -36,10 +42,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     console.log(
       `Preflight passed. State directory: ${preflight.stateDirectory}. Enabled providers: ${enabledProviders.join(', ') || 'none'}.`,
     );
+    closeDatabase();
     return;
   }
 
-  const app = await createApp(config);
+  const app = await createApp(config, { databaseInitialized: true });
 
   try {
     await app.listen({

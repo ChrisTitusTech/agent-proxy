@@ -75,6 +75,7 @@ fi
 [[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
 [[ $(<"$ROOT_DIR/opt/agent-proxy/previous/VERSION") == 1.0.0-test2 ]]
 [[ ! -e "$ROOT_DIR/opt/agent-proxy/releases/1.0.0-test3" ]]
+grep -q '# release 1.0.0-test1' "$ROOT_DIR/etc/systemd/system/agent-proxy.service"
 
 run_installer backup >/dev/null
 run_installer uninstall

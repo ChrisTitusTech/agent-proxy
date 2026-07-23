@@ -86,6 +86,9 @@ INSTALL_HAD_CURRENT=false
 INSTALL_HAD_PREVIOUS=false
 INSTALL_OLD_CURRENT_TARGET=
 INSTALL_OLD_PREVIOUS_TARGET=
+INSTALL_UNIT_MODIFIED=false
+INSTALL_HAD_UNIT=false
+INSTALL_OLD_UNIT_PATH=
 
 cleanup_partial_install() {
 	set +e
@@ -99,6 +102,13 @@ cleanup_partial_install() {
 			ln -sfn "$INSTALL_OLD_PREVIOUS_TARGET" "$OPT_DIR/previous"
 		else
 			rm -f "$OPT_DIR/previous"
+		fi
+	fi
+	if [[ "$INSTALL_UNIT_MODIFIED" == true ]]; then
+		if [[ "$INSTALL_HAD_UNIT" == true ]]; then
+			install -D -m 0644 "$INSTALL_OLD_UNIT_PATH" "$UNIT_PATH"
+		else
+			rm -f "$UNIT_PATH"
 		fi
 	fi
 	if [[ -n "$INSTALL_EXTRACT_DIR" ]]; then
@@ -300,6 +310,12 @@ install_release() {
 		install -m 0640 "$release_dir/packaging/systemd/config.example.yaml" "$ETC_DIR/config.yaml"
 	[[ -f "$ETC_DIR/agent-proxy.env" ]] ||
 		install -m 0600 "$release_dir/packaging/systemd/agent-proxy.env" "$ETC_DIR/agent-proxy.env"
+	INSTALL_OLD_UNIT_PATH="$extract_dir/previous-agent-proxy.service"
+	if [[ -f "$UNIT_PATH" ]]; then
+		cp -a "$UNIT_PATH" "$INSTALL_OLD_UNIT_PATH"
+		INSTALL_HAD_UNIT=true
+	fi
+	INSTALL_UNIT_MODIFIED=true
 	install -D -m 0644 "$release_dir/packaging/systemd/agent-proxy.service" "$UNIT_PATH"
 
 	if [[ "$DESTDIR" == / ]]; then
@@ -332,6 +348,7 @@ install_release() {
 	INSTALL_RELEASE_DIR=
 	INSTALL_RESTORE_SERVICE=false
 	INSTALL_ACTIVATION_STARTED=false
+	INSTALL_UNIT_MODIFIED=false
 	trap - EXIT
 	rm -rf "$extract_dir"
 	printf 'Activated agent-proxy release %s\n' "$release_id"

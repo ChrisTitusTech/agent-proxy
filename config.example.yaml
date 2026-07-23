@@ -21,8 +21,9 @@ auth:
       key: "${PROXY_API_KEY}"
 
 providers:
+  # Enable only the CLI providers installed and authenticated on this host.
   claude:
-    enabled: true
+    enabled: false
     cli_path: "claude"
     default_model: "claude-sonnet-4-6"
     max_concurrent: 4
@@ -40,9 +41,9 @@ providers:
     #   persist_session: false
 
   codex:
-    enabled: true
+    enabled: false
     cli_path: "codex"
-    default_model: "gpt-5.5"
+    default_model: "gpt-5.6-sol"
     max_concurrent: 4
     timeout_ms: 300000
     extra_args:
@@ -61,7 +62,7 @@ providers:
     #   auto_restart: true
 
   agy:
-    enabled: true
+    enabled: false
     cli_path: "agy"
     default_model: "antigravity"
     max_concurrent: 2
@@ -69,7 +70,7 @@ providers:
     extra_args: []
 
   grok:
-    enabled: true
+    enabled: false
     cli_path: "grok"
     default_model: "grok-4.5"
     # Start with one worker; some Grok CLI sessions can stall when launched concurrently.

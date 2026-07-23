@@ -21,12 +21,11 @@ import { registerResponsesRoute } from './routes/v1/responses.js';
 import { registerModelMappingsRoutes } from './routes/admin/model-mappings.js';
 import { registerApiKeysRoutes } from './routes/admin/api-keys.js';
 import { registerStatsRoutes } from './routes/admin/stats.js';
-import { registerProvidersRoutes, sanitizeRuntimeProviderConfig } from './routes/admin/providers.js';
+import { registerProvidersRoutes, loadEffectiveProviderConfigs } from './routes/admin/providers.js';
 import { registerChannelBridgeRoutes, maybeAutoStartBridge } from './routes/admin/channel-bridge.js';
 import { channelBridgeManager } from './channel-bridge/manager.js';
 import { registerTestModelRoute } from './routes/admin/test-model.js';
 import { registerRateLimitsRoutes, loadRateLimitsFromDb } from './routes/admin/rate-limits.js';
-import { loadProviderConfigFromDb } from './routes/admin/providers.js';
 import { registerDashboardRoute } from './routes/admin/dashboard.js';
 import { ActiveRequestTracker } from './services/active-requests.js';
 import { ResponseCache } from './services/cache.js';
@@ -45,15 +44,28 @@ export type AgentProxyApp = FastifyInstance & {
   stopProviderProcesses: () => Promise<void>;
 };
 
-export async function createApp(config: AppConfig): Promise<AgentProxyApp> {
+export interface CreateAppOptions {
+  databaseInitialized?: boolean;
+}
+
+export async function createApp(
+  config: AppConfig,
+  options: CreateAppOptions = {},
+): Promise<AgentProxyApp> {
 
   if (!config.auth.adminToken) {
     throw new Error('ADMIN_TOKEN must be set. Set it in .env or config.yaml.');
   }
 
 
-  await initDatabase(config.database.path);
+  if (!options.databaseInitialized) {
+    await initDatabase(config.database.path);
+  }
 
+  config = {
+    ...config,
+    providers: await loadEffectiveProviderConfigs(config.providers),
+  };
 
   await seedDatabase(config);
 
@@ -96,20 +108,6 @@ export async function createApp(config: AppConfig): Promise<AgentProxyApp> {
     info: (msg) => console.log(msg),
     warn: (msg) => console.warn(msg),
   });
-
-
-  for (const provider of registry.getAll()) {
-    const override = await loadProviderConfigFromDb(provider.name);
-    if (override) {
-      const sanitizedOverride = sanitizeRuntimeProviderConfig(provider.name, override);
-      if (Object.keys(sanitizedOverride).length === 0) continue;
-
-      registry.updateProviderConfig(provider.name, sanitizedOverride);
-      if (sanitizedOverride.max_concurrent !== undefined) {
-        queueManager.updateConcurrency(provider.name, sanitizedOverride.max_concurrent);
-      }
-    }
-  }
 
 
   const app = Fastify({
@@ -263,7 +261,6 @@ export async function createApp(config: AppConfig): Promise<AgentProxyApp> {
   });
   registerChannelBridgeRoutes(app, { defaultConfigs: config.providers });
 
-  void maybeAutoStartBridge({ defaultConfigs: config.providers });
   registerTestModelRoute(app, registry);
   registerRateLimitsRoutes(app, rateLimiter, config.rateLimits);
   registerDebugRoutes(app, debug);
@@ -325,6 +322,8 @@ export async function createApp(config: AppConfig): Promise<AgentProxyApp> {
     clearInterval(cacheCleanupTimer);
     await stopProviderProcesses();
   });
+
+  await maybeAutoStartBridge({ defaultConfigs: config.providers });
 
   return lifecycleApp;
 }

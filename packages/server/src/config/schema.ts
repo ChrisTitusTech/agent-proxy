@@ -90,7 +90,7 @@ const cliOptionsSchema = z.object({
   session_ttl_ms: opt(positiveInt),
 });
 
-const providerSchema = z.object({
+export const providerSchema = z.object({
   enabled: opt(z.boolean()),
   cli_path: opt(z.string()),
   default_model: opt(z.string()),
