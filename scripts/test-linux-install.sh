@@ -19,6 +19,8 @@ make_archive() {
 	printf '%s\n' "$release_id" >"$stage/agent-proxy/VERSION"
 	printf 'console.log("%s");\n' "$release_id" >"$stage/agent-proxy/packages/server/dist/index.js"
 	cp "$PROJECT_DIR/packaging/systemd/"* "$stage/agent-proxy/packaging/systemd/"
+	printf '# release %s\n' "$release_id" \
+		>>"$stage/agent-proxy/packaging/systemd/agent-proxy.service"
 	tar -C "$stage" -czf "$archive" agent-proxy
 	printf '%s' "$archive"
 }
@@ -41,6 +43,7 @@ printf 'persistent-state\n' >"$ROOT_DIR/var/lib/agent-proxy/agent-proxy.db"
 
 run_installer upgrade --archive "$ARCHIVE_V2"
 [[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test2 ]]
+grep -q '# release 1.0.0-test2' "$ROOT_DIR/etc/systemd/system/agent-proxy.service"
 grep -q 'operator-config' "$ROOT_DIR/etc/agent-proxy/config.yaml"
 grep -q 'persistent-state' "$ROOT_DIR/var/lib/agent-proxy/agent-proxy.db"
 compgen -G "$ROOT_DIR/var/backups/agent-proxy/*.tar.gz" >/dev/null
@@ -50,6 +53,7 @@ BACKUP_ARCHIVE=$(compgen -G "$ROOT_DIR/var/backups/agent-proxy/*.tar.gz" | head 
 
 run_installer rollback
 [[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
+grep -q '# release 1.0.0-test1' "$ROOT_DIR/etc/systemd/system/agent-proxy.service"
 
 chmod 0555 "$ROOT_DIR/opt/agent-proxy"
 if run_installer upgrade --archive "$ARCHIVE_V3" >/dev/null 2>&1; then

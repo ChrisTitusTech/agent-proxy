@@ -23,9 +23,8 @@
     "shell-quote": "^1.8.4"
   },
   "devDependencies": {
-    "typescript": "^5.8.3",
-    "vitest": "^3.2.1",
     "concurrently": "^9.1.2",
-    "pino-pretty": "^13.0.0"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.1"
   }
 }

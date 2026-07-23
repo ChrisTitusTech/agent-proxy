@@ -5,6 +5,7 @@ import { writeFileSync, mkdtempSync, rmSync, chmodSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getProviderEnvironment } from '../utils/provider-env.js';
 
 
 
@@ -79,14 +80,7 @@ function sanitizeInteractiveArgs(args: string[]): { kept: string[]; dropped: str
 }
 
 function cleanClaudeEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const k of [
-    'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
-    'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_ENABLE_TASKS', 'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
-  ]) {
-    delete env[k];
-  }
-  return env;
+  return getProviderEnvironment();
 }
 
 export async function runClaudeJob(

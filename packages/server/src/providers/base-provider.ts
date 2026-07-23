@@ -17,6 +17,7 @@ import type {
 } from '@agent-proxy/shared';
 import { streamChunkToEvents } from '@agent-proxy/shared';
 import { getParserForProvider } from '../utils/stream-transformer.js';
+import { getProviderEnvironment } from '../utils/provider-env.js';
 
 
 const activeProcesses = new Set<ChildProcess>();
@@ -181,14 +182,7 @@ export abstract class BaseProvider {
 
 
   protected getCleanEnv(): Record<string, string | undefined> {
-    const env = { ...process.env };
-    delete env.CLAUDECODE;
-    delete env.CLAUDE_CODE_ENTRYPOINT;
-    delete env.CLAUDE_CODE_SESSION_ACCESS_TOKEN;
-    delete env.CLAUDE_CODE_SSE_PORT;
-    delete env.CLAUDE_CODE_ENABLE_TASKS;
-    delete env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-    return env;
+    return getProviderEnvironment();
   }
 
   protected get workingDir(): string {

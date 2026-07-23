@@ -5,6 +5,7 @@ import {
   mkdirSync,
   statSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, resolve } from 'node:path';
 import type { AppConfig } from '@agent-proxy/shared';
 
@@ -18,9 +19,13 @@ export interface PreflightResult {
   stateDirectory: string;
 }
 
-function findExecutable(command: string, pathValue: string): string | null {
+function findExecutable(
+  command: string,
+  pathValue: string,
+  workingDirectory: string,
+): string | null {
   const candidates = command.includes('/')
-    ? [isAbsolute(command) ? command : resolve(command)]
+    ? [isAbsolute(command) ? command : resolve(workingDirectory, command)]
     : pathValue.split(delimiter).filter(Boolean).map((entry) => resolve(entry, command));
 
   for (const candidate of candidates) {
@@ -108,7 +113,11 @@ export function runPreflightChecks(
   const pathValue = options.path ?? process.env.PATH ?? '';
   for (const [name, provider] of Object.entries(config.providers)) {
     if (!provider.enabled) continue;
-    const executable = findExecutable(provider.cli_path, pathValue);
+    const executable = findExecutable(
+      provider.cli_path,
+      pathValue,
+      provider.working_dir ?? tmpdir(),
+    );
     if (!executable) {
       errors.push(
         `providers.${name}.cli_path is not an executable file or PATH command: ${provider.cli_path}`,

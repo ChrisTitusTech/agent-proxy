@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -65,6 +65,34 @@ describe('runPreflightChecks', () => {
 
     expect(result.executables.codex).toBe(join(tempDir, 'codex'));
     expect(result.stateDirectory).toBe(join(tempDir, 'state'));
+  });
+
+  it('resolves a relative CLI path from the provider working directory', () => {
+    const workingDirectory = join(tempDir, 'provider');
+    const executable = join(workingDirectory, 'cli');
+    mkdirSync(workingDirectory);
+    writeFileSync(executable, '#!/bin/sh\nexit 0\n', 'utf8');
+    chmodSync(executable, 0o700);
+    const appConfig = config({
+      providers: {
+        codex: {
+          enabled: true,
+          cli_path: './cli',
+          working_dir: workingDirectory,
+          default_model: 'test',
+          max_concurrent: 1,
+          timeout_ms: 30_000,
+          extra_args: [],
+        },
+      },
+    });
+
+    const result = runPreflightChecks(appConfig, {
+      configPath: join(tempDir, 'config.yaml'),
+      path: '',
+    });
+
+    expect(result.executables.codex).toBe(executable);
   });
 
   it('reports every actionable startup problem', () => {

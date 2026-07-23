@@ -373,9 +373,16 @@ rollback)
 		printf 'No previous release is available.\n' >&2
 		exit 1
 	}
-	service_stop
 	current_target=$(readlink "$OPT_DIR/current")
 	previous_target=$(readlink "$OPT_DIR/previous")
+	previous_unit="$previous_target/packaging/systemd/agent-proxy.service"
+	[[ -f "$previous_unit" ]] || {
+		printf 'Previous release does not contain a systemd unit: %s\n' \
+			"$previous_target" >&2
+		exit 1
+	}
+	service_stop
+	install -D -m 0644 "$previous_unit" "$UNIT_PATH"
 	ln -sfn "$previous_target" "$OPT_DIR/current"
 	ln -sfn "$current_target" "$OPT_DIR/previous"
 	service_start

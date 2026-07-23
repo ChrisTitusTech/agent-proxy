@@ -5,7 +5,40 @@ set -euo pipefail
 
 PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TEST_DIR=$(mktemp -d)
-trap 'rm -rf "$TEST_DIR"' EXIT
+SERVER_PID=
+
+stop_server() {
+	if [[ -z "$SERVER_PID" ]]; then
+		return
+	fi
+	if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+		wait "$SERVER_PID" 2>/dev/null || true
+		SERVER_PID=
+		return
+	fi
+
+	kill -TERM "$SERVER_PID" 2>/dev/null || true
+	for _ in {1..50}; do
+		if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+			wait "$SERVER_PID" 2>/dev/null || true
+			SERVER_PID=
+			return
+		fi
+		sleep 0.1
+	done
+
+	cat "$TEST_DIR/release-server.log" >&2
+	kill -KILL "$SERVER_PID" 2>/dev/null || true
+	wait "$SERVER_PID" 2>/dev/null || true
+	SERVER_PID=
+	return 1
+}
+
+cleanup() {
+	stop_server || true
+	rm -rf "$TEST_DIR"
+}
+trap cleanup EXIT
 cd "$PROJECT_DIR"
 
 ARCHIVE=$(scripts/build-release.sh --skip-build --output "$TEST_DIR" | tail -1)
@@ -38,5 +71,48 @@ PREFLIGHT_OUTPUT=$(
 )
 grep -q 'Preflight passed' <<<"$PREFLIGHT_OUTPUT"
 grep -q 'Enabled providers: none' <<<"$PREFLIGHT_OUTPUT"
+
+start_release_server() {
+	for _ in {1..5}; do
+		AGENT_PROXY_PORT=$(node -e '
+const net = require("net");
+const server = net.createServer();
+server.listen(0, "127.0.0.1", () => {
+  console.log(server.address().port);
+  server.close();
+});
+')
+		export AGENT_PROXY_PORT
+		node "$TEST_DIR/root/opt/agent-proxy/current/packages/server/dist/index.js" \
+			>"$TEST_DIR/release-server.log" 2>&1 &
+		SERVER_PID=$!
+		for _ in {1..100}; do
+			if curl --silent --fail \
+				"http://127.0.0.1:$AGENT_PROXY_PORT/health" >/dev/null; then
+				return
+			fi
+			if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+				wait "$SERVER_PID" 2>/dev/null || true
+				SERVER_PID=
+				break
+			fi
+			sleep 0.1
+		done
+		if [[ -n "$SERVER_PID" ]]; then
+			cat "$TEST_DIR/release-server.log" >&2
+			stop_server || true
+			printf 'Installed production server did not become healthy.\n' >&2
+			return 1
+		fi
+	done
+
+	cat "$TEST_DIR/release-server.log" >&2
+	printf 'Installed production server could not bind a test port.\n' >&2
+	return 1
+}
+
+start_release_server
+curl --silent --fail "http://127.0.0.1:$AGENT_PROXY_PORT/health" >/dev/null
+stop_server
 
 printf 'Production release archive passed.\n'
