@@ -124,9 +124,6 @@ function buildCurlCommand(httpRequestJson: string): string {
       body: unknown;
     };
 
-    if (isWindows) {
-      return buildCurlWindows(req);
-    }
     return buildCurlUnix(req);
   } catch {
     return httpRequestJson;
@@ -140,7 +137,7 @@ interface HttpReqInfo {
   body: unknown;
 }
 
-// macOS/Linux: curl -X POST 'url' -H 'header' -d 'body'
+// Linux: curl -X POST 'url' -H 'header' -d 'body'
 function buildCurlUnix(req: HttpReqInfo): string {
   const parts: string[] = ['curl'];
 
@@ -161,30 +158,6 @@ function buildCurlUnix(req: HttpReqInfo): string {
 
   return parts.join(' \\\n  ');
 }
-
-// Windows PowerShell: curl.exe -X POST "url" -H "header" -d "body"
-function buildCurlWindows(req: HttpReqInfo): string {
-  const parts: string[] = ['curl.exe'];
-
-  if (req.method !== 'GET') {
-    parts.push(`-X ${req.method}`);
-  }
-
-  parts.push(`"${req.url}"`);
-
-  for (const [key, value] of Object.entries(req.headers)) {
-    parts.push(`-H "${key}: ${value}"`);
-  }
-
-  if (req.body) {
-    const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-    const escaped = bodyStr.replace(/"/g, '\\"');
-    parts.push(`-d "${escaped}"`);
-  }
-
-  return parts.join(' `\n  ');
-}
-
 
 function formatLatency(ms: number | null): string {
   if (ms === null || ms === undefined) return '-';
