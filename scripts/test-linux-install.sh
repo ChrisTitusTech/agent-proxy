@@ -55,12 +55,23 @@ run_installer rollback
 [[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
 grep -q '# release 1.0.0-test1' "$ROOT_DIR/etc/systemd/system/agent-proxy.service"
 
-chmod 0555 "$ROOT_DIR/opt/agent-proxy"
-if run_installer upgrade --archive "$ARCHIVE_V3" >/dev/null 2>&1; then
-	printf 'Installer activated a release without a writable link directory.\n' >&2
+FAIL_CURRENT_BIN="$TEST_DIR/fail-current-bin"
+mkdir -p "$FAIL_CURRENT_BIN"
+cat >"$FAIL_CURRENT_BIN/ln" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+last_argument=${!#}
+if [[ "$last_argument" == */opt/agent-proxy/current ]]; then
+	exit 73
+fi
+exec /usr/bin/ln "$@"
+EOF
+chmod 0700 "$FAIL_CURRENT_BIN/ln"
+if PATH="$FAIL_CURRENT_BIN:$PATH" \
+	run_installer upgrade --archive "$ARCHIVE_V3" >/dev/null 2>&1; then
+	printf 'Installer activated a release after current-link failure.\n' >&2
 	exit 1
 fi
-chmod 0755 "$ROOT_DIR/opt/agent-proxy"
 [[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
 [[ $(<"$ROOT_DIR/opt/agent-proxy/previous/VERSION") == 1.0.0-test2 ]]
 [[ ! -e "$ROOT_DIR/opt/agent-proxy/releases/1.0.0-test3" ]]
