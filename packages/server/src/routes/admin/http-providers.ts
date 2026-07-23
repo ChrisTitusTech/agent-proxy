@@ -8,6 +8,13 @@ import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { HealthChecker } from '../../services/health-checker.js';
 import type { QueueManager } from '../../services/queue.js';
 import { HttpProvider } from '../../providers/http-provider.js';
+import {
+  clampHttpTimeoutMs,
+  parseOutboundUrl,
+  safeOutboundFetch,
+  stripTrailingSlashes,
+  validateHttpTimeoutMs,
+} from '../../utils/outbound-http.js';
 
 
 const HTTP_PROVIDER_PREFIX = 'http_provider:';
@@ -22,13 +29,10 @@ const PROVIDER_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 function validateBaseUrl(url: string): string | null {
   try {
-    const parsed = new URL(url);
-    if (!['http:', 'https:'].includes(parsed.protocol)) {
-      return 'Only http:// and https:// protocols are allowed.';
-    }
+    parseOutboundUrl(url);
     return null;
-  } catch {
-    return `Invalid URL: "${url}".`;
+  } catch (error) {
+    return error instanceof Error ? error.message : `Invalid URL: "${url}".`;
   }
 }
 
@@ -105,15 +109,16 @@ async function probeEndpoint(
   body: unknown,
   headers: Record<string, string>,
   timeoutMs: number,
+  allowPrivateNetwork: boolean,
   isOk: (json: unknown) => boolean,
 ): Promise<ProbeOutcome> {
   try {
-    const res = await fetch(url, {
+    const res = await safeOutboundFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+      signal: AbortSignal.timeout(clampHttpTimeoutMs(timeoutMs, 10_000)),
+    }, allowPrivateNetwork);
     let json: unknown = null;
     try {
       json = await res.json();
@@ -132,8 +137,9 @@ async function detectEndpointType(
   apiKey: string | undefined,
   customHeaders: Record<string, string> | undefined,
   timeoutMs: number,
+  allowPrivateNetwork: boolean,
 ): Promise<{ detected: EndpointType | null; source: 'probe' | 'heuristic' | 'none'; results: ProbeOutcome[] }> {
-  const base = baseUrl.replace(/\/+$/, '');
+  const base = stripTrailingSlashes(baseUrl);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(customHeaders ?? {}),
@@ -145,19 +151,19 @@ async function detectEndpointType(
   const obj = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null ? v as Record<string, unknown> : {});
 
   const results = await Promise.all([
-    probeEndpoint('embeddings', `${base}/embeddings`, { model: m, input: 'ping' }, headers, timeoutMs, (j) => {
+    probeEndpoint('embeddings', `${base}/embeddings`, { model: m, input: 'ping' }, headers, timeoutMs, allowPrivateNetwork, (j) => {
       const data = obj(j).data;
       if (Array.isArray(data) && data.length > 0 && (obj(data[0]).embedding !== undefined)) return true;
 
       return Array.isArray(j) && Array.isArray((j as unknown[])[0]);
     }),
 
-    probeEndpoint('rerank', `${base}/rerank`, { model: m, query: 'ping', documents: ['a', 'b'], texts: ['a', 'b'], top_n: 2 }, headers, timeoutMs, (j) => {
+    probeEndpoint('rerank', `${base}/rerank`, { model: m, query: 'ping', documents: ['a', 'b'], texts: ['a', 'b'], top_n: 2 }, headers, timeoutMs, allowPrivateNetwork, (j) => {
       if (Array.isArray(obj(j).results) || Array.isArray(obj(j).data)) return true;
 
       return Array.isArray(j) && obj((j as unknown[])[0]).score !== undefined;
     }),
-    probeEndpoint('chat', `${base}/chat/completions`, { model: m, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }, headers, timeoutMs, (j) => {
+    probeEndpoint('chat', `${base}/chat/completions`, { model: m, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }, headers, timeoutMs, allowPrivateNetwork, (j) => {
       return Array.isArray(obj(j).choices);
     }),
   ]);
@@ -255,10 +261,17 @@ export function registerHttpProviderRoutes(
       if (urlError) {
         return reply.status(400).send({ error: { message: urlError } });
       }
+      if (configData.timeout_ms !== undefined) {
+        const timeoutError = validateHttpTimeoutMs(configData.timeout_ms);
+        if (timeoutError) {
+          return reply.status(400).send({ error: { message: timeoutError } });
+        }
+      }
 
       const config: HttpProviderConfig = {
         enabled: configData.enabled ?? true,
         base_url: configData.base_url,
+        allow_private_network: configData.allow_private_network === true,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 5,
         timeout_ms: configData.timeout_ms ?? 300000,
@@ -305,13 +318,19 @@ export function registerHttpProviderRoutes(
           return reply.status(400).send({ error: { message: urlError } });
         }
       }
+      if (partial.timeout_ms !== undefined) {
+        const timeoutError = validateHttpTimeoutMs(partial.timeout_ms);
+        if (timeoutError) {
+          return reply.status(400).send({ error: { message: timeoutError } });
+        }
+      }
 
       const updated: HttpProviderConfig = { ...existing, ...partial };
       await saveHttpProviderToDb(name, updated);
 
 
       const structuralFields: Array<keyof HttpProviderConfig> = [
-        'base_url', 'api_key', 'custom_headers',
+        'base_url', 'allow_private_network', 'api_key', 'custom_headers',
       ];
       const hasStructuralChange = structuralFields.some(
         (field) => partial[field] !== undefined,
@@ -385,10 +404,17 @@ export function registerHttpProviderRoutes(
       if (urlError) {
         return reply.status(400).send({ error: { message: urlError } });
       }
+      if (configData.timeout_ms !== undefined) {
+        const timeoutError = validateHttpTimeoutMs(configData.timeout_ms);
+        if (timeoutError) {
+          return reply.status(400).send({ error: { message: timeoutError } });
+        }
+      }
 
       const config: HttpProviderConfig = {
         enabled: true,
         base_url: configData.base_url,
+        allow_private_network: configData.allow_private_network === true,
         default_model: configData.default_model ?? '',
         max_concurrent: 10,
         timeout_ms: configData.timeout_ms ?? 300000,
@@ -469,15 +495,22 @@ export function registerHttpProviderRoutes(
       if (urlError) {
         return reply.status(400).send({ error: { message: urlError } });
       }
+      if (configData.timeout_ms !== undefined) {
+        const timeoutError = validateHttpTimeoutMs(configData.timeout_ms);
+        if (timeoutError) {
+          return reply.status(400).send({ error: { message: timeoutError } });
+        }
+      }
 
 
-      const perProbeTimeout = Math.min(configData.timeout_ms ?? 10000, 10000);
+      const perProbeTimeout = Math.min(clampHttpTimeoutMs(configData.timeout_ms, 10_000), 10_000);
       const detection = await detectEndpointType(
         configData.base_url,
         configData.default_model ?? '',
         configData.api_key,
         configData.custom_headers,
         perProbeTimeout,
+        configData.allow_private_network === true,
       );
 
       return reply.send(detection);

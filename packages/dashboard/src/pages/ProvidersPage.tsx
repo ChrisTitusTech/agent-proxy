@@ -71,6 +71,7 @@ const httpProviderNames = new Set<string>();
 const DEFAULT_HTTP_CONFIG: Partial<HttpProviderConfig> = {
   enabled: true,
   base_url: 'http://localhost:8080/v1',
+  allow_private_network: false,
   default_model: '',
   max_concurrent: 5,
   timeout_ms: 300000,
@@ -1824,6 +1825,9 @@ function HttpProviderCard({
     try {
       const res = await detectHttpProviderEndpoint({
         base_url: (d.base_url as string) ?? hp.config.base_url,
+        allow_private_network: (d.allow_private_network as boolean | undefined)
+          ?? hp.config.allow_private_network
+          ?? false,
         api_key: (d.api_key as string) ?? hp.config.api_key,
         default_model: (d.default_model as string) ?? hp.config.default_model,
       });
@@ -1944,11 +1948,28 @@ function HttpProviderCard({
               <input
                 type="number"
                 min="1000"
+                max="600000"
                 value={(draft as Record<string, unknown>).timeout_ms as number ?? hp.config.timeout_ms}
                 onChange={(e) => updateDraft('timeout_ms' as keyof ProviderConfig, parseInt(e.target.value) || 30000)}
                 className={inputCls}
               />
             </div>
+            <label className="col-span-2 flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={
+                  ((draft as Record<string, unknown>).allow_private_network as boolean | undefined)
+                  ?? hp.config.allow_private_network
+                  ?? false
+                }
+                onChange={(e) => updateDraft(
+                  'allow_private_network' as keyof ProviderConfig,
+                  e.target.checked,
+                )}
+                className="mt-0.5"
+              />
+              Allow localhost and private-network targets. Enable this only for a provider you trust.
+            </label>
           </div>
 
 
@@ -2166,11 +2187,21 @@ function AddHttpProviderForm({
           <input
             type="number"
             min="1000"
+            max="600000"
             value={draft.timeout_ms ?? 300000}
             onChange={(e) => setDraft((p) => ({ ...p, timeout_ms: parseInt(e.target.value) || 300000 }))}
             className={inputCls}
           />
         </div>
+        <label className="col-span-2 flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={draft.allow_private_network === true}
+            onChange={(e) => setDraft((p) => ({ ...p, allow_private_network: e.target.checked }))}
+            className="mt-0.5"
+          />
+          Allow localhost and private-network targets. Enable this only for a provider you trust.
+        </label>
       </div>
 
 

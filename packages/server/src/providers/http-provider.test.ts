@@ -5,6 +5,7 @@ import { HttpProvider } from './http-provider.js';
 const baseConfig: HttpProviderConfig = {
   enabled: true,
   base_url: 'http://localhost:8080/v1',
+  allow_private_network: true,
   default_model: 'test-model',
   max_concurrent: 1,
   timeout_ms: 10_000,

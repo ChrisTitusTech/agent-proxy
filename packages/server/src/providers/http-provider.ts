@@ -14,6 +14,11 @@ import type {
   DebugCaptureInfo,
 } from '@agent-proxy/shared';
 import { BaseProvider } from './base-provider.js';
+import {
+  clampHttpTimeoutMs,
+  safeOutboundFetch,
+  stripTrailingSlashes,
+} from '../utils/outbound-http.js';
 
 export class HttpProvider extends BaseProvider {
   readonly name: string;
@@ -71,8 +76,16 @@ export class HttpProvider extends BaseProvider {
 
 
   private buildUrl(path: string): string {
-    const base = this.httpConfig.base_url.replace(/\/+$/, '');
+    const base = stripTrailingSlashes(this.httpConfig.base_url);
     return `${base}${path}`;
+  }
+
+  private get timeoutMs(): number {
+    return clampHttpTimeoutMs(this.httpConfig.timeout_ms);
+  }
+
+  private fetch(url: string, init: RequestInit): Promise<Response> {
+    return safeOutboundFetch(url, init, this.httpConfig.allow_private_network === true);
   }
 
   private buildHeaders(): Record<string, string> {
@@ -147,7 +160,8 @@ export class HttpProvider extends BaseProvider {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.httpConfig.timeout_ms);
+    const timeoutMs = this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
 
     if (options.signal) {
@@ -155,7 +169,7 @@ export class HttpProvider extends BaseProvider {
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await this.fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -234,7 +248,7 @@ export class HttpProvider extends BaseProvider {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
         }
-        throw new Error(`${this.name} HTTP request timed out after ${this.httpConfig.timeout_ms}ms`);
+        throw new Error(`${this.name} HTTP request timed out after ${timeoutMs}ms`);
       }
 
       if (!debugInfo.httpResponse) {
@@ -267,14 +281,15 @@ export class HttpProvider extends BaseProvider {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.httpConfig.timeout_ms);
+    const timeoutMs = this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await this.fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -375,14 +390,15 @@ export class HttpProvider extends BaseProvider {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.httpConfig.timeout_ms);
+    const timeoutMs = this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await this.fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -439,7 +455,7 @@ export class HttpProvider extends BaseProvider {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
         }
-        throw new Error(`${this.name} HTTP request timed out after ${this.httpConfig.timeout_ms}ms`);
+        throw new Error(`${this.name} HTTP request timed out after ${timeoutMs}ms`);
       }
       if (!debugInfo.httpResponse) {
         options.onDebug?.(debugInfo as DebugCaptureInfo);
@@ -475,14 +491,15 @@ export class HttpProvider extends BaseProvider {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.httpConfig.timeout_ms);
+    const timeoutMs = this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await this.fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -551,7 +568,7 @@ export class HttpProvider extends BaseProvider {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
         }
-        throw new Error(`${this.name} HTTP request timed out after ${this.httpConfig.timeout_ms}ms`);
+        throw new Error(`${this.name} HTTP request timed out after ${timeoutMs}ms`);
       }
       if (!debugInfo.httpResponse) {
         options.onDebug?.(debugInfo as DebugCaptureInfo);
@@ -586,14 +603,15 @@ export class HttpProvider extends BaseProvider {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.httpConfig.timeout_ms);
+    const timeoutMs = this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     if (options.signal) {
       options.signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
 
     try {
-      const response = await fetch(url, {
+      const response = await this.fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -628,7 +646,7 @@ export class HttpProvider extends BaseProvider {
         if (options.signal?.aborted) {
           throw new Error('Request cancelled');
         }
-        throw new Error(`${this.name} HTTP request timed out after ${this.httpConfig.timeout_ms}ms`);
+        throw new Error(`${this.name} HTTP request timed out after ${timeoutMs}ms`);
       }
       if (!debugInfo.httpResponse) {
         options.onDebug?.(debugInfo as DebugCaptureInfo);
@@ -650,7 +668,7 @@ export class HttpProvider extends BaseProvider {
       const timeoutId = setTimeout(() => controller.abort(), 10_000);
 
       try {
-        const response = await fetch(url, {
+        const response = await this.fetch(url, {
           method: 'GET',
           headers,
           signal: controller.signal,

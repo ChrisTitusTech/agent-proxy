@@ -310,6 +310,7 @@ export interface GenericCliProviderConfig extends CliProviderConfig {
 export interface HttpProviderConfig {
   enabled: boolean;
   base_url: string;           // e.g. "http://localhost:8080"
+  allow_private_network?: boolean; // Required for localhost, LAN, and link-local targets.
   api_key?: string;           // Authorization: Bearer {api_key}
   custom_headers?: Record<string, string>;
   default_model: string;

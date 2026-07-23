@@ -8,6 +8,7 @@ import { QueueManager } from './services/queue.js';
 import { RateLimiter } from './middleware/rate-limiter.js';
 import { HealthChecker } from './services/health-checker.js';
 import { authMiddleware, adminAuthMiddleware } from './middleware/auth.js';
+import { RequestRateLimiter } from './middleware/request-rate-limiter.js';
 import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
 import { registerMessagesRoute } from './routes/v1/messages.js';
 import { registerModelsRoute } from './routes/v1/models.js';
@@ -68,6 +69,8 @@ export async function createApp(config: AppConfig) {
   const activeRequests = new ActiveRequestTracker();
   const cache = new ResponseCache(config.cache);
   const debug = new DebugService();
+  const apiAuthLimiter = new RequestRateLimiter(600);
+  const adminAuthLimiter = new RequestRateLimiter(300);
 
 
   for (const [name, providerConfig] of Object.entries(config.providers)) {
@@ -148,6 +151,17 @@ export async function createApp(config: AppConfig) {
     app.addHook('onRequest', async (request, reply) => {
 
       if (request.url === '/health' || request.url.startsWith('/admin')) return;
+      const rateLimit = apiAuthLimiter.consume(request.ip);
+      if (!rateLimit.allowed) {
+        reply.header('Retry-After', rateLimit.retryAfterSeconds);
+        return reply.status(429).send({
+          error: {
+            message: 'Too many authentication attempts. Try again later.',
+            type: 'rate_limit_error',
+            code: 'rate_limit_exceeded',
+          },
+        });
+      }
       await authMiddleware(request, reply);
     });
   }
@@ -155,6 +169,17 @@ export async function createApp(config: AppConfig) {
 
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/admin')) return;
+    const rateLimit = adminAuthLimiter.consume(request.ip);
+    if (!rateLimit.allowed) {
+      reply.header('Retry-After', rateLimit.retryAfterSeconds);
+      return reply.status(429).send({
+        error: {
+          message: 'Too many admin authentication attempts. Try again later.',
+          type: 'rate_limit_error',
+          code: 'rate_limit_exceeded',
+        },
+      });
+    }
     await adminAuthMiddleware(request, reply, config.auth.adminToken);
   });
   registerResponsesRoute(app);

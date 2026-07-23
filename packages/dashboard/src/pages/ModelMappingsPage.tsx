@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from '../i18n/context';
 import { Modal } from '../components/Modal';
 import { ProviderBadge, getProviderStyle } from '../components/ProviderBadge';
+import { isImageUrl } from '../utils/url';
 import {
   fetchModelMappings,
   createModelMapping,
@@ -1354,15 +1355,4 @@ function SortableTh({ label, sortKey, current, dir, onSort }: SortableThProps) {
       </button>
     </th>
   );
-}
-
-function isImageUrl(text: string): boolean {
-  const trimmed = text.trim();
-  try {
-    const url = new URL(trimmed);
-    return /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(url.pathname)
-      || url.hostname.includes('blob.core.windows.net');
-  } catch {
-    return false;
-  }
 }

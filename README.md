@@ -51,6 +51,11 @@ and usage limits of every configured provider.
 The server also retains optional generic CLI and OpenAI-compatible HTTP
 adapters. They are extension points, not first-class backends.
 
+Custom HTTP providers reject localhost, LAN, link-local, and other reserved
+network targets by default. Enable `allow_private_network` only when connecting
+to an operator-controlled local service such as Ollama. HTTP provider timeouts
+must be between 1 and 600 seconds, and redirects are rejected.
+
 ## Requirements
 
 - Linux

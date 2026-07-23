@@ -11,6 +11,8 @@ import {
   type DebugConfig,
   type DebugLog,
 } from '../api/client';
+import { escapePosixShellArg as escapeShellArg } from '../utils/shell';
+import { isImageUrl } from '../utils/url';
 
 
 function rebuildClaudeStdin(messages: Array<{ role: string; content: string }>): string {
@@ -48,13 +50,6 @@ function rebuildSinglePrompt(messages: Array<{ role: string; content: string }>)
     return `<|system|> ${systemMsg.content}\n\n${userPrompt}`;
   }
   return userPrompt;
-}
-
-
-function escapeShellArg(a: string): string {
-  if (a.includes("'")) return `"${a.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')}"`;
-  if (a.includes(' ') || a.includes('"') || a.includes('\\') || a.includes('$') || a.includes('`')) return `'${a}'`;
-  return a;
 }
 
 
@@ -1135,18 +1130,6 @@ function exportDebugLog(log: DebugLog): void {
   a.click();
   URL.revokeObjectURL(url);
 }
-
-function isImageUrl(text: string): boolean {
-  const trimmed = text.trim();
-  try {
-    const url = new URL(trimmed);
-    return /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(url.pathname)
-      || url.hostname.includes('blob.core.windows.net');
-  } catch {
-    return false;
-  }
-}
-
 
 function formatNdjson(str: string): string {
   const lines = str.split('\n').filter((l) => l.trim());

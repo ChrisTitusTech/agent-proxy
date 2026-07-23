@@ -718,6 +718,7 @@ export type EndpointType = 'chat' | 'images' | 'tts' | 'embeddings' | 'rerank';
 export interface HttpProviderConfig {
   enabled: boolean;
   base_url: string;
+  allow_private_network?: boolean;
   api_key?: string;
   custom_headers?: Record<string, string>;
   default_model: string;

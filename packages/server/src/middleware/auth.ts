@@ -5,8 +5,12 @@ import { getDatabase } from '../db/client.js';
 import { apiKeys } from '../db/schema.js';
 import { API_KEY_PREFIX } from '@agent-proxy/shared';
 
-export function hashApiKey(key: string): string {
-  return createHash('sha256').update(key).digest('hex');
+export function hashApiKey(apiToken: string): string {
+  // API keys are high-entropy random bearer tokens, not human passwords. A
+  // deterministic SHA-256 fingerprint supports indexed lookup without storing
+  // the token. Password hashing algorithms would add cost without useful
+  // brute-force resistance for 192-bit generated keys.
+  return createHash('sha256').update(apiToken).digest('hex');
 }
 
 export function getKeyPrefix(key: string): string {
