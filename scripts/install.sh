@@ -78,6 +78,39 @@ STATE_DIR=$(root_path /var/lib/agent-proxy)
 LOG_DIR=$(root_path /var/log/agent-proxy)
 BACKUP_DIR=$(root_path /var/backups/agent-proxy)
 UNIT_PATH=$(root_path /etc/systemd/system/agent-proxy.service)
+INSTALL_EXTRACT_DIR=
+INSTALL_RELEASE_DIR=
+INSTALL_RESTORE_SERVICE=false
+INSTALL_ACTIVATION_STARTED=false
+INSTALL_HAD_CURRENT=false
+INSTALL_HAD_PREVIOUS=false
+INSTALL_OLD_CURRENT_TARGET=
+INSTALL_OLD_PREVIOUS_TARGET=
+
+cleanup_partial_install() {
+	set +e
+	if [[ "$INSTALL_ACTIVATION_STARTED" == true ]]; then
+		if [[ "$INSTALL_HAD_CURRENT" == true ]]; then
+			ln -sfn "$INSTALL_OLD_CURRENT_TARGET" "$OPT_DIR/current"
+		else
+			rm -f "$OPT_DIR/current"
+		fi
+		if [[ "$INSTALL_HAD_PREVIOUS" == true ]]; then
+			ln -sfn "$INSTALL_OLD_PREVIOUS_TARGET" "$OPT_DIR/previous"
+		else
+			rm -f "$OPT_DIR/previous"
+		fi
+	fi
+	if [[ -n "$INSTALL_EXTRACT_DIR" ]]; then
+		rm -rf "$INSTALL_EXTRACT_DIR"
+	fi
+	if [[ -n "$INSTALL_RELEASE_DIR" ]]; then
+		rm -rf "$INSTALL_RELEASE_DIR"
+	fi
+	if [[ "$INSTALL_RESTORE_SERVICE" == true ]]; then
+		service_start || true
+	fi
+}
 
 use_systemd() {
 	[[ "$NO_SYSTEMD" == false && "$DESTDIR" == / ]] && command -v systemctl >/dev/null
@@ -94,6 +127,10 @@ service_start() {
 		systemctl daemon-reload
 		systemctl enable --now agent-proxy.service
 	fi
+}
+
+service_is_active() {
+	use_systemd && systemctl is-active --quiet agent-proxy.service
 }
 
 service_enable() {
@@ -144,7 +181,14 @@ validate_archive() {
 		printf 'Release archive not found: %s\n' "$ARCHIVE" >&2
 		exit 1
 	}
-	local archive_listing
+	local archive_listing archive_metadata required_member required_metadata
+	local required_members=(
+		agent-proxy/VERSION
+		agent-proxy/packages/server/dist/index.js
+		agent-proxy/packaging/systemd/agent-proxy.service
+		agent-proxy/packaging/systemd/agent-proxy.env
+		agent-proxy/packaging/systemd/config.example.yaml
+	)
 	if ! archive_listing=$(tar -tzf "$ARCHIVE"); then
 		printf 'Release archive could not be read.\n' >&2
 		exit 1
@@ -162,9 +206,31 @@ validate_archive() {
 		printf 'Release archive contains an unsafe path.\n' >&2
 		exit 1
 	fi
+	if ! archive_metadata=$(tar -tvzf "$ARCHIVE"); then
+		printf 'Release archive metadata could not be read.\n' >&2
+		exit 1
+	fi
+	if awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { found = 1 }
+		END { exit found ? 0 : 1 }' <<<"$archive_metadata"; then
+		printf 'Release archive contains an unsupported member type.\n' >&2
+		exit 1
+	fi
+	for required_member in "${required_members[@]}"; do
+		if ! required_metadata=$(tar -tvzf "$ARCHIVE" -- "$required_member" 2>/dev/null) ||
+			[[ "$required_metadata" == *$'\n'* || ${required_metadata:0:1} != "-" ]]; then
+			printf 'Release archive is missing required regular file: %s\n' \
+				"$required_member" >&2
+			exit 1
+		fi
+	done
 }
 
 create_backup() {
+	local restart_after=${1:-true}
+	local was_active=false
+	if service_is_active; then
+		was_active=true
+	fi
 	local paths=()
 	[[ -d "$ETC_DIR" ]] && paths+=(etc/agent-proxy)
 	[[ -d "$STATE_DIR" ]] && paths+=(var/lib/agent-proxy)
@@ -181,21 +247,29 @@ create_backup() {
 	if ! (umask 077 && tar -C "$DESTDIR" -czf "$archive" "${paths[@]}"); then
 		backup_status=1
 	fi
-	service_start
+	if ((backup_status == 0)) && ! chmod 0600 "$archive"; then
+		backup_status=1
+	fi
 	if ((backup_status != 0)); then
 		rm -f "$archive"
+		if [[ "$was_active" == true ]]; then
+			service_start
+		fi
 		return "$backup_status"
 	fi
-	chmod 0600 "$archive"
+	if [[ "$restart_after" == true && "$was_active" == true ]]; then
+		service_start
+	fi
 	printf '%s\n' "$archive"
 }
 
 install_release() {
 	local start_service=$1
 	validate_archive
-	local extract_dir release_id release_dir old_target
+	local extract_dir release_id release_dir=''
 	extract_dir=$(mktemp -d)
-	trap 'rm -rf "$extract_dir"' EXIT
+	INSTALL_EXTRACT_DIR=$extract_dir
+	trap cleanup_partial_install EXIT
 	tar -C "$extract_dir" -xzf "$ARCHIVE"
 	release_id=$(<"$extract_dir/agent-proxy/VERSION")
 	[[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || {
@@ -207,16 +281,20 @@ install_release() {
 		printf 'Release is already installed: %s\n' "$release_id" >&2
 		exit 1
 	}
+	INSTALL_RELEASE_DIR=$release_dir
+	[[ ! -e "$OPT_DIR/current" || -L "$OPT_DIR/current" ]] || {
+		printf 'Current release path is not a symbolic link.\n' >&2
+		exit 1
+	}
+	[[ ! -e "$OPT_DIR/previous" || -L "$OPT_DIR/previous" ]] || {
+		printf 'Previous release path is not a symbolic link.\n' >&2
+		exit 1
+	}
+	INSTALL_RESTORE_SERVICE=$start_service
 
 	service_stop
 	mkdir -p "$OPT_DIR/releases" "$ETC_DIR" "$STATE_DIR" "$LOG_DIR"
 	cp -a "$extract_dir/agent-proxy" "$release_dir"
-
-	if [[ -L "$OPT_DIR/current" ]]; then
-		old_target=$(readlink "$OPT_DIR/current")
-		ln -sfn "$old_target" "$OPT_DIR/previous"
-	fi
-	ln -sfn "$release_dir" "$OPT_DIR/current"
 
 	[[ -f "$ETC_DIR/config.yaml" ]] ||
 		install -m 0640 "$release_dir/packaging/systemd/config.example.yaml" "$ETC_DIR/config.yaml"
@@ -228,13 +306,34 @@ install_release() {
 		chown -R root:agent-proxy "$OPT_DIR" "$ETC_DIR"
 		chown -R agent-proxy:agent-proxy "$STATE_DIR" "$LOG_DIR"
 	fi
-	rm -rf "$extract_dir"
-	trap - EXIT
+
+	if [[ -L "$OPT_DIR/current" ]]; then
+		INSTALL_HAD_CURRENT=true
+		INSTALL_OLD_CURRENT_TARGET=$(readlink "$OPT_DIR/current")
+	fi
+	if [[ -L "$OPT_DIR/previous" ]]; then
+		INSTALL_HAD_PREVIOUS=true
+		INSTALL_OLD_PREVIOUS_TARGET=$(readlink "$OPT_DIR/previous")
+	fi
+
+	INSTALL_ACTIVATION_STARTED=true
+	if [[ "$INSTALL_HAD_CURRENT" == true ]]; then
+		ln -sfn "$INSTALL_OLD_CURRENT_TARGET" "$OPT_DIR/previous"
+	fi
+	ln -sfn "$release_dir" "$OPT_DIR/current"
+
 	if [[ "$start_service" == true ]]; then
 		service_start
 	else
 		service_enable
 	fi
+
+	INSTALL_EXTRACT_DIR=
+	INSTALL_RELEASE_DIR=
+	INSTALL_RESTORE_SERVICE=false
+	INSTALL_ACTIVATION_STARTED=false
+	trap - EXIT
+	rm -rf "$extract_dir"
 	printf 'Activated agent-proxy release %s\n' "$release_id"
 }
 
@@ -260,10 +359,14 @@ upgrade)
 		printf -- '--archive is required for upgrade.\n' >&2
 		exit 2
 	}
-	if [[ -d "$ETC_DIR" || -d "$STATE_DIR" ]]; then
-		create_backup >/dev/null
+	upgrade_was_active=false
+	if service_is_active; then
+		upgrade_was_active=true
 	fi
-	install_release true
+	if [[ -d "$ETC_DIR" || -d "$STATE_DIR" ]]; then
+		create_backup false >/dev/null
+	fi
+	install_release "$upgrade_was_active"
 	;;
 rollback)
 	[[ -L "$OPT_DIR/previous" ]] || {
@@ -289,7 +392,7 @@ uninstall)
 	rm -f "$UNIT_PATH"
 	rm -rf "$OPT_DIR"
 	if [[ "$PURGE" == true ]]; then
-		rm -rf "$ETC_DIR" "$STATE_DIR" "$LOG_DIR"
+		rm -rf "$ETC_DIR" "$STATE_DIR" "$LOG_DIR" "$BACKUP_DIR"
 	fi
 	if use_systemd; then
 		systemctl daemon-reload

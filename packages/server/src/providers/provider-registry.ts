@@ -29,9 +29,16 @@ export class ProviderRegistry {
   }
 
   async shutdownAll(): Promise<void> {
-    await Promise.allSettled(
-      Array.from(this.providers.values(), (provider) => provider.shutdown()),
+    const providers = Array.from(this.providers.values());
+    const results = await Promise.allSettled(
+      providers.map((provider) => provider.shutdown()),
     );
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(`[${providers[index].name}] provider shutdown failed:`, result.reason);
+      }
+    });
   }
 
 

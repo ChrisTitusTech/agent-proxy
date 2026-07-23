@@ -20,6 +20,12 @@ if grep -q '^agent-proxy/node_modules/react/' "$TEST_DIR/archive-manifest.txt"; 
 	printf 'Production archive contains dashboard-only React dependencies.\n' >&2
 	exit 1
 fi
+if tar -tvzf "$ARCHIVE" |
+	awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { found = 1 }
+		END { exit found ? 0 : 1 }'; then
+	printf 'Production archive contains an unsupported member type.\n' >&2
+	exit 1
+fi
 scripts/install.sh install --root "$TEST_DIR/root" --no-systemd --archive "$ARCHIVE"
 
 export CONFIG_PATH="$TEST_DIR/root/etc/agent-proxy/config.yaml"

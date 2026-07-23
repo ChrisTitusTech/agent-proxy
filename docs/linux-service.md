@@ -75,12 +75,19 @@ sudo -u agent-proxy -H env HOME=/var/lib/agent-proxy grok login
 Use the equivalent supported login command for Claude Code or Google
 Antigravity. Add the CLI directory to `PATH` in
 `/etc/agent-proxy/agent-proxy.env`, enable only that provider in
-`config.yaml`, and run the preflight:
+`config.yaml`, and run the preflight through a transient systemd service. The
+system manager can read the root-owned environment file before dropping to the
+service account:
 
 ```bash
-sudo -u agent-proxy -H \
-  /bin/bash -c \
-  'set -a; source /etc/agent-proxy/agent-proxy.env; exec /usr/bin/node /opt/agent-proxy/current/packages/server/dist/index.js --check'
+sudo systemd-run --wait --pipe --collect \
+  --unit=agent-proxy-preflight \
+  --property=User=agent-proxy \
+  --property=Group=agent-proxy \
+  --property=WorkingDirectory=/var/lib/agent-proxy \
+  --property=EnvironmentFile=/etc/agent-proxy/agent-proxy.env \
+  /usr/bin/node \
+  /opt/agent-proxy/current/packages/server/dist/index.js --check
 ```
 
 Do not place credentials in the unit file or repository.
@@ -109,10 +116,11 @@ timeout 30s sh -c \
   'until curl --fail http://127.0.0.1:8300/health; do sleep 1; done'
 ```
 
-Upgrade stops the service, creates a configuration and SQLite backup, installs
-the new version beside the old one, atomically changes `current`, and restarts
-the service. Configuration, API keys, model mappings, and SQLite data are
-outside the release directory.
+Upgrade records whether the service is running, stops it, creates a
+configuration and SQLite backup, installs the new version beside the old one,
+and atomically changes `current`. It restarts the service only if it was
+running before the upgrade. Configuration, API keys, model mappings, and
+SQLite data are outside the release directory.
 
 ## Roll back
 
@@ -135,8 +143,8 @@ sudo scripts/install.sh backup
 ```
 
 Backups are written to `/var/backups/agent-proxy`. The command briefly stops
-the service, archives `/etc/agent-proxy` and `/var/lib/agent-proxy`, then
-starts the service again.
+an active service, archives `/etc/agent-proxy` and `/var/lib/agent-proxy`,
+then restores its prior active or inactive state.
 
 Restore while the service is stopped:
 
@@ -196,10 +204,12 @@ Preserve configuration and state:
 sudo scripts/install.sh uninstall
 ```
 
-Permanently remove configuration, state, and logs only with explicit approval:
+Permanently remove configuration, state, logs, and backups only with explicit
+approval:
 
 ```bash
 sudo scripts/install.sh uninstall --purge
 ```
 
-Backups under `/var/backups/agent-proxy` are never removed automatically.
+Normal uninstall preserves backups under `/var/backups/agent-proxy`;
+`--purge` removes them.

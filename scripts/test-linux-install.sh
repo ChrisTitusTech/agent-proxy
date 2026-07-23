@@ -25,6 +25,7 @@ make_archive() {
 
 ARCHIVE_V1=$(make_archive 1.0.0-test1)
 ARCHIVE_V2=$(make_archive 1.0.0-test2)
+ARCHIVE_V3=$(make_archive 1.0.0-test3)
 run_installer() {
 	local command=$1
 	shift
@@ -50,6 +51,16 @@ BACKUP_ARCHIVE=$(compgen -G "$ROOT_DIR/var/backups/agent-proxy/*.tar.gz" | head 
 run_installer rollback
 [[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
 
+chmod 0555 "$ROOT_DIR/opt/agent-proxy"
+if run_installer upgrade --archive "$ARCHIVE_V3" >/dev/null 2>&1; then
+	printf 'Installer activated a release without a writable link directory.\n' >&2
+	exit 1
+fi
+chmod 0755 "$ROOT_DIR/opt/agent-proxy"
+[[ $(<"$ROOT_DIR/opt/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
+[[ $(<"$ROOT_DIR/opt/agent-proxy/previous/VERSION") == 1.0.0-test2 ]]
+[[ ! -e "$ROOT_DIR/opt/agent-proxy/releases/1.0.0-test3" ]]
+
 run_installer backup >/dev/null
 run_installer uninstall
 [[ ! -e "$ROOT_DIR/opt/agent-proxy" ]]
@@ -60,11 +71,41 @@ run_installer install --archive "$ARCHIVE_V1"
 run_installer uninstall --purge
 [[ ! -e "$ROOT_DIR/etc/agent-proxy" ]]
 [[ ! -e "$ROOT_DIR/var/lib/agent-proxy" ]]
+[[ ! -e "$ROOT_DIR/var/backups/agent-proxy" ]]
 
 printf 'not-an-archive\n' >"$TEST_DIR/invalid.tar.gz"
 if run_installer install --archive "$TEST_DIR/invalid.tar.gz" >/dev/null 2>&1; then
 	printf 'Installer accepted an invalid release archive.\n' >&2
 	exit 1
 fi
+
+LINK_STAGE="$TEST_DIR/link-stage"
+mkdir -p "$LINK_STAGE/agent-proxy"
+printf '1.0.0-link\n' >"$LINK_STAGE/agent-proxy/VERSION"
+ln -s VERSION "$LINK_STAGE/agent-proxy/version-link"
+tar -C "$LINK_STAGE" -czf "$TEST_DIR/symlink.tar.gz" agent-proxy
+if run_installer install --archive "$TEST_DIR/symlink.tar.gz" >/dev/null 2>&1; then
+	printf 'Installer accepted an archive containing a symbolic link.\n' >&2
+	exit 1
+fi
+
+rm "$LINK_STAGE/agent-proxy/version-link"
+ln "$LINK_STAGE/agent-proxy/VERSION" "$LINK_STAGE/agent-proxy/version-hardlink"
+tar -C "$LINK_STAGE" -czf "$TEST_DIR/hardlink.tar.gz" agent-proxy
+if run_installer install --archive "$TEST_DIR/hardlink.tar.gz" >/dev/null 2>&1; then
+	printf 'Installer accepted an archive containing a hard link.\n' >&2
+	exit 1
+fi
+
+PARTIAL_STAGE="$TEST_DIR/partial-stage"
+mkdir -p "$PARTIAL_STAGE/agent-proxy/packages/server/dist"
+printf '1.0.0-partial\n' >"$PARTIAL_STAGE/agent-proxy/VERSION"
+printf 'console.log("partial");\n' >"$PARTIAL_STAGE/agent-proxy/packages/server/dist/index.js"
+tar -C "$PARTIAL_STAGE" -czf "$TEST_DIR/partial.tar.gz" agent-proxy
+if run_installer install --archive "$TEST_DIR/partial.tar.gz" >/dev/null 2>&1; then
+	printf 'Installer accepted an incomplete release archive.\n' >&2
+	exit 1
+fi
+[[ ! -e "$ROOT_DIR/opt/agent-proxy/releases/1.0.0-partial" ]]
 
 printf 'Linux installer lifecycle passed.\n'

@@ -78,6 +78,30 @@ printf '%s\n' "$RELEASE_ID" >"$STAGE_DIR/agent-proxy/VERSION"
 (cd "$STAGE_DIR/agent-proxy" &&
 	npm ci --omit=dev --workspace=packages/server --include-workspace-root=false)
 
+# npm creates workspace and executable symlinks. Materialize their targets so
+# the installer can reject link-bearing archives without rejecting our release.
+while IFS= read -r -d '' link_path; do
+	resolved_path=$(readlink -f -- "$link_path") || {
+		printf 'Release dependency link cannot be resolved: %s\n' "$link_path" >&2
+		exit 1
+	}
+	case "$resolved_path" in
+	"$STAGE_DIR/agent-proxy"/*) ;;
+	*)
+		printf 'Release dependency link escapes the staging directory: %s\n' "$link_path" >&2
+		exit 1
+		;;
+	esac
+	materialized_path="${link_path}.materialized"
+	[[ ! -e "$materialized_path" && ! -L "$materialized_path" ]] || {
+		printf 'Cannot materialize release dependency link: %s\n' "$link_path" >&2
+		exit 1
+	}
+	cp -aL -- "$link_path" "$materialized_path"
+	rm "$link_path"
+	mv "$materialized_path" "$link_path"
+done < <(find "$STAGE_DIR/agent-proxy" -type l -print0)
+
 mkdir -p "$OUTPUT_DIR"
-tar -C "$STAGE_DIR" -czf "$ARCHIVE" agent-proxy
+tar --hard-dereference -C "$STAGE_DIR" -czf "$ARCHIVE" agent-proxy
 printf '%s\n' "$ARCHIVE"

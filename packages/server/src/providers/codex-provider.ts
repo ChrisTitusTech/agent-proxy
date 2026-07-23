@@ -133,6 +133,8 @@ export class CodexProvider extends BaseProvider {
 
   private initAppServer(): void {
     if (this.appServerTeardown) {
+      // destroyAppServer assigns this promise before its first await and clears
+      // it in its own continuation before this callback runs.
       void this.appServerTeardown.then(() => {
         if (this.isAppServerMode && !this.appServerProcess) {
           this.initAppServer();
