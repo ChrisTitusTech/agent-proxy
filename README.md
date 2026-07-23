@@ -1,7 +1,6 @@
 # agent-proxy
 
 [![CI](https://github.com/ChrisTitusTech/agent-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/ChrisTitusTech/agent-proxy/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/ChrisTitusTech/agent-proxy/actions/workflows/codeql.yml/badge.svg)](https://github.com/ChrisTitusTech/agent-proxy/actions/workflows/codeql.yml)
 
 `agent-proxy` is a Linux-first API gateway for installed and authenticated AI
 command-line tools. It exposes familiar OpenAI and Anthropic HTTP endpoints
