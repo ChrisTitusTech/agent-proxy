@@ -77,6 +77,7 @@ export class CodexProvider extends BaseProvider {
 
   private appServerProcess: CodexAppServerProcess | null = null;
   private appServerSessionManager: CodexAppServerSessionManager | null = null;
+  private appServerTeardown: Promise<void> | null = null;
 
   private cliSessionManager: CodexCliSessionManager | null = null;
 
@@ -131,6 +132,17 @@ export class CodexProvider extends BaseProvider {
 
 
   private initAppServer(): void {
+    if (this.appServerTeardown) {
+      void this.appServerTeardown.then(() => {
+        if (this.isAppServerMode && !this.appServerProcess) {
+          this.initAppServer();
+        }
+      }).catch((error) => {
+        console.error('[codex] app-server restart blocked by teardown failure:', error);
+      });
+      return;
+    }
+
     const options = this.config.app_server_options ?? {};
     const ttl = options.session_ttl_ms;
 
@@ -151,11 +163,32 @@ export class CodexProvider extends BaseProvider {
     }
   }
 
-  private destroyAppServer(): void {
-    this.appServerProcess?.stop().catch(() => { });
+  private async destroyAppServer(): Promise<void> {
+    if (this.appServerTeardown) {
+      return this.appServerTeardown;
+    }
+
+    const appServerProcess = this.appServerProcess;
     this.appServerProcess = null;
-    this.appServerSessionManager?.destroy();
+    const sessionManager = this.appServerSessionManager;
     this.appServerSessionManager = null;
+
+    const teardown = (async () => {
+      try {
+        await appServerProcess?.stop();
+      } finally {
+        sessionManager?.destroy();
+      }
+    })();
+    this.appServerTeardown = teardown;
+
+    try {
+      await teardown;
+    } finally {
+      if (this.appServerTeardown === teardown) {
+        this.appServerTeardown = null;
+      }
+    }
   }
 
 
@@ -428,7 +461,17 @@ export class CodexProvider extends BaseProvider {
 
 
     if (wasAppServer && !this.isAppServerMode) {
-      this.destroyAppServer();
+      void this.destroyAppServer().catch((error) => {
+        console.error('[codex] failed to stop app-server after mode change:', error);
+      });
+    }
+  }
+
+  override async shutdown(): Promise<void> {
+    try {
+      await this.destroyAppServer();
+    } finally {
+      this.destroyCliSessionManager();
     }
   }
 }

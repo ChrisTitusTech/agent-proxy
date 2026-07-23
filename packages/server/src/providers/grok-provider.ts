@@ -109,8 +109,9 @@ export class GrokProvider extends BaseProvider {
         env: this.getCleanEnv(),
         cwd: this.workingDir,
         shell: isWin,
+        detached: !isWin,
       });
-      trackProcess(child);
+      trackProcess(child, !isWin);
 
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];

@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# Install and operate versioned agent-proxy Linux releases.
+
+set -euo pipefail
+
+COMMAND=${1:-}
+[[ -n "$COMMAND" ]] && shift
+
+ARCHIVE=
+DESTDIR=/
+NO_SYSTEMD=false
+PURGE=false
+
+usage() {
+	cat <<'EOF'
+Usage:
+  install.sh install|upgrade --archive FILE [--root DIR] [--no-systemd]
+  install.sh rollback [--root DIR] [--no-systemd]
+  install.sh backup [--root DIR] [--no-systemd]
+  install.sh uninstall [--root DIR] [--no-systemd] [--purge]
+
+Configuration and state are preserved by default. --purge permanently removes
+them during uninstall.
+EOF
+}
+
+while (($# > 0)); do
+	case "$1" in
+	--archive)
+		ARCHIVE=${2:?--archive requires a file}
+		shift 2
+		;;
+	--root)
+		DESTDIR=${2:?--root requires a directory}
+		shift 2
+		;;
+	--no-systemd)
+		NO_SYSTEMD=true
+		shift
+		;;
+	--purge)
+		PURGE=true
+		shift
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
+	esac
+done
+
+case "$COMMAND" in
+install | upgrade | rollback | backup | uninstall) ;;
+*)
+	usage >&2
+	exit 2
+	;;
+esac
+
+DESTDIR=${DESTDIR%/}
+[[ -n "$DESTDIR" ]] || DESTDIR=/
+
+root_path() {
+	if [[ "$DESTDIR" == / ]]; then
+		printf '%s' "$1"
+	else
+		printf '%s%s' "$DESTDIR" "$1"
+	fi
+}
+
+OPT_DIR=$(root_path /opt/agent-proxy)
+ETC_DIR=$(root_path /etc/agent-proxy)
+STATE_DIR=$(root_path /var/lib/agent-proxy)
+LOG_DIR=$(root_path /var/log/agent-proxy)
+BACKUP_DIR=$(root_path /var/backups/agent-proxy)
+UNIT_PATH=$(root_path /etc/systemd/system/agent-proxy.service)
+
+use_systemd() {
+	[[ "$NO_SYSTEMD" == false && "$DESTDIR" == / ]] && command -v systemctl >/dev/null
+}
+
+service_stop() {
+	if use_systemd; then
+		systemctl stop agent-proxy.service 2>/dev/null || true
+	fi
+}
+
+service_start() {
+	if use_systemd; then
+		systemctl daemon-reload
+		systemctl enable --now agent-proxy.service
+	fi
+}
+
+service_enable() {
+	if use_systemd; then
+		systemctl daemon-reload
+		systemctl enable agent-proxy.service
+	fi
+}
+
+ensure_root() {
+	if [[ "$DESTDIR" == / && $EUID -ne 0 ]]; then
+		printf 'Run this command as root, or use --root for a staged installation.\n' >&2
+		exit 1
+	fi
+}
+
+ensure_service_account() {
+	if [[ "$DESTDIR" != / ]]; then
+		return
+	fi
+	if ! getent group agent-proxy >/dev/null; then
+		groupadd --system agent-proxy
+	fi
+	if ! id agent-proxy >/dev/null 2>&1; then
+		useradd --system --gid agent-proxy --home-dir /var/lib/agent-proxy \
+			--create-home --shell /usr/sbin/nologin agent-proxy
+	fi
+}
+
+ensure_runtime() {
+	if [[ "$DESTDIR" != / ]]; then
+		return
+	fi
+	if [[ ! -x /usr/bin/node ]]; then
+		printf 'Node.js 20 or newer must be installed at /usr/bin/node.\n' >&2
+		exit 1
+	fi
+	local node_major
+	node_major=$(/usr/bin/node -p 'Number(process.versions.node.split(".")[0])')
+	if [[ ! "$node_major" =~ ^[0-9]+$ ]] || ((node_major < 20)); then
+		printf 'Node.js 20 or newer is required; /usr/bin/node reports major version %s.\n' "$node_major" >&2
+		exit 1
+	fi
+}
+
+validate_archive() {
+	[[ -f "$ARCHIVE" ]] || {
+		printf 'Release archive not found: %s\n' "$ARCHIVE" >&2
+		exit 1
+	}
+	local archive_listing
+	if ! archive_listing=$(tar -tzf "$ARCHIVE"); then
+		printf 'Release archive could not be read.\n' >&2
+		exit 1
+	fi
+	if awk '
+			substr($0, 1, 1) == "/" { unsafe = 1 }
+			{
+				count = split($0, part, "/")
+				for (i = 1; i <= count; i++) {
+					if (part[i] == "..") unsafe = 1
+				}
+			}
+			END { exit unsafe ? 0 : 1 }
+		' <<<"$archive_listing"; then
+		printf 'Release archive contains an unsafe path.\n' >&2
+		exit 1
+	fi
+}
+
+create_backup() {
+	local paths=()
+	[[ -d "$ETC_DIR" ]] && paths+=(etc/agent-proxy)
+	[[ -d "$STATE_DIR" ]] && paths+=(var/lib/agent-proxy)
+	if ((${#paths[@]} == 0)); then
+		printf 'No configuration or state exists to back up.\n' >&2
+		return 1
+	fi
+
+	install -d -m 0700 "$BACKUP_DIR"
+	local stamp archive backup_status=0
+	stamp=$(date -u +%Y%m%dT%H%M%S%NZ)
+	archive="$BACKUP_DIR/agent-proxy-backup-$stamp.tar.gz"
+	service_stop
+	if ! (umask 077 && tar -C "$DESTDIR" -czf "$archive" "${paths[@]}"); then
+		backup_status=1
+	fi
+	service_start
+	if ((backup_status != 0)); then
+		rm -f "$archive"
+		return "$backup_status"
+	fi
+	chmod 0600 "$archive"
+	printf '%s\n' "$archive"
+}
+
+install_release() {
+	local start_service=$1
+	validate_archive
+	local extract_dir release_id release_dir old_target
+	extract_dir=$(mktemp -d)
+	trap 'rm -rf "$extract_dir"' EXIT
+	tar -C "$extract_dir" -xzf "$ARCHIVE"
+	release_id=$(<"$extract_dir/agent-proxy/VERSION")
+	[[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || {
+		printf 'Invalid release identifier in archive.\n' >&2
+		exit 1
+	}
+	release_dir="$OPT_DIR/releases/$release_id"
+	[[ ! -e "$release_dir" ]] || {
+		printf 'Release is already installed: %s\n' "$release_id" >&2
+		exit 1
+	}
+
+	service_stop
+	mkdir -p "$OPT_DIR/releases" "$ETC_DIR" "$STATE_DIR" "$LOG_DIR"
+	cp -a "$extract_dir/agent-proxy" "$release_dir"
+
+	if [[ -L "$OPT_DIR/current" ]]; then
+		old_target=$(readlink "$OPT_DIR/current")
+		ln -sfn "$old_target" "$OPT_DIR/previous"
+	fi
+	ln -sfn "$release_dir" "$OPT_DIR/current"
+
+	[[ -f "$ETC_DIR/config.yaml" ]] ||
+		install -m 0640 "$release_dir/packaging/systemd/config.yaml" "$ETC_DIR/config.yaml"
+	[[ -f "$ETC_DIR/agent-proxy.env" ]] ||
+		install -m 0600 "$release_dir/packaging/systemd/agent-proxy.env" "$ETC_DIR/agent-proxy.env"
+	install -D -m 0644 "$release_dir/packaging/systemd/agent-proxy.service" "$UNIT_PATH"
+
+	if [[ "$DESTDIR" == / ]]; then
+		chown -R root:agent-proxy "$OPT_DIR" "$ETC_DIR"
+		chown -R agent-proxy:agent-proxy "$STATE_DIR" "$LOG_DIR"
+	fi
+	rm -rf "$extract_dir"
+	trap - EXIT
+	if [[ "$start_service" == true ]]; then
+		service_start
+	else
+		service_enable
+	fi
+	printf 'Activated agent-proxy release %s\n' "$release_id"
+}
+
+ensure_root
+
+case "$COMMAND" in
+install)
+	ensure_runtime
+	ensure_service_account
+	[[ -n "$ARCHIVE" ]] || {
+		printf -- '--archive is required for install.\n' >&2
+		exit 2
+	}
+	install_release false
+	if use_systemd; then
+		printf 'Set production credentials, authenticate providers, then start agent-proxy.service.\n'
+	fi
+	;;
+upgrade)
+	ensure_runtime
+	ensure_service_account
+	[[ -n "$ARCHIVE" ]] || {
+		printf -- '--archive is required for upgrade.\n' >&2
+		exit 2
+	}
+	if [[ -d "$ETC_DIR" || -d "$STATE_DIR" ]]; then
+		create_backup >/dev/null
+	fi
+	install_release true
+	;;
+rollback)
+	[[ -L "$OPT_DIR/previous" ]] || {
+		printf 'No previous release is available.\n' >&2
+		exit 1
+	}
+	service_stop
+	current_target=$(readlink "$OPT_DIR/current")
+	previous_target=$(readlink "$OPT_DIR/previous")
+	ln -sfn "$previous_target" "$OPT_DIR/current"
+	ln -sfn "$current_target" "$OPT_DIR/previous"
+	service_start
+	printf 'Rolled back to %s\n' "$previous_target"
+	;;
+backup)
+	create_backup
+	;;
+uninstall)
+	service_stop
+	if use_systemd; then
+		systemctl disable agent-proxy.service 2>/dev/null || true
+	fi
+	rm -f "$UNIT_PATH"
+	rm -rf "$OPT_DIR"
+	if [[ "$PURGE" == true ]]; then
+		rm -rf "$ETC_DIR" "$STATE_DIR" "$LOG_DIR"
+	fi
+	if use_systemd; then
+		systemctl daemon-reload
+	fi
+	printf 'Uninstalled agent-proxy%s.\n' "$([[ "$PURGE" == true ]] && printf ' and purged data' || printf '; configuration and state were preserved')"
+	;;
+esac

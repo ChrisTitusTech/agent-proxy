@@ -1,4 +1,5 @@
 import { spawn, exec, type ChildProcess } from 'node:child_process';
+import { terminateChildProcess, trackProcess } from '../providers/base-provider.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -125,8 +126,9 @@ export class ChannelBridgeManager {
       env,
       shell: useShell,
       stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
+      detached: process.platform !== 'win32',
     });
+    trackProcess(child, process.platform !== 'win32');
     this.child = child;
     this.currentPort = port;
     this.currentHost = host;
@@ -168,14 +170,7 @@ export class ChannelBridgeManager {
   async stop(): Promise<void> {
     const child = this.child;
     if (!child) return;
-    await new Promise<void>((resolve) => {
-      const killTimer = setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch { /* already gone */ }
-      }, 5000);
-      killTimer.unref?.();
-      child.once('exit', () => { clearTimeout(killTimer); resolve(); });
-      try { child.kill('SIGTERM'); } catch { clearTimeout(killTimer); resolve(); }
-    });
+    await terminateChildProcess(child, 5_000);
     this.child = null;
   }
 

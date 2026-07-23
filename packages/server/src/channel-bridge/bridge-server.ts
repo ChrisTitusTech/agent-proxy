@@ -61,6 +61,7 @@ export class ChannelBridge {
   private readonly ptyConfig: PtyJobConfig;
   private readonly jobs = new Map<string, JobRecord>();
   private readonly pending: Array<{ job: JobRecord; params: JobParams }> = [];
+  private readonly jobControllers = new Set<AbortController>();
   private server: Server | null = null;
   private active = 0;
   private readonly startedAt = Date.now();
@@ -99,6 +100,14 @@ export class ChannelBridge {
   }
 
   close(): Promise<void> {
+    for (const controller of this.jobControllers) controller.abort();
+    for (const { job } of this.pending) {
+      job.status = 'failed';
+      job.error = 'Bridge shutting down';
+      job.updatedAt = Date.now();
+      this.scheduleCleanup(job.jobId);
+    }
+    this.pending.length = 0;
     return new Promise((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
@@ -212,6 +221,8 @@ export class ChannelBridge {
   }
 
   private async runJob(job: JobRecord, params: JobParams): Promise<void> {
+    const controller = new AbortController();
+    this.jobControllers.add(controller);
     this.active += 1;
     job.status = 'running';
     job.updatedAt = Date.now();
@@ -222,7 +233,7 @@ export class ChannelBridge {
         ...this.ptyConfig,
         model: params.model,
         extraArgs,
-      });
+      }, controller.signal);
       job.status = result.status === 'error' ? 'failed' : 'completed';
       job.result = result.content;
       if (result.status === 'error') job.error = result.content;
@@ -233,6 +244,7 @@ export class ChannelBridge {
     } finally {
       job.updatedAt = Date.now();
       this.active -= 1;
+      this.jobControllers.delete(controller);
       this.scheduleCleanup(job.jobId);
       this.pump();
     }

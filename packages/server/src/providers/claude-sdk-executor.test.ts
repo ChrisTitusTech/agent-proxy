@@ -4,9 +4,23 @@ import { ClaudeSdkSessionManager } from './claude-sdk-session-manager.js';
 
 
 const mockMessages: Record<string, unknown>[] = [];
+let waitForAbort = false;
+let lastSdkAbortSignal: AbortSignal | undefined;
+let queryCount = 0;
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: async function* () {
+  query: async function* (params: { options?: { abortController?: AbortController } }) {
+    queryCount += 1;
+    lastSdkAbortSignal = params.options?.abortController?.signal;
+    if (waitForAbort && lastSdkAbortSignal) {
+      if (lastSdkAbortSignal.aborted) {
+        throw new Error('aborted');
+      }
+      await new Promise<void>((resolve) => {
+        lastSdkAbortSignal!.addEventListener('abort', () => resolve(), { once: true });
+      });
+      throw new Error('aborted');
+    }
     for (const msg of mockMessages) {
       yield msg;
     }
@@ -43,9 +57,59 @@ function createConfig(sdkOptions?: Partial<ClaudeSdkOptions>) {
 describe('claude-sdk-executor', () => {
   beforeEach(() => {
     mockMessages.length = 0;
+    waitForAbort = false;
+    lastSdkAbortSignal = undefined;
+    queryCount = 0;
   });
 
   describe('executeSdk', () => {
+    it('aborts an active SDK query during provider shutdown', async () => {
+      waitForAbort = true;
+      const shutdownController = new AbortController();
+      const execution = executeSdk(createOptions(), {
+        ...createConfig(),
+        shutdownSignal: shutdownController.signal,
+      });
+      await vi.waitFor(() => expect(lastSdkAbortSignal).toBeDefined());
+
+      shutdownController.abort();
+
+      await expect(execution).rejects.toThrow('aborted');
+      expect(lastSdkAbortSignal?.aborted).toBe(true);
+    });
+
+    it('does not retry an existing session after shutdown cancellation', async () => {
+      waitForAbort = true;
+      const shutdownController = new AbortController();
+      const sessionManager = new ClaudeSdkSessionManager();
+      sessionManager.set('client', 'existing-session', 'claude-sonnet-4-6');
+      const execution = executeSdk(createOptions(), {
+        ...createConfig(),
+        shutdownSignal: shutdownController.signal,
+        sessionManager,
+        clientKey: 'client',
+      });
+      await vi.waitFor(() => expect(lastSdkAbortSignal).toBeDefined());
+
+      shutdownController.abort();
+
+      await expect(execution).rejects.toThrow('aborted');
+      expect(queryCount).toBe(1);
+      sessionManager.destroy();
+    });
+
+    it('passes an already-aborted shutdown signal to the SDK query', async () => {
+      waitForAbort = true;
+      const shutdownController = new AbortController();
+      shutdownController.abort();
+
+      await expect(executeSdk(createOptions(), {
+        ...createConfig(),
+        shutdownSignal: shutdownController.signal,
+      })).rejects.toThrow('aborted');
+      expect(lastSdkAbortSignal?.aborted).toBe(true);
+    });
+
     it('executes Claude SDK requests', async () => {
       mockMessages.push(
         {
@@ -136,6 +200,31 @@ describe('claude-sdk-executor', () => {
   });
 
   describe('executeStreamSdk', () => {
+    it('does not retry an existing session after request cancellation', async () => {
+      waitForAbort = true;
+      const requestController = new AbortController();
+      const sessionManager = new ClaudeSdkSessionManager();
+      sessionManager.set('client', 'existing-session', 'claude-sonnet-4-6');
+      const stream = executeStreamSdk(createOptions({
+        stream: true,
+        signal: requestController.signal,
+      }), {
+        ...createConfig(),
+        sessionManager,
+        clientKey: 'client',
+      });
+      const consumption = (async () => {
+        for await (const event of stream) void event;
+      })();
+      await vi.waitFor(() => expect(lastSdkAbortSignal).toBeDefined());
+
+      requestController.abort();
+
+      await expect(consumption).rejects.toThrow('aborted');
+      expect(queryCount).toBe(1);
+      sessionManager.destroy();
+    });
+
     it('executes Claude SDK requests', async () => {
       mockMessages.push(
         {

@@ -3,6 +3,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { CodexAppServerOptions } from '@agent-proxy/shared';
+import { terminateChildProcess, trackProcess } from './base-provider.js';
 
 const DEFAULT_RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30000;
@@ -58,7 +59,9 @@ export class CodexAppServerProcess {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...this.config.env } as NodeJS.ProcessEnv,
         cwd: this.config.workingDir,
+        detached: process.platform !== 'win32',
       });
+      trackProcess(this.child, process.platform !== 'win32');
 
 
       const rl = createInterface({ input: this.child.stdout! });
@@ -123,27 +126,11 @@ export class CodexAppServerProcess {
     this.child = null;
     this.initialized = false;
 
-    return new Promise<void>((resolve) => {
-
-      const killTimer = setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-        }
-        resolve();
-      }, GRACEFUL_SHUTDOWN_MS);
-
-      child.once('exit', () => {
-        clearTimeout(killTimer);
-        this.stopping = false;
-        resolve();
-      });
-
-      try {
-        child.kill('SIGTERM');
-      } catch {
-      }
-    });
+    try {
+      await terminateChildProcess(child, GRACEFUL_SHUTDOWN_MS);
+    } finally {
+      this.stopping = false;
+    }
   }
 
   isAlive(): boolean {

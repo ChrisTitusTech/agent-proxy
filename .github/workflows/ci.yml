@@ -48,6 +48,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify Linux service restart and persistence
+        if: matrix.node == 20
+        run: scripts/test-linux-service.sh
+
+      - name: Verify production release archive
+        if: matrix.node == 20
+        run: scripts/test-release.sh
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
@@ -64,11 +72,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes shellcheck shfmt
 
-      - name: Validate start script
+      - name: Validate shell scripts and systemd packaging
         run: |
-          bash -n start.sh
-          shellcheck start.sh
-          shfmt -d start.sh
+          for script in start.sh scripts/*.sh; do
+            bash -n "$script"
+          done
+          shellcheck start.sh scripts/*.sh
+          shfmt -d start.sh scripts/*.sh
+          scripts/test-linux-install.sh
+          systemd-analyze verify packaging/systemd/agent-proxy.service
+          systemd-analyze security --offline=yes \
+            packaging/systemd/agent-proxy.service
 
   container:
     name: Container build

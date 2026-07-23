@@ -1,4 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./pty-session.js', () => ({
+  runClaudeJob: vi.fn((
+    _prompt: string,
+    _config: unknown,
+    signal?: AbortSignal,
+  ) => new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => reject(new Error('Request cancelled')), {
+      once: true,
+    });
+  })),
+}));
+
 import { ChannelBridge, type BridgeServerOptions } from './bridge-server.js';
 
 
@@ -78,5 +91,32 @@ describe('ChannelBridge HTTP', () => {
     const { base } = await boot();
     const res = await fetch(`${base}/nope`);
     expect(res.status).toBe(404);
+  });
+
+  it('marks queued jobs failed when the bridge closes', async () => {
+    const { base } = await boot({ maxConcurrent: 1 });
+    await fetch(`${base}/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'active' }),
+    });
+    const queuedResponse = await fetch(`${base}/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'queued' }),
+    });
+    const queued = await queuedResponse.json() as { job_id: string };
+
+    const closing = bridge!.close();
+    const jobs = (bridge as unknown as {
+      jobs: Map<string, { status: string; error?: string }>;
+    }).jobs;
+
+    expect(jobs.get(queued.job_id)).toMatchObject({
+      status: 'failed',
+      error: 'Bridge shutting down',
+    });
+    await closing;
+    bridge = null;
   });
 });

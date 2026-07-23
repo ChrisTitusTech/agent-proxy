@@ -28,6 +28,12 @@ export class ProviderRegistry {
     return this.providers.delete(name);
   }
 
+  async shutdownAll(): Promise<void> {
+    await Promise.allSettled(
+      Array.from(this.providers.values(), (provider) => provider.shutdown()),
+    );
+  }
+
 
   getProviderConfig(name: string): ProviderConfigYaml | undefined {
     const provider = this.providers.get(name);

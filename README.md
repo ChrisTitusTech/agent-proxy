@@ -183,6 +183,10 @@ bash -n start.sh
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the complete contributor workflow
 and [SECURITY.md](./SECURITY.md) for private vulnerability reporting.
 
+Production systemd installation, upgrades, rollback, backup, restore, and
+uninstall are documented in the
+[Linux service operations runbook](./docs/linux-service.md).
+
 ## References
 
 - [OpenAI Responses streaming reference](https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta)

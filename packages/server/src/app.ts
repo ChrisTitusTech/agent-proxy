@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import type { AppConfig } from '@agent-proxy/shared';
 import { initDatabase } from './db/client.js';
@@ -22,6 +23,7 @@ import { registerApiKeysRoutes } from './routes/admin/api-keys.js';
 import { registerStatsRoutes } from './routes/admin/stats.js';
 import { registerProvidersRoutes, sanitizeRuntimeProviderConfig } from './routes/admin/providers.js';
 import { registerChannelBridgeRoutes, maybeAutoStartBridge } from './routes/admin/channel-bridge.js';
+import { channelBridgeManager } from './channel-bridge/manager.js';
 import { registerTestModelRoute } from './routes/admin/test-model.js';
 import { registerRateLimitsRoutes, loadRateLimitsFromDb } from './routes/admin/rate-limits.js';
 import { loadProviderConfigFromDb } from './routes/admin/providers.js';
@@ -39,7 +41,11 @@ import { loadHttpProviders } from './providers/http-provider-loader.js';
 import { seedDatabase } from './db/seed.js';
 import type { ValidationConfig } from '@agent-proxy/shared';
 
-export async function createApp(config: AppConfig) {
+export type AgentProxyApp = FastifyInstance & {
+  stopProviderProcesses: () => Promise<void>;
+};
+
+export async function createApp(config: AppConfig): Promise<AgentProxyApp> {
 
   if (!config.auth.adminToken) {
     throw new Error('ADMIN_TOKEN must be set. Set it in .env or config.yaml.');
@@ -302,11 +308,23 @@ export async function createApp(config: AppConfig) {
   }, 5 * 60 * 1000);
 
 
+  let providerStopPromise: Promise<void> | null = null;
+  const stopProviderProcesses = (): Promise<void> => {
+    providerStopPromise ??= Promise.all([
+      registry.shutdownAll(),
+      channelBridgeManager.stop(),
+    ]).then(() => undefined);
+    return providerStopPromise;
+  };
+  const lifecycleApp = app as unknown as AgentProxyApp;
+  lifecycleApp.stopProviderProcesses = stopProviderProcesses;
+
   app.addHook('onClose', async () => {
     healthChecker.stop();
     await rateLimiter.destroy();
     clearInterval(cacheCleanupTimer);
+    await stopProviderProcesses();
   });
 
-  return app;
+  return lifecycleApp;
 }

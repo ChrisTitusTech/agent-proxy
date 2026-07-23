@@ -42,7 +42,7 @@ wire-protocol behavior.
 
 ## Phase 1: Linux service baseline
 
-Status: Planned
+Status: Complete
 
 Scope:
 
@@ -62,6 +62,10 @@ Acceptance criteria:
 - An external health probe passes after restart.
 
 Rollback: retain the previous binary/package and a pre-upgrade SQLite backup.
+
+Validation evidence is tracked in [TASKS.md](./TASKS.md), including the
+installer lifecycle, restart persistence, external health probe, provider
+process-group termination, release preflight, and systemd security review.
 
 ## Phase 2: OpenAI Responses compatibility
 
