@@ -13,6 +13,8 @@ test -f "$ARCHIVE"
 tar -tzf "$ARCHIVE" >"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/VERSION$' "$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/packages/server/dist/index.js$' "$TEST_DIR/archive-manifest.txt"
+grep -q '^agent-proxy/packaging/systemd/config.example.yaml$' \
+	"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/node_modules/' "$TEST_DIR/archive-manifest.txt"
 if grep -q '^agent-proxy/node_modules/react/' "$TEST_DIR/archive-manifest.txt"; then
 	printf 'Production archive contains dashboard-only React dependencies.\n' >&2

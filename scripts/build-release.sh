@@ -71,7 +71,7 @@ cp -a packages/shared/dist "$STAGE_DIR/agent-proxy/packages/shared/"
 cp -a packages/server/dist "$STAGE_DIR/agent-proxy/packages/server/"
 cp packaging/systemd/agent-proxy.service \
 	packaging/systemd/agent-proxy.env \
-	packaging/systemd/config.yaml \
+	packaging/systemd/config.example.yaml \
 	"$STAGE_DIR/agent-proxy/packaging/systemd/"
 printf '%s\n' "$RELEASE_ID" >"$STAGE_DIR/agent-proxy/VERSION"
 

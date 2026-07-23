@@ -219,7 +219,7 @@ install_release() {
 	ln -sfn "$release_dir" "$OPT_DIR/current"
 
 	[[ -f "$ETC_DIR/config.yaml" ]] ||
-		install -m 0640 "$release_dir/packaging/systemd/config.yaml" "$ETC_DIR/config.yaml"
+		install -m 0640 "$release_dir/packaging/systemd/config.example.yaml" "$ETC_DIR/config.yaml"
 	[[ -f "$ETC_DIR/agent-proxy.env" ]] ||
 		install -m 0600 "$release_dir/packaging/systemd/agent-proxy.env" "$ETC_DIR/agent-proxy.env"
 	install -D -m 0644 "$release_dir/packaging/systemd/agent-proxy.service" "$UNIT_PATH"
