@@ -314,6 +314,16 @@ export async function terminateChildProcess(
     return;
   }
 
+  if (
+    process.platform !== 'win32'
+    && processGroupChildren.has(child)
+    && child.pid
+  ) {
+    await terminateProcessGroup(child.pid, timeoutMs);
+    activeProcesses.delete(child);
+    return;
+  }
+
   await new Promise<void>((resolve) => {
     let settled = false;
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -353,6 +363,51 @@ function signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
     return;
   }
   child.kill(signal);
+}
+
+async function terminateProcessGroup(
+  processGroupId: number,
+  timeoutMs: number,
+): Promise<void> {
+  try {
+    process.kill(-processGroupId, 'SIGTERM');
+  } catch {
+    return;
+  }
+
+  if (await waitForProcessGroupExit(processGroupId, timeoutMs)) {
+    return;
+  }
+
+  try {
+    process.kill(-processGroupId, 'SIGKILL');
+  } catch {
+    return;
+  }
+  await waitForProcessGroupExit(processGroupId, 1_000);
+}
+
+function waitForProcessGroupExit(
+  processGroupId: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const check = () => {
+      try {
+        process.kill(-processGroupId, 0);
+      } catch {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      setTimeout(check, 25);
+    };
+    check();
+  });
 }
 
 

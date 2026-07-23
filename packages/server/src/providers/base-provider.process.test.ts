@@ -61,4 +61,22 @@ describe('provider child-process lifecycle', () => {
 
     await expect(waitForProcessExit(grandchildPid)).resolves.toBe(true);
   });
+
+  it.runIf(process.platform !== 'win32')('force-kills a descendant that ignores SIGTERM', async () => {
+    const child = spawn('/bin/sh', [
+      '-c',
+      'trap "exit 0" TERM; sh -c \'trap "" TERM; sleep 60\' & printf "%s\\n" "$!"; wait',
+    ], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    trackProcess(child, true);
+    const grandchildPid = await new Promise<number>((resolve) => {
+      child.stdout!.once('data', (data: Buffer) => resolve(Number(data.toString().trim())));
+    });
+
+    await killAllChildProcesses(100);
+
+    await expect(waitForProcessExit(grandchildPid)).resolves.toBe(true);
+  });
 });

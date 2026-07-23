@@ -130,4 +130,19 @@ describe('runPreflightChecks', () => {
       path: tempDir,
     })).toThrow(/admin_token still contains a placeholder[\s\S]*initial_keys\[0\]\.key still contains a placeholder/);
   });
+
+  it('requires the admin token when data-plane authentication is disabled', () => {
+    const appConfig = config({
+      auth: {
+        enabled: false,
+        adminToken: '',
+        initialKeys: [],
+      },
+    });
+
+    expect(() => runPreflightChecks(appConfig, {
+      configPath: join(tempDir, 'config.yaml'),
+      path: tempDir,
+    })).toThrow(/auth\.admin_token must not be empty/);
+  });
 });

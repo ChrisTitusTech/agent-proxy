@@ -69,9 +69,9 @@ export function runPreflightChecks(
     }
   }
 
-  if (config.auth.enabled && !config.auth.adminToken.trim()) {
-    errors.push('auth.admin_token must not be empty when authentication is enabled.');
-  } else if (config.auth.enabled && isPlaceholderSecret(config.auth.adminToken)) {
+  if (!config.auth.adminToken.trim()) {
+    errors.push('auth.admin_token must not be empty.');
+  } else if (isPlaceholderSecret(config.auth.adminToken)) {
     errors.push('auth.admin_token still contains a placeholder value.');
   }
   for (const [index, key] of config.auth.initialKeys.entries()) {

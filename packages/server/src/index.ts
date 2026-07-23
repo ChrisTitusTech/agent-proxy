@@ -41,10 +41,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   const app = await createApp(config);
 
-  await app.listen({
-    port: config.server.port,
-    host: config.server.host,
-  });
+  try {
+    await app.listen({
+      port: config.server.port,
+      host: config.server.host,
+    });
+  } catch (error) {
+    await app.close().catch(() => undefined);
+    await killAllChildProcesses(1_000);
+    closeDatabase();
+    throw error;
+  }
 
   console.log(`agent-proxy started
 API: http://${config.server.host}:${config.server.port}

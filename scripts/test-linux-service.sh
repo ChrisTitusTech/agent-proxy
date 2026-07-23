@@ -120,6 +120,26 @@ stop_server() {
 }
 
 start_server
+node "$PROJECT_DIR/packages/server/dist/index.js" \
+	>"$TEST_DIR/conflicting-server.log" 2>&1 &
+CONFLICT_PID=$!
+for _ in {1..50}; do
+	if ! kill -0 "$CONFLICT_PID" 2>/dev/null; then
+		break
+	fi
+	sleep 0.1
+done
+if kill -0 "$CONFLICT_PID" 2>/dev/null; then
+	kill -KILL "$CONFLICT_PID" 2>/dev/null || true
+	wait "$CONFLICT_PID" 2>/dev/null || true
+	printf 'Server stayed alive after a listen failure.\n' >&2
+	exit 1
+fi
+if wait "$CONFLICT_PID"; then
+	printf 'Server returned success after a listen failure.\n' >&2
+	exit 1
+fi
+
 curl --silent --fail \
 	-H "x-admin-token: $ADMIN_TOKEN" \
 	-H 'content-type: application/json' \
