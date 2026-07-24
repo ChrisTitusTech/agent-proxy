@@ -4,6 +4,8 @@ This file tracks work derived from [SPEC.md](./SPEC.md) and
 [ROADMAP.md](./ROADMAP.md). A task is complete only when its listed validation
 passes.
 
+Last updated: 2026-07-23
+
 ## Phase 1: Linux service baseline
 
 Status: Complete
@@ -64,6 +66,8 @@ systemd-analyze security --offline=yes \
 
 Status: Complete
 
+Completed: 2026-07-23
+
 - [x] P2-01: Define and validate the supported Responses request schema.
   - Acceptance: `model`, string and item-array `input`, `instructions`,
     `stream`, function `tools`, `tool_choice`, `max_output_tokens`, reasoning
@@ -116,6 +120,7 @@ Phase exit gate:
 ```bash
 npm run typecheck
 npm test -- packages/server/src/routes/v1/responses.test.ts
+npm run build
 scripts/test-responses-compat.sh
 ```
 
@@ -124,7 +129,12 @@ acceptance passes.
 
 ## Phase 3: Native CLI and Open WebUI compatibility
 
-Status: Planned
+Status: Ready to begin
+
+Entry gate verified: 2026-07-23
+
+Entry point: P3-01. Phase 3 has not started; all tasks remain unchecked until
+their listed validation passes.
 
 - [ ] P3-01: Build a sanitized live-client compatibility harness.
   - Acceptance: the harness records client and server versions, uses temporary
@@ -395,9 +405,9 @@ scripts/acceptance-check.sh --require-live
 
 Status: Planned
 
-- [ ] P7-01: Resolve licensing and upstream attribution.
-  - Acceptance: the repository and release contain the correct license,
-    upstream attribution, notices, and redistribution terms.
+- [ ] P7-01: Confirm upstream licensing and attribution obligations.
+  - Acceptance: the repository and release preserve the MIT license and contain
+    all required upstream attribution, notices, and redistribution terms.
   - Validation: legal-file checklist and release archive inspection.
 - [ ] P7-02: Decide the generic adapter boundary.
   - Acceptance: generic CLI and HTTP adapters are either included with a frozen

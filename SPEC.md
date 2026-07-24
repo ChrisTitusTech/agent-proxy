@@ -1,5 +1,7 @@
 # agent-proxy specification
 
+Last updated: 2026-07-23
+
 ## 1. Purpose
 
 `agent-proxy` is a Linux server that exposes stable HTTP APIs in front of
@@ -423,7 +425,8 @@ Additional release gates:
 
 ## 14. Open decisions
 
-1. Confirm and add the correct license file before redistribution.
+1. Confirm upstream licensing, attribution, and notice obligations before
+   redistribution.
 2. Define the minimum supported versions of all four CLIs.
 3. Decide whether generic CLI and HTTP adapters remain in the first stable
    release or move to a later extension package.

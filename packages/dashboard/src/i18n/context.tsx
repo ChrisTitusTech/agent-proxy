@@ -1,6 +1,6 @@
 import { translations } from './translations';
 
-export function translate(
+function translate(
   key: string,
   params?: Record<string, string | number>,
 ): string {

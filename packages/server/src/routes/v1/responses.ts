@@ -61,7 +61,7 @@ type ResponseOutputItem =
   | ResponseFunctionCallOutput
   | ResponseReasoningOutput;
 
-export interface ResponsesResult {
+interface ResponsesResult {
   id: string;
   object: 'response';
   created_at: number;

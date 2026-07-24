@@ -1,8 +1,8 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
-export const MIN_HTTP_TIMEOUT_MS = 1_000;
-export const MAX_HTTP_TIMEOUT_MS = 600_000;
+const MIN_HTTP_TIMEOUT_MS = 1_000;
+const MAX_HTTP_TIMEOUT_MS = 600_000;
 
 export function clampHttpTimeoutMs(value: unknown, fallback = 300_000): number {
   const candidate = typeof value === 'number' && Number.isFinite(value)

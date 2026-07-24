@@ -2,7 +2,6 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useTranslation } from '../i18n/context';
 import {
   fetchModelMappings,
-  fetchServerInfo,
   fetchHttpProviders,
   effectiveEndpointType,
   type ModelMapping,
@@ -28,11 +27,6 @@ interface Metrics {
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
   startedAt: number;  // epoch ms
   completedAt: number;  // epoch ms
-}
-
-interface PlaygroundResponse {
-  text: string;
-  reasoning: string;
 }
 
 function formatElapsed(ms: number): string {
@@ -93,7 +87,6 @@ export default function PlaygroundPage() {
 
 
   const [models, setModels] = useState<ModelMapping[]>([]);
-  const [apiBaseUrl, setApiBaseUrl] = useState('');
 
   const [httpProviderMap, setHttpProviderMap] = useState<Record<string, HttpProviderConfig>>({});
 
@@ -156,12 +149,6 @@ export default function PlaygroundPage() {
         setSelectedModel(exists ? savedModel : enabled[0].alias);
       }
     }).catch(() => {});
-
-    fetchServerInfo().then((info) => {
-      setApiBaseUrl(`http://${window.location.hostname}:${info.serverPort}`);
-    }).catch(() => {
-      setApiBaseUrl('');
-    });
 
     fetchHttpProviders().then((list) => {
       setHttpProviderMap(Object.fromEntries(list.map((p) => [p.name, p.config])));

@@ -16,6 +16,8 @@ server and credits the upstream project for that work.
 
 ## Status
 
+Status updated: 2026-07-23
+
 The repository contains a working gateway foundation, but the full drop-in
 compatibility target is still in progress. Chat Completions and Anthropic
 Messages are the most mature paths. The Responses adapter passes its
@@ -205,5 +207,6 @@ uninstall are documented in the
 
 ## License
 
-No license file is currently included. License selection and confirmation of
-upstream licensing are required before redistribution.
+This project is licensed under the MIT License; see [LICENSE](./LICENSE).
+Upstream attribution and notice obligations must still be confirmed before the
+stable release.
