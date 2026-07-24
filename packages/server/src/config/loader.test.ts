@@ -11,6 +11,8 @@ import {
   DEFAULT_MAX_CONCURRENT,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_RATE_LIMIT_RPM,
+  DEFAULT_RESPONSES_RETENTION_TTL_MS,
+  DEFAULT_RESPONSES_MAX_ENTRIES,
 } from '@agent-proxy/shared';
 import { loadConfig } from './loader.js';
 
@@ -42,6 +44,10 @@ describe('loads and validates configuration', () => {
     expect(config.providers.grok.default_model).toBe('grok-4.5');
     expect(config.providers.grok.max_concurrent).toBe(1);
     expect(config.rateLimits.global.rpm).toBe(DEFAULT_RATE_LIMIT_RPM);
+    expect(config.responses).toEqual({
+      retentionTtlMs: DEFAULT_RESPONSES_RETENTION_TTL_MS,
+      maxEntries: DEFAULT_RESPONSES_MAX_ENTRIES,
+    });
     expect(config.modelMappings).toContainEqual({
       alias: 'claude-sonnet-5',
       provider: 'claude',
@@ -74,6 +80,20 @@ describe('loads and validates configuration', () => {
       delete process.env.AGENT_PROXY_PORT;
       delete process.env.AGENT_PROXY_DATABASE_PATH;
     }
+  });
+
+  it('loads Responses retention limits', () => {
+    const path = writeConfig(`
+responses:
+  retention_ttl_ms: 60000
+  max_entries: 25
+`);
+    const config = loadConfig(path);
+
+    expect(config.responses).toEqual({
+      retentionTtlMs: 60_000,
+      maxEntries: 25,
+    });
   });
 
   it('rejects invalid AGENT_PROXY_PORT values', () => {

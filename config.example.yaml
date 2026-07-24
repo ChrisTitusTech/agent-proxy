@@ -97,6 +97,11 @@ cache:
   ttl_seconds: 3600
   max_entries: 1000
 
+responses:
+  # previous_response_id state is in-memory and does not survive a restart.
+  retention_ttl_ms: 1800000
+  max_entries: 1000
+
 validation:
   max_message_count: 800
   max_message_length: 250000

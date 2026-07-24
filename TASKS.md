@@ -62,49 +62,49 @@ systemd-analyze security --offline=yes \
 
 ## Phase 2: OpenAI Responses compatibility
 
-Status: Planned
+Status: Complete
 
-- [ ] P2-01: Define and validate the supported Responses request schema.
+- [x] P2-01: Define and validate the supported Responses request schema.
   - Acceptance: `model`, string and item-array `input`, `instructions`,
     `stream`, function `tools`, `tool_choice`, `max_output_tokens`, reasoning
     fields, and `previous_response_id` have explicit validation and compatible
     errors.
   - Validation: focused request-schema tests in
     `packages/server/src/routes/v1/responses.test.ts`.
-- [ ] P2-02: Normalize Responses input without losing roles or content items.
+- [x] P2-02: Normalize Responses input without losing roles or content items.
   - Acceptance: system/developer instructions, user and assistant content,
     images, function calls, and function results survive conversion into the
     provider contract.
   - Validation: table-driven converter tests with text, image, and tool
     fixtures.
-- [ ] P2-03: Implement complete non-streaming Responses output.
+- [x] P2-03: Implement complete non-streaming Responses output.
   - Acceptance: stable response IDs, status, model, output items, content,
     finish state, reasoning where supported, and usage conform to the supported
     Responses subset.
   - Validation: OpenAI SDK non-streaming contract tests against an in-process
     server.
-- [ ] P2-04: Implement ordered Responses SSE output and terminal errors.
+- [x] P2-04: Implement ordered Responses SSE output and terminal errors.
   - Acceptance: creation, item, content-part, delta, completion, and terminal
     events appear in valid order; failures produce one terminal failed event.
   - Validation: event-sequence fixtures plus OpenAI SDK streaming tests.
-- [ ] P2-05: Round-trip one complete Responses function-tool loop.
+- [x] P2-05: Round-trip one complete Responses function-tool loop.
   - Acceptance: tool definitions and choice reach the provider, tool-call IDs
     return to the client, tool results are accepted, and the final assistant
     response completes.
   - Validation: deterministic fake-provider tool-loop test and one supported
     live-provider acceptance test.
-- [ ] P2-06: Define response continuation and retention.
+- [x] P2-06: Define response continuation and retention.
   - Acceptance: `previous_response_id` or the documented equivalent maps to a
     bounded, model-aware, client-isolated session with expiration and explicit
     not-found behavior.
   - Validation: continuation, expiration, model-change, and cross-client
     isolation tests.
-- [ ] P2-07: Implement cancellation, timeout, retry, and disconnect behavior.
+- [x] P2-07: Implement cancellation, timeout, retry, and disconnect behavior.
   - Acceptance: disconnects abort or safely detach, timeouts have compatible
     errors, retries are bounded, and no provider child remains orphaned.
   - Validation: abort and timeout integration tests plus process-lifecycle
     assertions.
-- [ ] P2-08: Make the Responses contract provider-independent.
+- [x] P2-08: Make the Responses contract provider-independent.
   - Acceptance: the same contract suite runs against fake Codex and Grok
     adapters without route-specific branches; unsupported fields identify the
     exact parameter.

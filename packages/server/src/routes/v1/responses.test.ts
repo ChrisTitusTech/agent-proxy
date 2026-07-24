@@ -1,227 +1,936 @@
+import type { AddressInfo } from 'node:net';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import OpenAI from 'openai';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type {
+  BaseProvider,
+} from '../../providers/base-provider.js';
+import { HttpProvider } from '../../providers/http-provider.js';
+import type {
+  ExecuteOptions,
+  ExecuteResult,
+  ProviderEvent,
+  ValidationConfig,
+} from '@agent-proxy/shared';
+import type { ResponsesDeps } from './responses.js';
+import { registerResponsesRoute } from './responses.js';
 import {
-  buildResponsesEvents,
-  registerResponsesRoute,
-  toChatCompletionsRequest,
-  toResponsesResult,
-} from './responses.js';
+  normalizeResponsesInput,
+  parseResponsesRequest,
+  type ResponsesRequest,
+} from './responses-schema.js';
+import { ResponsesStore } from './responses-store.js';
+
+const validation: ValidationConfig = {
+  maxMessageCount: 100,
+  maxMessageLength: 10_000,
+  maxPromptLength: 100_000,
+  maxResponseLength: 100_000,
+  bodyLimitBytes: 1_000_000,
+};
+
+const defaultResult: ExecuteResult = {
+  content: 'Hello from the provider.',
+  usage: {
+    promptTokens: 4,
+    completionTokens: 5,
+    totalTokens: 9,
+  },
+  finishReason: 'stop',
+};
+
+interface FakeProviderOptions {
+  name?: string;
+  execute?: (options: ExecuteOptions) => Promise<ExecuteResult>;
+  executeStream?: (options: ExecuteOptions) => AsyncIterable<ProviderEvent>;
+}
+
+function fakeProvider(options: FakeProviderOptions = {}): BaseProvider {
+  return {
+    name: options.name ?? 'codex',
+    execute: options.execute ?? (async () => defaultResult),
+    executeStream: options.executeStream ?? (async function* () {
+      yield { type: 'text_delta', text: 'Hello ' };
+      yield { type: 'text_delta', text: 'stream.' };
+      yield { type: 'usage', usage: defaultResult.usage };
+      yield { type: 'done', finishReason: 'stop' };
+    }),
+    getConfig: () => ({
+      enabled: true,
+      cli_path: 'fake',
+      default_model: 'fake-model',
+      max_concurrent: 1,
+      timeout_ms: 1_000,
+      extra_args: [],
+    }),
+  } as unknown as BaseProvider;
+}
+
+function createDeps(
+  providers: Record<string, BaseProvider> = { codex: fakeProvider() },
+  routes = [{ provider: 'codex', actualModel: 'fake-model' }],
+  store = new ResponsesStore(),
+): ResponsesDeps {
+  return {
+    router: {
+      resolve: vi.fn(async () => routes),
+    } as unknown as ResponsesDeps['router'],
+    queue: {
+      enqueue: vi.fn(async (_provider: string, run: () => Promise<unknown>) => run()),
+    } as unknown as ResponsesDeps['queue'],
+    rateLimiter: {
+      checkGlobalAndKey: vi.fn(() => ({ allowed: true })),
+      checkProvider: vi.fn(() => ({ allowed: true })),
+    } as unknown as ResponsesDeps['rateLimiter'],
+    registry: {
+      get: vi.fn((name: string) => providers[name]),
+    } as unknown as ResponsesDeps['registry'],
+    healthChecker: {
+      isHealthy: vi.fn(async () => true),
+      onRequestFailure: vi.fn(async () => undefined),
+    } as unknown as ResponsesDeps['healthChecker'],
+    validation,
+    activeRequests: {
+      start: vi.fn(),
+      finish: vi.fn(),
+    } as unknown as ResponsesDeps['activeRequests'],
+    store,
+    requestLogger: vi.fn(),
+  };
+}
+
+async function createTestApp(deps = createDeps()): Promise<FastifyInstance> {
+  const testApp = Fastify();
+  registerResponsesRoute(testApp, deps);
+  await testApp.ready();
+  return testApp;
+}
+
+async function createSdkClient(
+  deps = createDeps(),
+): Promise<{ app: FastifyInstance; client: OpenAI }> {
+  const testApp = await createTestApp(deps);
+  await testApp.listen({ host: '127.0.0.1', port: 0 });
+  const address = testApp.server.address() as AddressInfo;
+  return {
+    app: testApp,
+    client: new OpenAI({
+      apiKey: 'sk-proxy-test',
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    }),
+  };
+}
 
 let app: FastifyInstance | undefined;
+let upstreamApp: FastifyInstance | undefined;
 
 afterEach(async () => {
   await app?.close();
+  await upstreamApp?.close();
   app = undefined;
+  upstreamApp = undefined;
 });
 
-describe('Responses API adapter', () => {
-  it('converts string input to a Chat Completions request', () => {
-    expect(toChatCompletionsRequest({
+describe('Responses request validation', () => {
+  it('accepts the documented Phase 2 request fields', () => {
+    const parsed = parseResponsesRequest({
       model: 'gpt-test',
       input: 'hello',
-      max_output_tokens: 100,
-      temperature: 0.2,
-    })).toEqual({
-      model: 'gpt-test',
-      messages: [{ role: 'user', content: 'hello' }],
+      instructions: 'be concise',
       stream: false,
-      max_tokens: 100,
-      temperature: 0.2,
-    });
-  });
-
-  it('preserves message arrays and explicit max_tokens', () => {
-    const messages = [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }];
-
-    expect(toChatCompletionsRequest({
-      model: 'gpt-test',
-      messages,
-      max_tokens: 50,
-    })).toEqual({
-      model: 'gpt-test',
-      messages,
-      stream: false,
-      max_tokens: 50,
-      temperature: undefined,
-    });
-  });
-
-  it('converts Chat Completions output and usage to a Responses result', () => {
-    const result = toResponsesResult({
-      id: 'chatcmpl-test',
-      created: 123,
-      model: 'actual-model',
-      choices: [{ message: { role: 'assistant', content: 'done' } }],
-      usage: {
-        prompt_tokens: 10,
-        completion_tokens: 2,
-        total_tokens: 12,
-      },
-    }, 'requested-model');
-
-    expect(result).toMatchObject({
-      id: 'chatcmpl-test',
-      object: 'response',
-      created_at: 123,
-      status: 'completed',
-      model: 'actual-model',
-      output: [{
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: 'done' }],
+      tools: [{
+        type: 'function',
+        name: 'lookup',
+        parameters: { type: 'object' },
+        strict: true,
       }],
-      usage: {
-        input_tokens: 10,
-        output_tokens: 2,
-        total_tokens: 12,
+      tool_choice: { type: 'function', name: 'lookup' },
+      max_output_tokens: 100,
+      reasoning: { effort: 'high', summary: 'auto' },
+      previous_response_id: 'resp_previous',
+      store: true,
+      metadata: { tenant: 'test' },
+      parallel_tool_calls: false,
+      temperature: 0.2,
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it.each([
+    [{ input: 'hello' }, 'model'],
+    [{ model: 'gpt-test' }, 'input'],
+    [{ model: 'gpt-test', input: 'hello', unsupported: true }, 'unsupported'],
+    [{ model: 'gpt-test', input: 'hello', max_output_tokens: 0 }, 'max_output_tokens'],
+    [{
+      model: 'gpt-test',
+      input: 'hello',
+      tools: [{ type: 'web_search' }],
+    }, 'tools[0].type'],
+  ])('returns an exact parameter for invalid input %#', async (body, param) => {
+    app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toMatchObject({
+      type: 'invalid_request_error',
+      param,
+    });
+  });
+});
+
+describe('Responses input normalization', () => {
+  it('preserves instructions, roles, images, function calls, and results', () => {
+    const request = {
+      model: 'gpt-test',
+      instructions: 'Current instructions',
+      input: [
+        {
+          role: 'developer',
+          content: [{ type: 'input_text', text: 'Developer context' }],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Inspect this' },
+            {
+              type: 'input_image',
+              image_url: 'https://example.test/image.png',
+              detail: 'high',
+            },
+          ],
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'look\u0000up',
+          arguments: '{"id":\u00001}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: { value: 'done' },
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Finished' }],
+        },
+      ],
+      tools: [{
+        type: 'function',
+        name: 'lookup',
+        parameters: { type: 'object' },
+        strict: true,
+      }],
+      tool_choice: { type: 'function', name: 'lookup' },
+    } satisfies ResponsesRequest;
+
+    const result = normalizeResponsesInput(request, validation);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    expect(result.data.instructionMessages).toEqual([
+      { role: 'developer', content: 'Current instructions' },
+    ]);
+    expect(result.data.inputMessages).toEqual([
+      {
+        role: 'developer',
+        content: [{ type: 'text', text: 'Developer context' }],
       },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Inspect this' },
+          {
+            type: 'input_image',
+            image_url: 'https://example.test/image.png',
+            detail: 'high',
+          },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{"id":1}' },
+        }],
+      },
+      {
+        role: 'tool',
+        content: '{"value":"done"}',
+        tool_call_id: 'call_1',
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Finished' }],
+      },
+    ]);
+    expect(result.data.tools?.[0].function.strict).toBe(true);
+    expect(result.data.toolChoice).toEqual({
+      type: 'function',
+      function: { name: 'lookup' },
+    });
+  });
+});
+
+describe('Responses SDK compatibility', () => {
+  it('returns a complete non-streaming response through the OpenAI SDK', async () => {
+    const fixture = await createSdkClient();
+    app = fixture.app;
+
+    const response = await fixture.client.responses.create({
+      model: 'gpt-test',
+      input: 'hello',
+      reasoning: { effort: 'high' },
+    });
+
+    expect(response.id).toMatch(/^resp_/);
+    expect(response.status).toBe('completed');
+    expect(response.output_text).toBe('Hello from the provider.');
+    expect(response.usage).toMatchObject({
+      input_tokens: 4,
+      output_tokens: 5,
+      total_tokens: 9,
     });
   });
 
-  it('builds Responses SSE events in protocol order', () => {
-    const result = toResponsesResult({
-      id: 'chatcmpl-test',
-      created: 123,
-      model: 'actual-model',
-      choices: [{ message: { content: 'abcdefghijklmnopqrstuvwxyz' } }],
-    }, 'requested-model');
+  it('streams ordered typed events through the OpenAI SDK', async () => {
+    const fixture = await createSdkClient();
+    app = fixture.app;
+    const stream = await fixture.client.responses.create({
+      model: 'gpt-test',
+      input: 'hello',
+      stream: true,
+    });
 
-    const events = buildResponsesEvents(result);
+    const eventTypes: string[] = [];
+    let text = '';
+    let createdAt: number | undefined;
+    let completedAt: number | undefined;
+    for await (const event of stream) {
+      eventTypes.push(event.type);
+      if (event.type === 'response.output_text.delta') text += event.delta;
+      if (event.type === 'response.created') {
+        createdAt = event.response.created_at;
+      }
+      if (event.type === 'response.completed') {
+        completedAt = event.response.created_at;
+      }
+    }
 
-    expect(events.map((item) => item.event)).toEqual([
+    expect(text).toBe('Hello stream.');
+    expect(eventTypes).toEqual([
       'response.created',
+      'response.in_progress',
       'response.output_item.added',
       'response.content_part.added',
       'response.output_text.delta',
       'response.output_text.delta',
       'response.output_text.done',
+      'response.content_part.done',
       'response.output_item.done',
       'response.completed',
     ]);
-    expect(events[3].data.delta).toBe('abcdefghijklmnopqrst');
-    expect(events[4].data.delta).toBe('uvwxyz');
+    expect(completedAt).toBe(createdAt);
   });
 
-  it('forwards bearer and x-api-key authentication to Chat Completions', async () => {
-    app = Fastify();
-    let forwardedHeaders: Record<string, unknown> = {};
-    let forwardedBody: unknown;
+  it('coalesces streamed function argument deltas by tool index', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_stream_1',
+          toolName: 'lookup',
+          input: '{"id":',
+          index: 0,
+        };
+        yield {
+          type: 'tool_use',
+          toolCallId: '',
+          toolName: '',
+          input: '7}',
+          isPartial: true,
+          index: 0,
+        };
+        yield { type: 'done', finishReason: 'tool_use' };
+      },
+    });
+    const fixture = await createSdkClient(createDeps({ codex: provider }));
+    app = fixture.app;
+    const stream = await fixture.client.responses.create({
+      model: 'gpt-test',
+      input: 'lookup',
+      tools: [{
+        type: 'function',
+        name: 'lookup',
+        strict: false,
+        parameters: { type: 'object' },
+      }],
+      stream: true,
+    });
 
-    app.post('/v1/chat/completions', async (request) => {
-      forwardedHeaders = request.headers;
-      forwardedBody = request.body;
+    const events = [];
+    for await (const event of stream) events.push(event);
+    const completed = events.find((event) => event.type === 'response.completed');
+    expect(completed?.response.output).toEqual([
+      expect.objectContaining({
+        type: 'function_call',
+        call_id: 'call_stream_1',
+        name: 'lookup',
+        arguments: '{"id":7}',
+      }),
+    ]);
+  });
+
+  it('reflects only configured CORS origins on raw SSE responses', async () => {
+    const allowedDeps = createDeps();
+    allowedDeps.corsOrigins = ['https://allowed.example'];
+    app = await createTestApp(allowedDeps);
+
+    const allowed = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { origin: 'https://allowed.example' },
+      payload: { model: 'gpt-test', input: 'hello', stream: true },
+    });
+    expect(allowed.headers['access-control-allow-origin'])
+      .toBe('https://allowed.example');
+
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { origin: 'https://denied.example' },
+      payload: { model: 'gpt-test', input: 'hello', stream: true },
+    });
+    expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+  });
+});
+
+describe('Responses function tool loop', () => {
+  it('round-trips call IDs, strict tools, and function output', async () => {
+    const execute = vi.fn(async (options: ExecuteOptions): Promise<ExecuteResult> => {
+      if (execute.mock.calls.length === 1) {
+        expect(options.tools?.[0].function).toMatchObject({
+          name: 'lookup_weather',
+          strict: true,
+        });
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'call_weather_1',
+            type: 'function',
+            function: {
+              name: 'lookup_weather',
+              arguments: '{"city":"Chicago"}',
+            },
+          }],
+          usage: { promptTokens: 10, completionTokens: 4, totalTokens: 14 },
+          finishReason: 'tool_calls',
+        };
+      }
+
+      expect(options.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          tool_calls: [expect.objectContaining({ id: 'call_weather_1' })],
+        }),
+        expect.objectContaining({
+          role: 'tool',
+          tool_call_id: 'call_weather_1',
+          content: '72F',
+        }),
+      ]));
       return {
-        id: 'chatcmpl-test',
-        created: 123,
-        model: 'gpt-test',
-        choices: [{ message: { content: 'ok' } }],
+        content: 'It is 72F in Chicago.',
+        usage: { promptTokens: 18, completionTokens: 7, totalTokens: 25 },
+        finishReason: 'stop',
       };
     });
-    registerResponsesRoute(app);
 
-    const response = await app.inject({
-      method: 'POST',
-      url: '/v1/responses',
-      headers: {
-        authorization: 'Bearer test-token',
-        'x-api-key': 'test-api-key',
-      },
-      payload: {
-        model: 'gpt-test',
-        input: 'hello',
-      },
-    });
+    const deps = createDeps({ codex: fakeProvider({ execute }) });
+    const fixture = await createSdkClient(deps);
+    app = fixture.app;
 
-    expect(response.statusCode).toBe(200);
-    expect(forwardedHeaders.authorization).toBe('Bearer test-token');
-    expect(forwardedHeaders['x-api-key']).toBe('test-api-key');
-    expect(forwardedBody).toMatchObject({
+    const first = await fixture.client.responses.create({
       model: 'gpt-test',
-      messages: [{ role: 'user', content: 'hello' }],
-      stream: false,
+      input: 'What is the weather?',
+      tools: [{
+        type: 'function',
+        name: 'lookup_weather',
+        strict: true,
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city'],
+          additionalProperties: false,
+        },
+      }],
+      tool_choice: 'required',
     });
-    expect(response.json()).toMatchObject({
-      object: 'response',
-      status: 'completed',
-      output: [{ content: [{ text: 'ok' }] }],
+    const call = first.output.find((item) => item.type === 'function_call');
+    expect(call).toMatchObject({
+      type: 'function_call',
+      call_id: 'call_weather_1',
+      name: 'lookup_weather',
+      arguments: '{"city":"Chicago"}',
     });
+
+    const second = await fixture.client.responses.create({
+      model: 'gpt-test',
+      previous_response_id: first.id,
+      input: [{
+        type: 'function_call_output',
+        call_id: 'call_weather_1',
+        output: '72F',
+      }],
+    });
+    expect(second.output_text).toBe('It is 72F in Chicago.');
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
-  it('passes through upstream errors', async () => {
-    app = Fastify();
-    app.post('/v1/chat/completions', async (_request, reply) => {
-      return reply.status(400).send({
-        error: {
-          message: 'Model not found.',
-          code: 'model_not_found',
-        },
-      });
-    });
-    registerResponsesRoute(app);
-
+  it('rejects an orphaned function result', async () => {
+    app = await createTestApp();
     const response = await app.inject({
       method: 'POST',
       url: '/v1/responses',
-      payload: { model: 'missing', input: 'hello' },
+      payload: {
+        model: 'gpt-test',
+        input: [{
+          type: 'function_call_output',
+          call_id: 'missing_call',
+          output: 'result',
+        }],
+      },
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
-      error: {
-        message: 'Model not found.',
-        code: 'model_not_found',
-      },
+    expect(response.json().error).toMatchObject({
+      param: 'input[0].call_id',
+      code: 'function_call_not_found',
     });
   });
 
-  it('returns a structured error for invalid upstream JSON', async () => {
-    app = Fastify();
-    app.post('/v1/chat/completions', async (_request, reply) => {
-      return reply.type('text/plain').send('not-json');
-    });
-    registerResponsesRoute(app);
+  it('completes a tool loop through the real HTTP provider adapter', async () => {
+    upstreamApp = Fastify();
+    let requestCount = 0;
+    upstreamApp.post('/chat/completions', async (request) => {
+      requestCount++;
+      const body = request.body as Record<string, unknown>;
+      const messages = body.messages as Array<Record<string, unknown>>;
 
+      if (requestCount === 1) {
+        expect(body.tools).toEqual([
+          {
+            type: 'function',
+            function: {
+              name: 'lookup',
+              parameters: {
+                type: 'object',
+                properties: { id: { type: 'number' } },
+                required: ['id'],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          },
+        ]);
+        expect(body.tool_choice).toBe('required');
+        return {
+          id: 'chatcmpl-tool',
+          object: 'chat.completion',
+          created: 1,
+          model: 'upstream-model',
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{
+                id: 'call_http_1',
+                type: 'function',
+                function: { name: 'lookup', arguments: '{"id":7}' },
+              }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        };
+      }
+
+      expect(messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          tool_calls: [expect.objectContaining({ id: 'call_http_1' })],
+        }),
+        expect.objectContaining({
+          role: 'tool',
+          tool_call_id: 'call_http_1',
+          content: 'record seven',
+        }),
+      ]));
+      return {
+        id: 'chatcmpl-final',
+        object: 'chat.completion',
+        created: 2,
+        model: 'upstream-model',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'The record is seven.' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+      };
+    });
+    await upstreamApp.listen({ host: '127.0.0.1', port: 0 });
+    const upstreamAddress = upstreamApp.server.address() as AddressInfo;
+    const provider = new HttpProvider('live-http', {
+      enabled: true,
+      base_url: `http://127.0.0.1:${upstreamAddress.port}`,
+      allow_private_network: true,
+      default_model: 'upstream-model',
+      max_concurrent: 1,
+      timeout_ms: 5_000,
+      display_name: 'Live test provider',
+    });
+    const deps = createDeps(
+      { 'live-http': provider },
+      [{ provider: 'live-http', actualModel: 'upstream-model' }],
+    );
+    const fixture = await createSdkClient(deps);
+    app = fixture.app;
+
+    const first = await fixture.client.responses.create({
+      model: 'http-alias',
+      input: 'Find record seven.',
+      tools: [{
+        type: 'function',
+        name: 'lookup',
+        strict: true,
+        parameters: {
+          type: 'object',
+          properties: { id: { type: 'number' } },
+          required: ['id'],
+          additionalProperties: false,
+        },
+      }],
+      tool_choice: 'required',
+    });
+    const call = first.output.find((item) => item.type === 'function_call');
+    expect(call).toMatchObject({ call_id: 'call_http_1', name: 'lookup' });
+
+    const second = await fixture.client.responses.create({
+      model: 'http-alias',
+      previous_response_id: first.id,
+      input: [{
+        type: 'function_call_output',
+        call_id: 'call_http_1',
+        output: 'record seven',
+      }],
+    });
+
+    expect(second.output_text).toBe('The record is seven.');
+    expect(requestCount).toBe(2);
+  });
+});
+
+describe('Responses continuation and retention', () => {
+  it('retains context while requiring current instructions to be resent', async () => {
+    const executions: ExecuteOptions[] = [];
+    const provider = fakeProvider({
+      execute: async (options) => {
+        executions.push(options);
+        return defaultResult;
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { 'x-agent-proxy-session-id': 'client-a' },
+      payload: {
+        model: 'gpt-test',
+        instructions: 'First instructions',
+        input: [
+          { role: 'developer', content: 'Persisted developer item' },
+          { role: 'user', content: 'first' },
+        ],
+      },
+    });
+    const firstId = first.json().id as string;
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { 'x-agent-proxy-session-id': 'client-a' },
+      payload: {
+        model: 'gpt-test',
+        instructions: 'Second instructions',
+        previous_response_id: firstId,
+        input: 'second',
+      },
+    });
+
+    expect(second.statusCode).toBe(200);
+    expect(executions[1].messages).toEqual([
+      { role: 'developer', content: 'Second instructions' },
+      { role: 'developer', content: 'Persisted developer item' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'Hello from the provider.' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
+  it('isolates previous responses by client and model', async () => {
+    app = await createTestApp();
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { 'x-agent-proxy-session-id': 'client-a' },
+      payload: { model: 'gpt-test', input: 'first' },
+    });
+    const previousId = first.json().id as string;
+
+    const crossClient = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { 'x-agent-proxy-session-id': 'client-b' },
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: previousId,
+        input: 'second',
+      },
+    });
+    expect(crossClient.statusCode).toBe(404);
+    expect(crossClient.json().error.code).toBe('response_not_found');
+
+    const modelChange = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { 'x-agent-proxy-session-id': 'client-a' },
+      payload: {
+        model: 'other-model',
+        previous_response_id: previousId,
+        input: 'second',
+      },
+    });
+    expect(modelChange.statusCode).toBe(400);
+    expect(modelChange.json().error.code).toBe('model_mismatch');
+  });
+
+  it('does not retain a response when store is false', async () => {
+    app = await createTestApp();
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'first',
+        store: false,
+      },
+    });
+    const continuation = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: first.json().id,
+        input: 'second',
+      },
+    });
+
+    expect(continuation.statusCode).toBe(404);
+    expect(continuation.json().error.code).toBe('response_not_found');
+  });
+
+  it('expires entries and enforces the retention bound', () => {
+    let now = 1_000;
+    const store = new ResponsesStore({
+      ttlMs: 100,
+      maxEntries: 2,
+      now: () => now,
+    });
+    const entry = (id: string) => ({
+      id,
+      clientKey: 'client',
+      model: 'model',
+      contextMessages: [],
+      callIds: [],
+    });
+
+    store.set(entry('one'));
+    store.set(entry('two'));
+    store.set(entry('three'));
+    expect(store.get('one', 'client')).toBeNull();
+    expect(store.size).toBe(2);
+
+    now += 101;
+    expect(store.get('two', 'client')).toBeNull();
+    expect(store.size).toBe(0);
+  });
+});
+
+describe('Responses cancellation, failures, and fallback', () => {
+  it('returns a timeout error with a compatible HTTP status', async () => {
+    const provider = fakeProvider({
+      execute: async () => {
+        throw new Error('fake CLI timed out after 10ms');
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
     const response = await app.inject({
       method: 'POST',
       url: '/v1/responses',
       payload: { model: 'gpt-test', input: 'hello' },
     });
 
-    expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({
-      error: {
-        message: 'Failed to parse upstream response.',
-        type: 'api_error',
-        code: 'invalid_upstream_response',
-      },
-    });
+    expect(response.statusCode).toBe(504);
+    expect(response.json().error.code).toBe('timeout');
   });
 
-  it('returns ordered SSE output for streaming requests', async () => {
-    app = Fastify();
-    app.post('/v1/chat/completions', async () => ({
-      id: 'chatcmpl-test',
-      created: 123,
-      model: 'gpt-test',
-      choices: [{ message: { content: 'streamed' } }],
-    }));
-    registerResponsesRoute(app);
-
+  it('uses the next mapped provider after a bounded failure', async () => {
+    const codex = fakeProvider({
+      name: 'codex',
+      execute: async () => {
+        throw new Error('codex failed');
+      },
+    });
+    const grok = fakeProvider({
+      name: 'grok',
+      execute: async () => ({
+        ...defaultResult,
+        content: 'Fallback succeeded.',
+      }),
+    });
+    const deps = createDeps(
+      { codex, grok },
+      [
+        { provider: 'codex', actualModel: 'codex-model' },
+        { provider: 'grok', actualModel: 'grok-model' },
+      ],
+    );
+    app = await createTestApp(deps);
     const response = await app.inject({
       method: 'POST',
       url: '/v1/responses',
-      payload: {
-        model: 'gpt-test',
-        input: 'hello',
-        stream: true,
-      },
+      payload: { model: 'gpt-test', input: 'hello' },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toContain('text/event-stream');
-    expect(response.body).toContain('event: response.created');
-    expect(response.body).toContain('event: response.output_text.delta');
-    expect(response.body).toContain('"delta":"streamed"');
-    expect(response.body).toContain('event: response.completed');
+    expect(response.headers['x-fallback-provider']).toBe('grok');
+    expect(response.json().output[0].content[0].text).toBe('Fallback succeeded.');
+  });
+
+  it('emits exactly one failed terminal event after a stream error', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield { type: 'text_delta', text: 'partial' };
+        throw new Error('stream exploded');
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello', stream: true },
+    });
+
+    const terminals = [...response.body.matchAll(
+      /event: response\.(completed|incomplete|failed)/g,
+    )].map((match) => match[1]);
+    expect(terminals).toEqual(['failed']);
+    expect(response.body).toContain('"code":"provider_error"');
+  });
+
+  it('propagates a client disconnect to the provider abort signal', async () => {
+    let observedSignal: AbortSignal | undefined;
+    let releaseProvider: (() => void) | undefined;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const provider = fakeProvider({
+      executeStream: async function* (options) {
+        observedSignal = options.signal;
+        yield { type: 'text_delta', text: 'started' };
+        await new Promise<void>((resolve) => {
+          options.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        releaseProvider?.();
+        throw new Error('Request cancelled');
+      },
+    });
+    const fixture = await createSdkClient(createDeps({ codex: provider }));
+    app = fixture.app;
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+
+    await Promise.race([
+      providerReleased,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('provider did not observe cancellation')),
+        2_000,
+      )),
+    ]);
+    expect(observedSignal?.aborted).toBe(true);
+  });
+});
+
+describe.each(['codex', 'grok'])('provider-independent Responses contract: %s', (name) => {
+  it('produces the same Responses object contract', async () => {
+    const provider = fakeProvider({ name });
+    const deps = createDeps(
+      { [name]: provider },
+      [{ provider: name, actualModel: `${name}-model` }],
+    );
+    app = await createTestApp(deps);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'shared-alias', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      object: 'response',
+      status: 'completed',
+      model: 'shared-alias',
+      output: [{
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        content: [{
+          type: 'output_text',
+          text: 'Hello from the provider.',
+          annotations: [],
+        }],
+      }],
+      usage: {
+        input_tokens: 4,
+        output_tokens: 5,
+        total_tokens: 9,
+      },
+    });
   });
 });

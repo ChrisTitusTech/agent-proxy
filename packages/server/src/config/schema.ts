@@ -121,6 +121,11 @@ const cacheSchema = z.object({
   max_entries: opt(positiveInt),
 });
 
+const responsesSchema = z.object({
+  retention_ttl_ms: opt(positiveInt),
+  max_entries: opt(positiveInt),
+});
+
 const validationSchema = z.object({
   max_message_count: opt(positiveInt),
   max_message_length: opt(positiveInt),
@@ -147,6 +152,7 @@ export const rawConfigSchema = z.object({
   providers: opt(z.record(z.string(), opt(providerSchema))),
   rate_limits: opt(rateLimitsSchema),
   cache: opt(cacheSchema),
+  responses: opt(responsesSchema),
   validation: opt(validationSchema),
   model_mappings: opt(z.array(modelMappingSchema)),
 });
