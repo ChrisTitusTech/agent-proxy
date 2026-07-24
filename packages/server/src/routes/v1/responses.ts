@@ -399,7 +399,12 @@ function prepareContinuation(
 function validateTools(
   body: ResponsesRequest,
 ): { message: string; param: string; code: string } | null {
-  if (body.tool_choice && body.tool_choice !== 'none' && !body.tools?.length) {
+  if (
+    body.tool_choice
+    && body.tool_choice !== 'none'
+    && body.tool_choice !== 'auto'
+    && !body.tools?.length
+  ) {
     return {
       message: 'tool_choice requires at least one function tool.',
       param: 'tool_choice',
@@ -457,7 +462,31 @@ function providerOptions(
     extraBody: route.extraBody,
     tools: context.normalized.tools,
     toolChoice: context.normalized.toolChoice,
+    parallelToolCalls: context.body.parallel_tool_calls,
   };
+}
+
+function validateReturnedToolCalls(
+  body: ResponsesRequest,
+  toolCalls: Array<{ function: { name: string } }>,
+): void {
+  if (body.parallel_tool_calls === false && toolCalls.length > 1) {
+    throw new Error('Provider returned parallel function calls when parallel_tool_calls is false.');
+  }
+
+  if (body.tool_choice === 'required' && toolCalls.length === 0) {
+    throw new Error('Provider did not return a required function call.');
+  }
+
+  if (typeof body.tool_choice === 'object') {
+    const requiredName = body.tool_choice.name;
+    if (
+      toolCalls.length === 0
+      || toolCalls.some((call) => call.function.name !== requiredName)
+    ) {
+      throw new Error(`Provider did not return the required function '${requiredName}'.`);
+    }
+  }
 }
 
 function saveResponseContext(
@@ -523,7 +552,6 @@ async function executeNonStreaming(
 
   for (const route of routes) {
     if (!await deps.healthChecker.isHealthy(route.provider)) {
-      lastError = new Error(`Provider ${route.provider} is unhealthy`);
       continue;
     }
     const providerLimit = deps.rateLimiter.checkProvider(route.provider);
@@ -550,9 +578,7 @@ async function executeNonStreaming(
         route.provider,
         () => provider.execute(providerOptions(context, route, signal)),
       );
-      if (context.body.tool_choice === 'required' && !result.toolCalls?.length) {
-        throw new Error('Provider did not return a required function call.');
-      }
+      validateReturnedToolCalls(context.body, result.toolCalls ?? []);
 
       const incomplete = result.finishReason === 'length'
         || result.content.length > deps.validation.maxResponseLength;
@@ -617,6 +643,7 @@ interface StreamState {
   functionCalls: Map<string, ResponseFunctionCallOutput>;
   usage: TokenUsage;
   finishReason: 'stop' | 'length' | 'tool_use' | 'error';
+  responseLengthExceeded: boolean;
   terminal: boolean;
 }
 
@@ -626,6 +653,7 @@ function initialStreamState(): StreamState {
     functionCalls: new Map(),
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     finishReason: 'stop',
+    responseLengthExceeded: false,
     terminal: false,
   };
 }
@@ -669,18 +697,29 @@ function consumeStreamEvent(
   reply: FastifyReply,
   state: StreamState,
   event: ProviderEvent,
+  body: ResponsesRequest,
+  maxResponseLength: number,
 ): void {
   if (event.type === 'text_delta') {
+    if (state.responseLengthExceeded) return;
     const message = ensureMessage(reply, state);
     const outputIndex = state.output.indexOf(message);
-    message.content[0].text += event.text;
-    writeSSE(reply, 'response.output_text.delta', {
-      type: 'response.output_text.delta',
-      item_id: message.id,
-      output_index: outputIndex,
-      content_index: 0,
-      delta: event.text,
-    });
+    const remaining = Math.max(0, maxResponseLength - message.content[0].text.length);
+    const delta = event.text.slice(0, remaining);
+    if (delta) {
+      message.content[0].text += delta;
+      writeSSE(reply, 'response.output_text.delta', {
+        type: 'response.output_text.delta',
+        item_id: message.id,
+        output_index: outputIndex,
+        content_index: 0,
+        delta,
+      });
+    }
+    if (event.text.length > remaining) {
+      state.responseLengthExceeded = true;
+      state.finishReason = 'length';
+    }
     return;
   }
 
@@ -715,6 +754,19 @@ function consumeStreamEvent(
       : event.toolCallId || `index-${state.functionCalls.size}`;
     let call = state.functionCalls.get(key);
     if (!call) {
+      if (body.parallel_tool_calls === false && state.functionCalls.size > 0) {
+        throw new Error(
+          'Provider returned parallel function calls when parallel_tool_calls is false.',
+        );
+      }
+      if (
+        typeof body.tool_choice === 'object'
+        && event.toolName !== body.tool_choice.name
+      ) {
+        throw new Error(
+          `Provider did not return the required function '${body.tool_choice.name}'.`,
+        );
+      }
       call = {
         id: createItemId('fc'),
         type: 'function_call',
@@ -747,7 +799,9 @@ function consumeStreamEvent(
   }
 
   if (event.type === 'done') {
-    state.finishReason = event.finishReason ?? 'stop';
+    if (!state.responseLengthExceeded) {
+      state.finishReason = event.finishReason ?? 'stop';
+    }
     return;
   }
 
@@ -869,17 +923,30 @@ async function executeStreaming(
       for await (const event of provider.executeStream(
         providerOptions(context, route, signal),
       )) {
-        consumeStreamEvent(reply, state, event);
-        if (reply.raw.destroyed || signal.aborted) break;
+        consumeStreamEvent(
+          reply,
+          state,
+          event,
+          context.body,
+          deps.validation.maxResponseLength,
+        );
+        if (
+          reply.raw.destroyed
+          || signal.aborted
+          || state.responseLengthExceeded
+        ) break;
       }
     });
 
     if (signal.aborted) {
       throw new Error('Request cancelled');
     }
-    if (context.body.tool_choice === 'required' && state.functionCalls.size === 0) {
-      throw new Error('Provider did not return a required function call.');
-    }
+    validateReturnedToolCalls(
+      context.body,
+      [...state.functionCalls.values()].map((call) => ({
+        function: { name: call.name },
+      })),
+    );
 
     finishStreamItems(reply, state);
     const incomplete = state.finishReason === 'length';

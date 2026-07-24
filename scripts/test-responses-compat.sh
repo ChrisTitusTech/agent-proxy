@@ -13,10 +13,13 @@ if [[ ${1:-} == "--require-live" ]]; then
 
 	TEST_DIR=$(mktemp -d)
 	trap 'rm -rf "$TEST_DIR"' EXIT
+	AUTH_HEADERS="$TEST_DIR/auth-headers"
+	umask 077
+	printf 'Authorization: Bearer %s\nContent-Type: application/json\n' \
+		"$PROXY_API_KEY" >"$AUTH_HEADERS"
 
 	curl --silent --show-error --fail \
-		-H "Authorization: Bearer $PROXY_API_KEY" \
-		-H "Content-Type: application/json" \
+		-H "@$AUTH_HEADERS" \
 		-d "$(printf '{"model":"%s","input":"Reply with exactly: phase-two-ok"}' "$AGENT_PROXY_MODEL")" \
 		"${AGENT_PROXY_BASE_URL%/}/v1/responses" \
 		>"$TEST_DIR/response.json"
@@ -33,8 +36,7 @@ if (!Array.isArray(response.output) || response.output.length === 0) {
 '
 
 	curl --silent --show-error --fail --no-buffer \
-		-H "Authorization: Bearer $PROXY_API_KEY" \
-		-H "Content-Type: application/json" \
+		-H "@$AUTH_HEADERS" \
 		-d "$(printf '{"model":"%s","input":"Reply with exactly: phase-two-stream-ok","stream":true}' "$AGENT_PROXY_MODEL")" \
 		"${AGENT_PROXY_BASE_URL%/}/v1/responses" \
 		>"$TEST_DIR/stream.sse"

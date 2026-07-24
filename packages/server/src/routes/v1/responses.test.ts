@@ -199,8 +199,12 @@ describe('Responses input normalization', () => {
             { type: 'input_text', text: 'Inspect this' },
             {
               type: 'input_image',
-              image_url: 'https://example.test/image.png',
+              image_url: 'https://example.test/im\u0000age.png',
               detail: 'high',
+            },
+            {
+              type: 'input_image',
+              file_id: 'file\u0000_123',
             },
           ],
         },
@@ -246,9 +250,15 @@ describe('Responses input normalization', () => {
         content: [
           { type: 'text', text: 'Inspect this' },
           {
+            type: 'image_url',
+            image_url: {
+              url: 'https://example.test/image.png',
+              detail: 'high',
+            },
+          },
+          {
             type: 'input_image',
-            image_url: 'https://example.test/image.png',
-            detail: 'high',
+            file_id: 'file_123',
           },
         ],
       },
@@ -275,6 +285,41 @@ describe('Responses input normalization', () => {
     expect(result.data.toolChoice).toEqual({
       type: 'function',
       function: { name: 'lookup' },
+    });
+  });
+
+  it.each([
+    [
+      {
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'lookup',
+        arguments: '123456',
+      },
+      'input[0].arguments',
+    ],
+    [
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: '123456',
+      },
+      'input[0].output',
+    ],
+  ])('enforces per-message limits for function items %#', (item, param) => {
+    const result = normalizeResponsesInput({
+      model: 'gpt-test',
+      input: [item],
+    } as ResponsesRequest, {
+      ...validation,
+      maxMessageLength: 5,
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.error).toMatchObject({
+      param,
+      code: 'string_too_long',
     });
   });
 });
@@ -525,6 +570,19 @@ describe('Responses function tool loop', () => {
       const messages = body.messages as Array<Record<string, unknown>>;
 
       if (requestCount === 1) {
+        expect(messages[0]).toMatchObject({
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Find record seven.' },
+            {
+              type: 'image_url',
+              image_url: {
+                url: 'https://example.test/record-seven.png',
+                detail: 'high',
+              },
+            },
+          ],
+        });
         expect(body.tools).toEqual([
           {
             type: 'function',
@@ -541,6 +599,7 @@ describe('Responses function tool loop', () => {
           },
         ]);
         expect(body.tool_choice).toBe('required');
+        expect(body.parallel_tool_calls).toBe(false);
         return {
           id: 'chatcmpl-tool',
           object: 'chat.completion',
@@ -607,7 +666,17 @@ describe('Responses function tool loop', () => {
 
     const first = await fixture.client.responses.create({
       model: 'http-alias',
-      input: 'Find record seven.',
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Find record seven.' },
+          {
+            type: 'input_image',
+            image_url: 'https://example.test/record-seven.png',
+            detail: 'high',
+          },
+        ],
+      }],
       tools: [{
         type: 'function',
         name: 'lookup',
@@ -620,6 +689,7 @@ describe('Responses function tool loop', () => {
         },
       }],
       tool_choice: 'required',
+      parallel_tool_calls: false,
     });
     const call = first.output.find((item) => item.type === 'function_call');
     expect(call).toMatchObject({ call_id: 'call_http_1', name: 'lookup' });
@@ -773,6 +843,155 @@ describe('Responses continuation and retention', () => {
     now += 101;
     expect(store.get('two', 'client')).toBeNull();
     expect(store.size).toBe(0);
+  });
+});
+
+describe('Responses provider contract safeguards', () => {
+  it('allows an explicit auto tool choice without tools', async () => {
+    app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        tool_choice: 'auto',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe('completed');
+  });
+
+  it('rejects parallel provider calls when parallel_tool_calls is false', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        content: '',
+        toolCalls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{"id":1}' },
+          },
+          {
+            id: 'call_2',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{"id":2}' },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }),
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        tools: [{ type: 'function', name: 'lookup' }],
+        parallel_tool_calls: false,
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain('parallel function calls');
+  });
+
+  it('enforces a named tool choice after provider execution', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        content: '',
+        toolCalls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'other_tool', arguments: '{}' },
+        }],
+        finishReason: 'tool_calls',
+      }),
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        tools: [
+          { type: 'function', name: 'lookup' },
+          { type: 'function', name: 'other_tool' },
+        ],
+        tool_choice: { type: 'function', name: 'lookup' },
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain("required function 'lookup'");
+  });
+
+  it('caps streamed text and completes with an incomplete response', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield { type: 'text_delta', text: '1234' };
+        yield { type: 'text_delta', text: '5678' };
+        yield { type: 'text_delta', text: 'not-forwarded' };
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    });
+    const deps = createDeps({ codex: provider });
+    deps.validation = {
+      ...validation,
+      maxResponseLength: 5,
+    };
+    app = await createTestApp(deps);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+      },
+    });
+
+    const terminalMatch = response.body.match(
+      /event: response\.incomplete\ndata: (.+)\n/,
+    );
+    expect(terminalMatch).not.toBeNull();
+    const terminal = JSON.parse(terminalMatch![1]);
+    expect(terminal.response.output[0].content[0].text).toBe('12345');
+    expect(response.body).not.toContain('678');
+    expect(response.body).not.toContain('not-forwarded');
+  });
+
+  it('returns a provider rate limit after skipping an unhealthy route', async () => {
+    const deps = createDeps(
+      {
+        codex: fakeProvider({ name: 'codex' }),
+        grok: fakeProvider({ name: 'grok' }),
+      },
+      [
+        { provider: 'codex', actualModel: 'codex-model' },
+        { provider: 'grok', actualModel: 'grok-model' },
+      ],
+    );
+    deps.healthChecker.isHealthy = vi.fn(async (provider) => provider === 'grok');
+    deps.rateLimiter.checkProvider = vi.fn(() => ({
+      allowed: false,
+      retryAfterSeconds: 17,
+    }));
+    app = await createTestApp(deps);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers['retry-after']).toBe('17');
+    expect(response.json().error.code).toBe('rate_limit_exceeded');
   });
 });
 

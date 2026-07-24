@@ -182,10 +182,18 @@ function normalizeContent(content: ResponsesMessage['content']): ChatMessageCont
 
   return content.map((part) => {
     if (part.type === 'input_image') {
+      if (part.image_url) {
+        return {
+          type: 'image_url',
+          image_url: {
+            url: part.image_url.replace(/\x00/g, ''),
+            ...(part.detail ? { detail: part.detail } : {}),
+          },
+        };
+      }
       return {
         type: 'input_image',
-        ...(part.image_url ? { image_url: part.image_url } : {}),
-        ...(part.file_id ? { file_id: part.file_id } : {}),
+        file_id: part.file_id?.replace(/\x00/g, ''),
         ...(part.detail ? { detail: part.detail } : {}),
       };
     }
@@ -200,7 +208,17 @@ function contentLength(content: ChatMessageContent): number {
   if (typeof content === 'string') return content.length;
   return content.reduce((length, part) => {
     if (typeof part.text === 'string') return length + part.text.length;
-    return length + (part.type === 'input_image' ? 7 : 0);
+    if (part.type === 'image_url') {
+      const imageUrl = part.image_url;
+      const url = typeof imageUrl === 'object' && imageUrl !== null && 'url' in imageUrl
+        ? String(imageUrl.url)
+        : String(imageUrl ?? '');
+      return length + url.length;
+    }
+    if (part.type === 'input_image') {
+      return length + String(part.file_id ?? '').length;
+    }
+    return length;
   }, 0);
 }
 
@@ -254,6 +272,16 @@ export function normalizeResponsesInput(
       callIds.add(item.call_id);
       const name = item.name.replace(/\x00/g, '');
       const argumentsText = item.arguments.replace(/\x00/g, '');
+      if (argumentsText.length > validation.maxMessageLength) {
+        return {
+          success: false,
+          error: makeResponsesError(
+            `input[${index}].arguments is too long. Maximum is ${validation.maxMessageLength} characters.`,
+            `input[${index}].arguments`,
+            'string_too_long',
+          ),
+        };
+      }
       inputMessages.push({
         role: 'assistant',
         content: '',
@@ -272,6 +300,16 @@ export function normalizeResponsesInput(
 
     if (item.type === 'function_call_output') {
       const output = stringifyOutput(item.output).replace(/\x00/g, '');
+      if (output.length > validation.maxMessageLength) {
+        return {
+          success: false,
+          error: makeResponsesError(
+            `input[${index}].output is too long. Maximum is ${validation.maxMessageLength} characters.`,
+            `input[${index}].output`,
+            'string_too_long',
+          ),
+        };
+      }
       functionOutputCallIds.add(item.call_id);
       inputMessages.push({
         role: 'tool',

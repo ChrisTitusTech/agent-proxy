@@ -116,6 +116,7 @@ export class HttpProvider extends BaseProvider {
 
   private static readonly RESERVED_BODY_KEYS = new Set([
     'model', 'messages', 'stream', 'max_tokens', 'temperature', 'tools', 'tool_choice',
+    'parallel_tool_calls',
   ]);
 
   private buildRequestBody(options: ExecuteOptions, stream: boolean): Record<string, unknown> {
@@ -136,6 +137,9 @@ export class HttpProvider extends BaseProvider {
     if (options.tools && options.tools.length > 0) {
       body.tools = options.tools;
       if (options.toolChoice !== undefined) body.tool_choice = options.toolChoice;
+      if (options.parallelToolCalls !== undefined) {
+        body.parallel_tool_calls = options.parallelToolCalls;
+      }
     }
 
     const maxTokens = options.maxTokens ?? this.httpConfig.default_max_tokens;
