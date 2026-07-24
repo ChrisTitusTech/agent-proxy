@@ -80,7 +80,9 @@ matching `function_call_output` item with the returned `call_id`, normally with
 `previous_response_id`, to complete the loop.
 Each call ID remains valid only while it is outstanding. Outputs that precede
 their call or try to answer an already-consumed call are rejected.
-Only completed function calls remain outstanding for a later continuation.
+Only function calls emitted in a completed response and not yet answered remain
+outstanding for a later continuation. Once the matching `function_call_output`
+is accepted, the call is consumed.
 
 `parallel_tool_calls: false` is forwarded to compatible HTTP providers and
 enforced on provider output. Named `tool_choice` requests are also validated
