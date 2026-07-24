@@ -1,5 +1,5 @@
 import { eq, and, asc } from 'drizzle-orm';
-import { BUILTIN_PROVIDERS, isReasoningEffort, type ProviderOverrides, type ReasoningEffort } from '@agent-proxy/shared';
+import { isReasoningEffort, type ProviderOverrides, type ReasoningEffort } from '@agent-proxy/shared';
 import { getDatabase } from '../db/client.js';
 import { modelMappings } from '../db/schema.js';
 import type { ProviderRegistry } from '../providers/provider-registry.js';

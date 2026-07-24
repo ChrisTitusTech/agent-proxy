@@ -74,7 +74,7 @@ const responseReasoningSchema = z.object({
   summary: z.enum(['auto', 'concise', 'detailed']).optional(),
 }).strict();
 
-export const responsesRequestSchema = z.object({
+const responsesRequestSchema = z.object({
   model: z.string().min(1),
   input: z.union([
     z.string(),
@@ -94,7 +94,7 @@ export const responsesRequestSchema = z.object({
 }).strict();
 
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
-export type ResponsesInputItem = z.infer<typeof responseInputItemSchema>;
+type ResponsesInputItem = z.infer<typeof responseInputItemSchema>;
 type ResponsesMessage = z.infer<typeof responseMessageSchema>;
 
 export interface NormalizedResponsesInput {

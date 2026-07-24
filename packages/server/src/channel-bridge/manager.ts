@@ -21,7 +21,7 @@ export interface BridgeLaunchOptions {
   readyTimeoutMs?: number;
 }
 
-export interface BridgeStatus {
+interface BridgeStatus {
   running: boolean;
   managed: boolean;
   pid?: number;
@@ -78,7 +78,7 @@ function killPort(port: number): Promise<void> {
   });
 }
 
-export class ChannelBridgeManager {
+class ChannelBridgeManager {
   private child: ChildProcess | null = null;
   private startedAt = 0;
   private currentPort?: number;

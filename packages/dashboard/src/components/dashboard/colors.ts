@@ -8,7 +8,7 @@ export interface ColorPair {
 }
 
 
-export const MODEL_PALETTE: ColorPair[] = [
+const MODEL_PALETTE: ColorPair[] = [
   { bar: 'bg-blue-500/70',    dot: 'bg-blue-400',    text: 'text-blue-500 dark:text-blue-300' },
   { bar: 'bg-emerald-500/70', dot: 'bg-emerald-400', text: 'text-emerald-500 dark:text-emerald-300' },
   { bar: 'bg-purple-500/70',  dot: 'bg-purple-400',  text: 'text-purple-500 dark:text-purple-300' },

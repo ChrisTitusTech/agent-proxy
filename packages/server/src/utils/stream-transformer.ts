@@ -3,7 +3,6 @@ import type {
   StreamChunk,
   StreamParser,
   ProviderEvent,
-  TokenUsage,
 } from '@agent-proxy/shared';
 import { nanoid } from 'nanoid';
 

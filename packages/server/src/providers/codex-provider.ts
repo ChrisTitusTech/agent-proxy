@@ -37,7 +37,7 @@ const RESUME_UNSUPPORTED_FLAGS_STANDALONE = new Set([
 
 
 const THREAD_ID_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-export function extractThreadIdFromLine(line: string): string | null {
+function extractThreadIdFromLine(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   try {

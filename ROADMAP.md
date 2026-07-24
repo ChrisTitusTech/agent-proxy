@@ -3,6 +3,8 @@
 This roadmap implements [SPEC.md](./SPEC.md) in small phases. A phase is
 complete only when its acceptance criteria and validation commands pass.
 
+Last updated: 2026-07-23
+
 ## Phase 0: Repository cleanup
 
 Status: Complete
@@ -71,6 +73,8 @@ process-group termination, release preflight, and systemd security review.
 
 Status: Complete
 
+Completed: 2026-07-23
+
 Scope:
 
 - Move `/v1/responses` from the application bootstrap into a dedicated route.
@@ -94,7 +98,13 @@ Grok client tests in Phase 3 pass.
 
 ## Phase 3: Native CLI and Open WebUI compatibility
 
-Status: Planned
+Status: Ready to begin
+
+Entry gate verified: 2026-07-23
+
+Entry point: implement P3-01 from [TASKS.md](./TASKS.md) before running live
+client matrices. The endpoint remains experimental until the Phase 3 exit gate
+passes.
 
 Scope:
 
@@ -245,7 +255,7 @@ Status: Planned
 
 Scope:
 
-- Resolve the licensing decision and add the license file.
+- Complete the upstream licensing, attribution, and notices review.
 - Decide the future of generic CLI and HTTP adapters.
 - Freeze the supported endpoint subset and CLI version matrix.
 - Freeze the supported Open WebUI version and optional-capability matrix.

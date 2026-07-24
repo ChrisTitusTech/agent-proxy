@@ -64,5 +64,6 @@ tested CLI and client versions.
 
 ## Licensing
 
-No project license has been selected yet. Contributions cannot be redistributed
-until the licensing decision and upstream obligations are resolved.
+The project uses the MIT License. Contributions must preserve
+[LICENSE](./LICENSE) and required upstream attribution. Additional upstream
+notice obligations remain under review before stable redistribution.
