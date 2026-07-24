@@ -10,8 +10,9 @@ const SESSION_HEADER = 'x-agent-proxy-session-id';
 export function extractClientKey(request: FastifyRequest, apiKeyId: string | undefined): string {
   const raw = request.headers[SESSION_HEADER];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
+  const authenticatedIdentity = apiKeyId ? `key:${apiKeyId}` : 'anonymous';
   if (typeof headerValue === 'string' && SESSION_ID_RE.test(headerValue)) {
-    return headerValue;
+    return `${authenticatedIdentity}|session:${headerValue}`;
   }
-  return apiKeyId || 'anonymous';
+  return authenticatedIdentity;
 }

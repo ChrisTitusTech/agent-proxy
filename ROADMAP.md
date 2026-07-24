@@ -69,7 +69,7 @@ process-group termination, release preflight, and systemd security review.
 
 ## Phase 2: OpenAI Responses compatibility
 
-Status: Planned
+Status: Complete
 
 Scope:
 

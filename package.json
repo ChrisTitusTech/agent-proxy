@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "concurrently": "^10.0.3",
+    "openai": "^6.49.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }

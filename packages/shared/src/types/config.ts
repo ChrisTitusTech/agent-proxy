@@ -102,6 +102,11 @@ export interface CacheConfig {
   maxEntries: number;
 }
 
+export interface ResponsesConfig {
+  retentionTtlMs: number;
+  maxEntries: number;
+}
+
 export interface ModelMappingSeed {
   alias: string;
   provider: string;
@@ -172,6 +177,7 @@ export interface AppConfig {
   providers: Record<string, ProviderConfigYaml>;
   rateLimits: RateLimitConfig;
   cache: CacheConfig;
+  responses: ResponsesConfig;
   validation: ValidationConfig;
   modelMappings: ModelMappingSeed[];
 }

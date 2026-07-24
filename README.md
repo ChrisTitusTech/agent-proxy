@@ -18,8 +18,9 @@ server and credits the upstream project for that work.
 
 The repository contains a working gateway foundation, but the full drop-in
 compatibility target is still in progress. Chat Completions and Anthropic
-Messages are the most mature paths. The Responses adapter exists, but complete
-Codex and Grok tool-loop compatibility is a roadmap item.
+Messages are the most mature paths. The Responses adapter passes its
+provider-independent OpenAI SDK contract, while unmodified Codex, Grok, and
+Open WebUI acceptance remains in Phase 3.
 
 See [SPEC.md](./SPEC.md) for the product contract and
 [ROADMAP.md](./ROADMAP.md) for implementation phases.
@@ -50,6 +51,14 @@ and usage limits of every configured provider.
 
 The server also retains optional generic CLI and OpenAI-compatible HTTP
 adapters. They are extension points, not first-class backends.
+
+The Responses subset supports text and image input items, instructions,
+function tools, typed streaming events, cancellation, and bounded
+`previous_response_id` continuation. Continuation is kept in memory, scoped to
+the API key or `X-Agent-Proxy-Session-Id`, and expires according to the
+`responses` configuration. See
+[docs/responses-api.md](./docs/responses-api.md) for the exact contract and
+limitations.
 
 Custom HTTP providers reject localhost, LAN, link-local, and other reserved
 network targets by default. Enable `allow_private_network` only when connecting
@@ -156,9 +165,10 @@ env_key = "AGENT_PROXY_API_KEY"
 default = "agent-proxy"
 ```
 
-These client examples define the intended compatibility target. Until the
-corresponding roadmap acceptance tests pass, treat complex tool calls,
-streaming retries, and session continuation as experimental.
+These client examples define the intended compatibility target. The Responses
+wire contract is covered by OpenAI SDK and provider-adapter tests, but native
+Codex and Grok client behavior remains experimental until the Phase 3
+acceptance matrix passes.
 
 ## Configuration
 

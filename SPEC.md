@@ -270,6 +270,14 @@ operator-approved account and must record only sanitized evidence.
 7. Session state must have a configurable time-to-live and bounded storage.
 8. Model changes invalidate incompatible provider sessions.
 
+Responses continuation uses an in-memory response store. Entries are scoped to
+the authenticated API key or explicit `X-Agent-Proxy-Session-Id`, bounded by
+`responses.max_entries`, and expire after `responses.retention_ttl_ms`.
+Top-level `instructions` are not retained and must be sent on each request.
+`store: false` prevents the new response from being retained. Continuation does
+not survive a service restart; clients receive an explicit
+`response_not_found` error and must replay their retained input items.
+
 ## 8. Security
 
 ### 8.1 Authentication
@@ -420,8 +428,6 @@ Additional release gates:
 3. Decide whether generic CLI and HTTP adapters remain in the first stable
    release or move to a later extension package.
 4. Choose the production reverse proxy and packaging format.
-5. Define how Responses `previous_response_id` maps to provider-specific
-   sessions and retention.
-6. Freeze the supported Open WebUI version and decide which optional Open WebUI
+5. Freeze the supported Open WebUI version and decide which optional Open WebUI
    capabilities are included in the stable compatibility claim.
-7. Define the default chat-only and opt-in tool-enabled execution profiles.
+6. Define the default chat-only and opt-in tool-enabled execution profiles.

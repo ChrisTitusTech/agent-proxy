@@ -36,3 +36,7 @@ providers:
     cli_path: "grok"
     default_model: "grok-4.5"
     max_concurrent: 1
+
+responses:
+  retention_ttl_ms: 1800000
+  max_entries: 1000

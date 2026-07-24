@@ -35,6 +35,7 @@ function config(overrides: Partial<AppConfig> = {}): AppConfig {
     },
     rateLimits: { global: { rpm: 60, rpd: 1_000 }, perProvider: {} },
     cache: { enabled: false, ttlSeconds: 60, maxEntries: 10 },
+    responses: { retentionTtlMs: 1_800_000, maxEntries: 1_000 },
     validation: {
       maxMessageCount: 10,
       maxMessageLength: 1_000,

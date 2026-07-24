@@ -93,6 +93,7 @@ export interface ExecuteOptions {
 
   tools?: ChatCompletionTool[];
   toolChoice?: ToolChoice;
+  parallelToolCalls?: boolean;
   // Image generation passthrough (OpenAI Images API)
   responseFormat?: 'url' | 'b64_json';
   n?: number;

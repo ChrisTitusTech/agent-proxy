@@ -68,6 +68,22 @@ describe('HttpProvider.execute - function calling', () => {
     expect(captured.body.tool_choice).toBeUndefined();
   });
 
+  it('preserves developer message roles', async () => {
+    const captured = mockFetch({
+      choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+    });
+    const provider = new HttpProvider('test', { ...baseConfig });
+
+    await provider.execute(makeOptions({
+      messages: [{ role: 'developer', content: 'Follow these instructions.' }],
+    }));
+
+    expect(captured.body.messages).toEqual([{
+      role: 'developer',
+      content: 'Follow these instructions.',
+    }]);
+  });
+
   it('forwards HTTP provider requests', async () => {
     const captured = mockFetch({
       choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],
@@ -139,6 +155,7 @@ describe('HttpProvider.execute - function calling', () => {
 describe('HttpProvider.executeStream - function calling', () => {
 
   function mockStream(lines: string[]) {
+    const captured: { body?: Record<string, unknown> } = {};
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -146,12 +163,16 @@ describe('HttpProvider.executeStream - function calling', () => {
         controller.close();
       },
     });
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      headers: { entries: () => [] as [string, string][], get: () => null },
-      body: stream,
-    } as unknown as Response)));
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      captured.body = JSON.parse(String(init.body));
+      return {
+        ok: true,
+        status: 200,
+        headers: { entries: () => [] as [string, string][], get: () => null },
+        body: stream,
+      } as unknown as Response;
+    }));
+    return captured;
   }
 
   it('forwards HTTP provider requests', async () => {
@@ -177,6 +198,28 @@ describe('HttpProvider.executeStream - function calling', () => {
     });
     const doneEvent = events.find((e) => e.type === 'done');
     expect(doneEvent).toMatchObject({ type: 'done', finishReason: 'tool_use' });
+  });
+
+  it('requests and preserves usage-only streaming trailers', async () => {
+    const captured = mockStream([
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n',
+      'data: [DONE]\n',
+    ]);
+    const provider = new HttpProvider('test', { ...baseConfig });
+
+    const events: ProviderEvent[] = [];
+    for await (const event of provider.executeStream(makeOptions({ stream: true }))) {
+      events.push(event);
+    }
+
+    expect(captured.body?.stream_options).toEqual({ include_usage: true });
+    expect(events).toContainEqual({
+      type: 'usage',
+      usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+    });
+    expect(events.at(-1)).toEqual({ type: 'done', finishReason: 'stop' });
   });
 
   it("cancels the backend reader after 'done' and emits no trailing bytes", async () => {

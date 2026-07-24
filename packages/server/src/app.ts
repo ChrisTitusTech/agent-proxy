@@ -18,6 +18,7 @@ import { registerEmbeddingsRoute } from './routes/v1/embeddings.js';
 import { registerRerankRoute } from './routes/v1/rerank.js';
 import { registerAudioSpeechRoute } from './routes/v1/audio-speech.js';
 import { registerResponsesRoute } from './routes/v1/responses.js';
+import { ResponsesStore } from './routes/v1/responses-store.js';
 import { registerModelMappingsRoutes } from './routes/admin/model-mappings.js';
 import { registerApiKeysRoutes } from './routes/admin/api-keys.js';
 import { registerStatsRoutes } from './routes/admin/stats.js';
@@ -186,7 +187,20 @@ export async function createApp(
     }
     await adminAuthMiddleware(request, reply, config.auth.adminToken);
   });
-  registerResponsesRoute(app);
+  registerResponsesRoute(app, {
+    router,
+    queue: queueManager,
+    rateLimiter,
+    registry,
+    healthChecker,
+    validation: currentValidation,
+    activeRequests,
+    store: new ResponsesStore({
+      ttlMs: config.responses.retentionTtlMs,
+      maxEntries: config.responses.maxEntries,
+    }),
+    corsOrigins: config.server.cors.origins,
+  });
 
 
   registerChatCompletionsRoute(app, {

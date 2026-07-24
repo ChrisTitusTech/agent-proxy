@@ -12,6 +12,8 @@ import {
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CACHE_TTL_SECONDS,
   DEFAULT_CACHE_MAX_ENTRIES,
+  DEFAULT_RESPONSES_RETENTION_TTL_MS,
+  DEFAULT_RESPONSES_MAX_ENTRIES,
   DEFAULT_RATE_LIMIT_RPM,
   DEFAULT_RATE_LIMIT_RPD,
   DEFAULT_MAX_MESSAGE_COUNT,
@@ -162,6 +164,7 @@ export function loadConfig(configPath?: string): AppConfig {
     providers,
     rate_limits: rateLimits,
     cache,
+    responses,
     validation,
     model_mappings: modelMappings,
   } = parsed.data;
@@ -232,6 +235,10 @@ export function loadConfig(configPath?: string): AppConfig {
       enabled: cache?.enabled ?? true,
       ttlSeconds: cache?.ttl_seconds ?? DEFAULT_CACHE_TTL_SECONDS,
       maxEntries: cache?.max_entries ?? DEFAULT_CACHE_MAX_ENTRIES,
+    },
+    responses: {
+      retentionTtlMs: responses?.retention_ttl_ms ?? DEFAULT_RESPONSES_RETENTION_TTL_MS,
+      maxEntries: responses?.max_entries ?? DEFAULT_RESPONSES_MAX_ENTRIES,
     },
     validation: {
       maxMessageCount: validation?.max_message_count ?? DEFAULT_MAX_MESSAGE_COUNT,
