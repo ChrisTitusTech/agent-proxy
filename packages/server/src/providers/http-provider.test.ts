@@ -68,6 +68,22 @@ describe('HttpProvider.execute - function calling', () => {
     expect(captured.body.tool_choice).toBeUndefined();
   });
 
+  it('preserves developer message roles', async () => {
+    const captured = mockFetch({
+      choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+    });
+    const provider = new HttpProvider('test', { ...baseConfig });
+
+    await provider.execute(makeOptions({
+      messages: [{ role: 'developer', content: 'Follow these instructions.' }],
+    }));
+
+    expect(captured.body.messages).toEqual([{
+      role: 'developer',
+      content: 'Follow these instructions.',
+    }]);
+  });
+
   it('forwards HTTP provider requests', async () => {
     const captured = mockFetch({
       choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],

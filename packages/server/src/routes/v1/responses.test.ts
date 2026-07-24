@@ -625,7 +625,7 @@ describe('Responses function tool loop', () => {
 
       if (requestCount === 1) {
         expect(messages[0]).toEqual({
-          role: 'system',
+          role: 'developer',
           content: 'Use the record lookup tool.',
         });
         expect(messages[1]).toMatchObject({
