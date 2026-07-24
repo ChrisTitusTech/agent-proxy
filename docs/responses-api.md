@@ -1,5 +1,7 @@
 # Responses API subset
 
+Last updated: 2026-07-23
+
 `POST /v1/responses` implements the Phase 2 OpenAI Responses compatibility
 contract. The endpoint remains experimental until the native Codex, Grok, and
 Open WebUI acceptance matrix passes in Phase 3.
@@ -64,6 +66,8 @@ Oversized streamed text is capped and terminates as `response.incomplete`.
 - `responses.max_entries` defaults to 1000.
 - Retained context is rechecked against cumulative message-count and
   prompt-length limits before every provider call.
+- Provider-native session reuse is disabled for replayed continuations so
+  retained context is sent exactly once.
 
 The proxy retains normalized input and output items, not provider credentials
 or subscription tokens.
@@ -76,6 +80,7 @@ matching `function_call_output` item with the returned `call_id`, normally with
 `previous_response_id`, to complete the loop.
 Each call ID remains valid only while it is outstanding. Outputs that precede
 their call or try to answer an already-consumed call are rejected.
+Only completed function calls remain outstanding for a later continuation.
 
 `parallel_tool_calls: false` is forwarded to compatible HTTP providers and
 enforced on provider output. Named `tool_choice` requests are also validated

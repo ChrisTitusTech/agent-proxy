@@ -137,20 +137,6 @@ export function fetchTrend(hours = 24) {
   return request<TrendData>(`/trend?hours=${hours}`);
 }
 
-// Stats
-export function fetchStats() {
-  return request<{
-    overview: {
-      totalRequests: number;
-      successRate: string;
-      avgLatencyMs: number;
-      totalTokens: number;
-    };
-    byProvider: Array<{ provider: string; count: number; successCount: number; avgLatencyMs: number }>;
-    byModel: Array<{ modelAlias: string; provider: string; count: number }>;
-  }>('/stats');
-}
-
 // Logs
 export function fetchLogs(params?: { limit?: number; offset?: number }) {
   const query = new URLSearchParams();
@@ -316,13 +302,6 @@ export interface ProviderInfo {
 export function fetchProviders() {
   return request<ProviderInfo[]>('/providers');
 }
-
-export function triggerHealthCheck(name: string) {
-  return request<{ provider: string; status: string }>(`/providers/${name}/health-check`, {
-    method: 'POST',
-  });
-}
-
 
 export interface ClaudeSdkOptions {
   max_turns?: number;
@@ -682,10 +661,6 @@ export function fetchGenericProviders() {
   return request<GenericProviderInfo[]>('/generic-providers');
 }
 
-export function fetchGenericProvider(name: string) {
-  return request<GenericProviderInfo>(`/generic-providers/${name}`);
-}
-
 export function createGenericProvider(data: { name: string } & GenericCliProviderConfig) {
   return request<GenericProviderInfo>('/generic-providers', {
     method: 'POST',
@@ -739,10 +714,6 @@ export function fetchHttpProviders() {
   return request<HttpProviderInfo[]>('/http-providers');
 }
 
-export function fetchHttpProvider(name: string) {
-  return request<HttpProviderInfo>(`/http-providers/${name}`);
-}
-
 export function createHttpProvider(data: { name: string } & Partial<HttpProviderConfig>) {
   return request<HttpProviderInfo>('/http-providers', {
     method: 'POST',
@@ -784,7 +755,7 @@ export function detectHttpProviderEndpoint(data: { name?: string } & Partial<Htt
 
 
 
-export function inferEndpointTypeFromName(...names: Array<string | null | undefined>): EndpointType | null {
+function inferEndpointTypeFromName(...names: Array<string | null | undefined>): EndpointType | null {
   const s = names.filter(Boolean).join(' ').toLowerCase();
   if (!s) return null;
   if (/(rerank|reranker|cross-?encoder)/.test(s)) return 'rerank';

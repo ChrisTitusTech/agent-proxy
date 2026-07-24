@@ -157,5 +157,4 @@ export const rawConfigSchema = z.object({
   model_mappings: opt(z.array(modelMappingSchema)),
 });
 
-export type RawConfig = z.infer<typeof rawConfigSchema>;
 export type RawProviderConfig = z.infer<typeof providerSchema>;

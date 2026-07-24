@@ -7,7 +7,7 @@ import type { QueueManager } from '../services/queue.js';
 import { HttpProvider } from './http-provider.js';
 
 
-export const HTTP_PROVIDER_PREFIX = 'http_provider:';
+const HTTP_PROVIDER_PREFIX = 'http_provider:';
 
 interface LoaderLogger {
   info: (msg: string) => void;

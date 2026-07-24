@@ -1,4 +1,4 @@
-export const ADMIN_TOKEN_STORAGE_KEY = 'admin_token';
+const ADMIN_TOKEN_STORAGE_KEY = 'admin_token';
 
 export function getStoredAdminToken(): string {
   try {
