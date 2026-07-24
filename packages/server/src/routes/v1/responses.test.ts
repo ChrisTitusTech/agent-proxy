@@ -6,6 +6,7 @@ import type {
   BaseProvider,
 } from '../../providers/base-provider.js';
 import { HttpProvider } from '../../providers/http-provider.js';
+import type { ResolvedRoute } from '../../services/router.js';
 import type {
   ExecuteOptions,
   ExecuteResult,
@@ -68,7 +69,7 @@ function fakeProvider(options: FakeProviderOptions = {}): BaseProvider {
 
 function createDeps(
   providers: Record<string, BaseProvider> = { codex: fakeProvider() },
-  routes = [{ provider: 'codex', actualModel: 'fake-model' }],
+  routes: ResolvedRoute[] = [{ provider: 'codex', actualModel: 'fake-model' }],
   store = new ResponsesStore(),
 ): ResponsesDeps {
   return {
@@ -570,7 +571,11 @@ describe('Responses function tool loop', () => {
       const messages = body.messages as Array<Record<string, unknown>>;
 
       if (requestCount === 1) {
-        expect(messages[0]).toMatchObject({
+        expect(messages[0]).toEqual({
+          role: 'system',
+          content: 'Use the record lookup tool.',
+        });
+        expect(messages[1]).toMatchObject({
           role: 'user',
           content: [
             { type: 'text', text: 'Find record seven.' },
@@ -666,6 +671,7 @@ describe('Responses function tool loop', () => {
 
     const first = await fixture.client.responses.create({
       model: 'http-alias',
+      instructions: 'Use the record lookup tool.',
       input: [{
         role: 'user',
         content: [
@@ -794,6 +800,230 @@ describe('Responses continuation and retention', () => {
     expect(modelChange.json().error.code).toBe('model_mismatch');
   });
 
+  it('isolates a shared session ID by authenticated API key', async () => {
+    const testApp = Fastify();
+    testApp.addHook('preHandler', async (request) => {
+      const apiKeyId = request.headers['x-test-api-key-id'];
+      (request as typeof request & { apiKeyId?: string }).apiKeyId =
+        typeof apiKeyId === 'string' ? apiKeyId : undefined;
+    });
+    registerResponsesRoute(testApp, createDeps());
+    await testApp.ready();
+    app = testApp;
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: {
+        'x-agent-proxy-session-id': 'shared-session',
+        'x-test-api-key-id': 'key-a',
+      },
+      payload: { model: 'gpt-test', input: 'first' },
+    });
+    const previousId = first.json().id as string;
+
+    const crossKey = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: {
+        'x-agent-proxy-session-id': 'shared-session',
+        'x-test-api-key-id': 'key-b',
+      },
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: previousId,
+        input: 'second',
+      },
+    });
+    expect(crossKey.statusCode).toBe(404);
+    expect(crossKey.json().error.code).toBe('response_not_found');
+
+    const sameKey = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: {
+        'x-agent-proxy-session-id': 'shared-session',
+        'x-test-api-key-id': 'key-a',
+      },
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: previousId,
+        input: 'second',
+      },
+    });
+    expect(sameKey.statusCode).toBe(200);
+  });
+
+  it.each([
+    {
+      name: 'message count',
+      validationOverrides: { maxMessageCount: 2 },
+      contextMessages: [
+        { role: 'user' as const, content: 'first' },
+        { role: 'assistant' as const, content: 'answer' },
+      ],
+      code: 'too_many_messages',
+    },
+    {
+      name: 'prompt length',
+      validationOverrides: { maxPromptLength: 10 },
+      contextMessages: [
+        { role: 'user' as const, content: '1234567890' },
+      ],
+      code: 'prompt_too_long',
+    },
+  ])('revalidates cumulative continuation $name', async ({
+    validationOverrides,
+    contextMessages,
+    code,
+  }) => {
+    const store = new ResponsesStore();
+    store.set({
+      id: 'resp_previous',
+      clientKey: 'anonymous',
+      model: 'gpt-test',
+      contextMessages,
+      outstandingCallIds: [],
+    });
+    const execute = vi.fn(async () => defaultResult);
+    const deps = createDeps(
+      { codex: fakeProvider({ execute }) },
+      undefined,
+      store,
+    );
+    deps.validation = {
+      ...validation,
+      ...validationOverrides,
+    };
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: 'resp_previous',
+        input: 'x',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toMatchObject({
+      param: 'previous_response_id',
+      code,
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects outputs before their call and duplicate answered outputs', async () => {
+    const outputBeforeCall = await createTestApp().then(async (testApp) => {
+      app = testApp;
+      return app.inject({
+        method: 'POST',
+        url: '/v1/responses',
+        payload: {
+          model: 'gpt-test',
+          input: [
+            {
+              type: 'function_call_output',
+              call_id: 'call_late',
+              output: 'too early',
+            },
+            {
+              type: 'function_call',
+              call_id: 'call_late',
+              name: 'lookup',
+              arguments: '{}',
+            },
+          ],
+        },
+      });
+    });
+    expect(outputBeforeCall.statusCode).toBe(400);
+    expect(outputBeforeCall.json().error.param).toBe('input[0].call_id');
+    await app?.close();
+    app = undefined;
+
+    let callCount = 0;
+    const provider = fakeProvider({
+      execute: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            content: '',
+            toolCalls: [{
+              id: 'call_once',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{}' },
+            }],
+            usage: defaultResult.usage,
+            finishReason: 'tool_calls',
+          };
+        }
+        return defaultResult;
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'lookup',
+        tools: [{ type: 'function', name: 'lookup' }],
+      },
+    });
+    const skippedOutput = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: first.json().id,
+        input: 'skip the tool result',
+      },
+    });
+    expect(skippedOutput.statusCode).toBe(400);
+    expect(skippedOutput.json().error).toMatchObject({
+      param: 'input',
+      code: 'function_call_output_required',
+    });
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: first.json().id,
+        input: [{
+          type: 'function_call_output',
+          call_id: 'call_once',
+          output: 'done',
+        }],
+      },
+    });
+    expect(second.statusCode).toBe(200);
+
+    const duplicate = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: second.json().id,
+        input: [{
+          type: 'function_call_output',
+          call_id: 'call_once',
+          output: 'done again',
+        }],
+      },
+    });
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.json().error).toMatchObject({
+      param: 'input[0].call_id',
+      code: 'function_call_not_found',
+    });
+    expect(callCount).toBe(2);
+  });
+
   it('does not retain a response when store is false', async () => {
     app = await createTestApp();
     const first = await app.inject({
@@ -831,7 +1061,7 @@ describe('Responses continuation and retention', () => {
       clientKey: 'client',
       model: 'model',
       contextMessages: [],
-      callIds: [],
+      outstandingCallIds: [],
     });
 
     store.set(entry('one'));
@@ -929,6 +1159,191 @@ describe('Responses provider contract safeguards', () => {
 
     expect(response.statusCode).toBe(502);
     expect(response.json().error.message).toContain("required function 'lookup'");
+  });
+
+  it('rejects non-streaming provider calls when tool_choice is none', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        content: '',
+        toolCalls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{}' },
+        }],
+        finishReason: 'tool_calls',
+      }),
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        tools: [{ type: 'function', name: 'lookup' }],
+        tool_choice: 'none',
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain('tool_choice is none');
+  });
+
+  it('rejects streaming provider calls before forwarding when tool_choice is none', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_1',
+          toolName: 'lookup',
+          input: '{}',
+        };
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+        tools: [{ type: 'function', name: 'lookup' }],
+        tool_choice: 'none',
+      },
+    });
+
+    expect(response.body).toContain('event: response.failed');
+    expect(response.body).not.toContain('response.function_call_arguments.delta');
+    expect(response.body).not.toContain('"type":"function_call"');
+  });
+
+  it.each([
+    {
+      name: 'request summary',
+      reasoning: { summary: 'auto' as const },
+      includeReasoning: null,
+    },
+    {
+      name: 'route setting',
+      reasoning: undefined,
+      includeReasoning: true,
+    },
+  ])('includes provider reasoning for an opted-in $name', async ({
+    reasoning,
+    includeReasoning,
+  }) => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        reasoning: 'Concise reasoning summary.',
+      }),
+    });
+    const routes: ResolvedRoute[] = [{
+      provider: 'codex',
+      actualModel: 'fake-model',
+      includeReasoning,
+    }];
+    app = await createTestApp(createDeps({ codex: provider }, routes));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        ...(reasoning ? { reasoning } : {}),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().output).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'reasoning',
+        summary: [{
+          type: 'summary_text',
+          text: 'Concise reasoning summary.',
+        }],
+      }),
+    ]));
+  });
+
+  it('suppresses provider reasoning without a request or route opt-in', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        reasoning: 'Internal reasoning must stay hidden.',
+      }),
+      executeStream: async function* () {
+        yield { type: 'thinking', text: 'Internal stream reasoning.' };
+        yield { type: 'text_delta', text: 'Visible answer.' };
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    });
+    const deps = createDeps(
+      { codex: provider },
+      [{
+        provider: 'codex',
+        actualModel: 'fake-model',
+        includeReasoning: false,
+      }],
+    );
+    app = await createTestApp(deps);
+
+    const buffered = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+    expect(buffered.statusCode).toBe(200);
+    expect(buffered.json().output).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'reasoning' }),
+    ]));
+    expect(
+      buffered.json().usage.output_tokens_details.reasoning_tokens,
+    ).toBe(0);
+
+    const streamed = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello', stream: true },
+    });
+    expect(streamed.body).toContain('Visible answer.');
+    expect(streamed.body).not.toContain('Internal stream reasoning.');
+    expect(streamed.body).not.toContain('reasoning_summary_text');
+  });
+
+  it('fails a stream before forwarding oversized function arguments', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_1',
+          toolName: 'lookup',
+          input: '123456',
+        };
+      },
+    });
+    const deps = createDeps({ codex: provider });
+    deps.validation = {
+      ...validation,
+      maxMessageLength: 5,
+    };
+    app = await createTestApp(deps);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+        tools: [{ type: 'function', name: 'lookup' }],
+      },
+    });
+
+    expect(response.body).toContain('event: response.failed');
+    expect(response.body).toContain('function arguments longer than 5');
+    expect(response.body).not.toContain('response.function_call_arguments.delta');
   });
 
   it('caps streamed text and completes with an incomplete response', async () => {

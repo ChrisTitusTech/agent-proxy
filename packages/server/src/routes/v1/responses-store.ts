@@ -5,7 +5,7 @@ export interface StoredResponse {
   clientKey: string;
   model: string;
   contextMessages: ChatMessage[];
-  callIds: string[];
+  outstandingCallIds: string[];
   expiresAt: number;
 }
 
@@ -33,7 +33,7 @@ export class ResponsesStore {
     this.entries.set(entry.id, {
       ...entry,
       contextMessages: structuredClone(entry.contextMessages),
-      callIds: [...entry.callIds],
+      outstandingCallIds: [...entry.outstandingCallIds],
       expiresAt: this.now() + this.ttlMs,
     });
 
@@ -55,7 +55,7 @@ export class ResponsesStore {
     return {
       ...entry,
       contextMessages: structuredClone(entry.contextMessages),
-      callIds: [...entry.callIds],
+      outstandingCallIds: [...entry.outstandingCallIds],
     };
   }
 

@@ -125,7 +125,8 @@ export class HttpProvider extends BaseProvider {
 
 
       messages: options.messages.map(m => {
-        const msg: Record<string, unknown> = { role: m.role, content: m.content };
+        const role = m.role === 'developer' ? 'system' : m.role;
+        const msg: Record<string, unknown> = { role, content: m.content };
         if (m.name !== undefined) msg.name = m.name;
         if (m.tool_call_id !== undefined) msg.tool_call_id = m.tool_call_id;
         if (m.tool_calls !== undefined) msg.tool_calls = m.tool_calls;

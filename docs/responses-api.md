@@ -52,6 +52,8 @@ Oversized streamed text is capped and terminates as `response.incomplete`.
 `previous_response_id` references bounded in-memory context:
 
 - Context is isolated by API key or `X-Agent-Proxy-Session-Id`.
+- When both are present, the API-key identity and session ID are combined; a
+  shared session ID cannot cross API-key boundaries.
 - A different model returns `model_mismatch`.
 - An unknown, expired, cross-client, or post-restart ID returns
   `response_not_found`.
@@ -60,6 +62,8 @@ Oversized streamed text is capped and terminates as `response.incomplete`.
 - `store: false` prevents retention of the new response.
 - `responses.retention_ttl_ms` defaults to 30 minutes.
 - `responses.max_entries` defaults to 1000.
+- Retained context is rechecked against cumulative message-count and
+  prompt-length limits before every provider call.
 
 The proxy retains normalized input and output items, not provider credentials
 or subscription tokens.
@@ -70,11 +74,17 @@ Client function tools are forwarded through the provider contract. Providers
 that return tool calls produce Responses `function_call` output items. Send a
 matching `function_call_output` item with the returned `call_id`, normally with
 `previous_response_id`, to complete the loop.
+Each call ID remains valid only while it is outstanding. Outputs that precede
+their call or try to answer an already-consumed call are rejected.
 
 `parallel_tool_calls: false` is forwarded to compatible HTTP providers and
 enforced on provider output. Named `tool_choice` requests are also validated
 against returned function calls so an adapter cannot silently return a
-different tool.
+different tool. `tool_choice: none` rejects provider-returned calls, and
+streamed function arguments are bounded by `validation.max_message_length`.
+
+Provider reasoning is included only when `reasoning.summary` is requested or
+the selected model route enables `include_reasoning`.
 
 Native CLIs do not automatically gain arbitrary client-function support. Tool
 loops work only when the selected provider adapter emits client-visible tool

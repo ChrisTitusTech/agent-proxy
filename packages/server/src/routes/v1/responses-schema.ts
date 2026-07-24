@@ -100,8 +100,6 @@ type ResponsesMessage = z.infer<typeof responseMessageSchema>;
 export interface NormalizedResponsesInput {
   instructionMessages: ChatMessage[];
   inputMessages: ChatMessage[];
-  callIds: Set<string>;
-  functionOutputCallIds: Set<string>;
   tools?: ChatCompletionTool[];
   toolChoice?: ToolChoice;
   promptLength: number;
@@ -231,8 +229,6 @@ export function normalizeResponsesInput(
 } {
   const instructionMessages: ChatMessage[] = [];
   const inputMessages: ChatMessage[] = [];
-  const callIds = new Set<string>();
-  const functionOutputCallIds = new Set<string>();
   let promptLength = 0;
 
   if (request.instructions) {
@@ -269,7 +265,6 @@ export function normalizeResponsesInput(
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
     if (item.type === 'function_call') {
-      callIds.add(item.call_id);
       const name = item.name.replace(/\x00/g, '');
       const argumentsText = item.arguments.replace(/\x00/g, '');
       if (argumentsText.length > validation.maxMessageLength) {
@@ -310,7 +305,6 @@ export function normalizeResponsesInput(
           ),
         };
       }
-      functionOutputCallIds.add(item.call_id);
       inputMessages.push({
         role: 'tool',
         content: output,
@@ -372,8 +366,6 @@ export function normalizeResponsesInput(
     data: {
       instructionMessages,
       inputMessages,
-      callIds,
-      functionOutputCallIds,
       tools,
       toolChoice,
       promptLength,

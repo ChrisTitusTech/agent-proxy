@@ -136,7 +136,7 @@ interface ExecutionContext {
 
 interface PreparedContinuation {
   messages: ChatMessage[];
-  knownCallIds: Set<string>;
+  outstandingCallIds: Set<string>;
 }
 
 function createResponseId(): string {
@@ -221,11 +221,12 @@ function outputItemsFromResult(
   result: ExecuteResult,
   incomplete: boolean,
   maxResponseLength: number,
+  includeReasoning: boolean,
 ): ResponseOutputItem[] {
   const status = incomplete ? 'incomplete' : 'completed';
   const output: ResponseOutputItem[] = [];
 
-  if (result.reasoning) {
+  if (includeReasoning && result.reasoning) {
     output.push({
       id: createItemId('rs'),
       type: 'reasoning',
@@ -326,11 +327,38 @@ function responseError(
   return reply.status(statusCode).send(makeResponsesError(message, param, code));
 }
 
+function chatMessagePromptLength(message: ChatMessage): number {
+  let length = 0;
+  if (typeof message.content === 'string') {
+    length += message.content.length;
+  } else {
+    for (const part of message.content) {
+      if (typeof part.text === 'string') {
+        length += part.text.length;
+      } else if (part.type === 'image_url') {
+        const imageUrl = part.image_url;
+        const url = typeof imageUrl === 'object' && imageUrl !== null && 'url' in imageUrl
+          ? String(imageUrl.url)
+          : String(imageUrl ?? '');
+        length += url.length;
+      } else if (part.type === 'input_image') {
+        length += String(part.file_id ?? '').length;
+      }
+    }
+  }
+
+  for (const call of message.tool_calls ?? []) {
+    length += call.function.name.length + call.function.arguments.length;
+  }
+  return length;
+}
+
 function prepareContinuation(
   body: ResponsesRequest,
   normalized: NormalizedResponsesInput,
   store: ResponsesStore,
   clientKey: string,
+  validation: ValidationConfig,
 ): { success: true; data: PreparedContinuation } | {
   success: false;
   statusCode: number;
@@ -362,36 +390,102 @@ function prepareContinuation(
     };
   }
 
-  const knownCallIds = new Set<string>([
-    ...(previous?.callIds ?? []),
-    ...normalized.callIds,
-  ]);
-  for (const callId of normalized.functionOutputCallIds) {
-    if (!knownCallIds.has(callId)) {
-      const inputIndex = Array.isArray(body.input)
-        ? body.input.findIndex(
-          (item) => item.type === 'function_call_output' && item.call_id === callId,
-        )
-        : -1;
-      return {
-        success: false,
-        statusCode: 400,
-        message: `No function call was found for call_id '${callId}'.`,
-        code: 'function_call_not_found',
-        param: inputIndex >= 0 ? `input[${inputIndex}].call_id` : 'input',
-      };
+  const outstandingCallIds = new Set(previous?.outstandingCallIds ?? []);
+  if (Array.isArray(body.input)) {
+    for (let index = 0; index < body.input.length; index++) {
+      const item = body.input[index];
+      if (
+        outstandingCallIds.size > 0
+        && item.type !== 'function_call_output'
+      ) {
+        return {
+          success: false,
+          statusCode: 400,
+          message: 'Outstanding function calls must be answered before adding more input.',
+          code: 'function_call_output_required',
+          param: `input[${index}]`,
+        };
+      }
+      if (item.type === 'function_call') {
+        if (outstandingCallIds.has(item.call_id)) {
+          return {
+            success: false,
+            statusCode: 400,
+            message: `Function call_id '${item.call_id}' is already outstanding.`,
+            code: 'duplicate_function_call',
+            param: `input[${index}].call_id`,
+          };
+        }
+        outstandingCallIds.add(item.call_id);
+        continue;
+      }
+      if (
+        item.type === 'function_call_output'
+        && !outstandingCallIds.delete(item.call_id)
+      ) {
+        return {
+          success: false,
+          statusCode: 400,
+          message: `No outstanding function call was found for call_id '${item.call_id}'.`,
+          code: 'function_call_not_found',
+          param: `input[${index}].call_id`,
+        };
+      }
     }
+  } else if (outstandingCallIds.size > 0) {
+    return {
+      success: false,
+      statusCode: 400,
+      message: 'Outstanding function calls must be answered before adding more input.',
+      code: 'function_call_output_required',
+      param: 'input',
+    };
+  }
+
+  if (outstandingCallIds.size > 0) {
+    return {
+      success: false,
+      statusCode: 400,
+      message: 'Every function call must have a matching function_call_output.',
+      code: 'function_call_output_required',
+      param: 'input',
+    };
+  }
+
+  const messages = [
+    ...normalized.instructionMessages,
+    ...(previous?.contextMessages ?? []),
+    ...normalized.inputMessages,
+  ];
+  if (messages.length > validation.maxMessageCount) {
+    return {
+      success: false,
+      statusCode: 400,
+      message: `Cumulative input has too many messages: ${messages.length}. Maximum is ${validation.maxMessageCount}.`,
+      code: 'too_many_messages',
+      param: body.previous_response_id ? 'previous_response_id' : 'input',
+    };
+  }
+
+  const promptLength = messages.reduce(
+    (total, message) => total + chatMessagePromptLength(message),
+    0,
+  );
+  if (promptLength > validation.maxPromptLength) {
+    return {
+      success: false,
+      statusCode: 400,
+      message: `Cumulative input is too long. Maximum is ${validation.maxPromptLength} characters.`,
+      code: 'prompt_too_long',
+      param: body.previous_response_id ? 'previous_response_id' : 'input',
+    };
   }
 
   return {
     success: true,
     data: {
-      messages: [
-        ...normalized.instructionMessages,
-        ...(previous?.contextMessages ?? []),
-        ...normalized.inputMessages,
-      ],
-      knownCallIds,
+      messages,
+      outstandingCallIds,
     },
   };
 }
@@ -468,8 +562,13 @@ function providerOptions(
 
 function validateReturnedToolCalls(
   body: ResponsesRequest,
-  toolCalls: Array<{ function: { name: string } }>,
+  toolCalls: Array<{ function: { name: string; arguments?: string } }>,
+  maxArgumentsLength: number,
 ): void {
+  if (body.tool_choice === 'none' && toolCalls.length > 0) {
+    throw new Error('Provider returned a function call when tool_choice is none.');
+  }
+
   if (body.parallel_tool_calls === false && toolCalls.length > 1) {
     throw new Error('Provider returned parallel function calls when parallel_tool_calls is false.');
   }
@@ -487,13 +586,30 @@ function validateReturnedToolCalls(
       throw new Error(`Provider did not return the required function '${requiredName}'.`);
     }
   }
+
+  if (
+    toolCalls.some(
+      (call) => (call.function.arguments?.length ?? 0) > maxArgumentsLength,
+    )
+  ) {
+    throw new Error(
+      `Provider returned function arguments longer than ${maxArgumentsLength} characters.`,
+    );
+  }
+}
+
+function shouldIncludeReasoning(
+  body: ResponsesRequest,
+  route: ResolvedRoute,
+): boolean {
+  return body.reasoning?.summary !== undefined || route.includeReasoning === true;
 }
 
 function saveResponseContext(
   store: ResponsesStore,
   context: ExecutionContext,
   output: ResponseOutputItem[],
-  knownCallIds: Set<string>,
+  outstandingCallIds: Set<string>,
 ): void {
   if (context.body.store === false) return;
   const newCallIds = output
@@ -507,7 +623,9 @@ function saveResponseContext(
       ...context.messages.slice(context.normalized.instructionMessages.length),
       ...outputMessages(output),
     ],
-    callIds: [...new Set([...knownCallIds, ...newCallIds])],
+    outstandingCallIds: [
+      ...new Set([...outstandingCallIds, ...newCallIds]),
+    ],
   });
 }
 
@@ -544,7 +662,7 @@ async function executeNonStreaming(
   store: ResponsesStore,
   context: ExecutionContext,
   routes: ResolvedRoute[],
-  knownCallIds: Set<string>,
+  outstandingCallIds: Set<string>,
   signal: AbortSignal,
 ) {
   let lastError: Error | null = null;
@@ -578,7 +696,12 @@ async function executeNonStreaming(
         route.provider,
         () => provider.execute(providerOptions(context, route, signal)),
       );
-      validateReturnedToolCalls(context.body, result.toolCalls ?? []);
+      validateReturnedToolCalls(
+        context.body,
+        result.toolCalls ?? [],
+        deps.validation.maxMessageLength,
+      );
+      const includeReasoning = shouldIncludeReasoning(context.body, route);
 
       const incomplete = result.finishReason === 'length'
         || result.content.length > deps.validation.maxResponseLength;
@@ -592,9 +715,18 @@ async function executeNonStreaming(
         result,
         incomplete,
         deps.validation.maxResponseLength,
+        includeReasoning,
       );
-      response.usage = usageToResponses(result.usage, result.reasoning);
-      saveResponseContext(store, context, response.output, knownCallIds);
+      response.usage = usageToResponses(
+        result.usage,
+        includeReasoning ? result.reasoning : undefined,
+      );
+      saveResponseContext(
+        store,
+        context,
+        response.output,
+        outstandingCallIds,
+      );
       logExecution(deps, context, route, 'success', result.usage);
       reply.header('X-Request-ID', context.responseId);
       if (routes.indexOf(route) > 0) {
@@ -699,6 +831,8 @@ function consumeStreamEvent(
   event: ProviderEvent,
   body: ResponsesRequest,
   maxResponseLength: number,
+  maxMessageLength: number,
+  includeReasoning: boolean,
 ): void {
   if (event.type === 'text_delta') {
     if (state.responseLengthExceeded) return;
@@ -724,6 +858,7 @@ function consumeStreamEvent(
   }
 
   if (event.type === 'thinking') {
+    if (!includeReasoning) return;
     if (!state.reasoning) {
       state.reasoning = {
         id: createItemId('rs'),
@@ -749,6 +884,9 @@ function consumeStreamEvent(
   }
 
   if (event.type === 'tool_use') {
+    if (body.tool_choice === 'none') {
+      throw new Error('Provider returned a function call when tool_choice is none.');
+    }
     const key = event.index !== undefined
       ? `index-${event.index}`
       : event.toolCallId || `index-${state.functionCalls.size}`;
@@ -767,6 +905,11 @@ function consumeStreamEvent(
           `Provider did not return the required function '${body.tool_choice.name}'.`,
         );
       }
+      if (event.input.length > maxMessageLength) {
+        throw new Error(
+          `Provider returned function arguments longer than ${maxMessageLength} characters.`,
+        );
+      }
       call = {
         id: createItemId('fc'),
         type: 'function_call',
@@ -782,6 +925,11 @@ function consumeStreamEvent(
         output_index: state.output.length - 1,
         item: call,
       });
+    }
+    if (call.arguments.length + event.input.length > maxMessageLength) {
+      throw new Error(
+        `Provider returned function arguments longer than ${maxMessageLength} characters.`,
+      );
     }
     call.arguments += event.input;
     writeSSE(reply, 'response.function_call_arguments.delta', {
@@ -880,7 +1028,7 @@ async function executeStreaming(
   store: ResponsesStore,
   context: ExecutionContext,
   route: ResolvedRoute,
-  knownCallIds: Set<string>,
+  outstandingCallIds: Set<string>,
   signal: AbortSignal,
 ): Promise<void> {
   const provider = deps.registry.get(route.provider);
@@ -901,6 +1049,7 @@ async function executeStreaming(
   });
 
   const state = initialStreamState();
+  const includeReasoning = shouldIncludeReasoning(context.body, route);
   openSSE(request, reply, context.responseId, deps.corsOrigins ?? []);
   const createdAt = Math.floor(context.startedAt / 1000);
   const created = baseResponse(
@@ -929,6 +1078,8 @@ async function executeStreaming(
           event,
           context.body,
           deps.validation.maxResponseLength,
+          deps.validation.maxMessageLength,
+          includeReasoning,
         );
         if (
           reply.raw.destroyed
@@ -944,8 +1095,9 @@ async function executeStreaming(
     validateReturnedToolCalls(
       context.body,
       [...state.functionCalls.values()].map((call) => ({
-        function: { name: call.name },
+        function: { name: call.name, arguments: call.arguments },
       })),
+      deps.validation.maxMessageLength,
     );
 
     finishStreamItems(reply, state);
@@ -961,7 +1113,12 @@ async function executeStreaming(
       state.usage,
       state.reasoning?.summary[0]?.text,
     );
-    saveResponseContext(store, context, state.output, knownCallIds);
+    saveResponseContext(
+      store,
+      context,
+      state.output,
+      outstandingCallIds,
+    );
     writeSSE(reply, incomplete ? 'response.incomplete' : 'response.completed', {
       type: incomplete ? 'response.incomplete' : 'response.completed',
       response: result,
@@ -1043,6 +1200,7 @@ export function registerResponsesRoute(
       normalized.data,
       store,
       clientKey,
+      deps.validation,
     );
     if (!continuation.success) {
       return responseError(
@@ -1130,7 +1288,7 @@ export function registerResponsesRoute(
           store,
           context,
           available.route,
-          continuation.data.knownCallIds,
+          continuation.data.outstandingCallIds,
           abortController.signal,
         );
         return;
@@ -1142,7 +1300,7 @@ export function registerResponsesRoute(
         store,
         context,
         routes,
-        continuation.data.knownCallIds,
+        continuation.data.outstandingCallIds,
         abortController.signal,
       );
     } finally {
