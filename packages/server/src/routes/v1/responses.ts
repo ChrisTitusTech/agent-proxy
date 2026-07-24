@@ -230,7 +230,10 @@ function outputItemsFromResult(
     output.push({
       id: createItemId('rs'),
       type: 'reasoning',
-      summary: [{ type: 'summary_text', text: result.reasoning }],
+      summary: [{
+        type: 'summary_text',
+        text: result.reasoning.slice(0, maxResponseLength),
+      }],
     });
   }
 
@@ -562,7 +565,10 @@ function providerOptions(
 
 function validateReturnedToolCalls(
   body: ResponsesRequest,
-  toolCalls: Array<{ function: { name: string; arguments?: string } }>,
+  toolCalls: Array<{
+    id: string;
+    function: { name: string; arguments?: string };
+  }>,
   maxArgumentsLength: number,
 ): void {
   if (body.tool_choice === 'none' && toolCalls.length > 0) {
@@ -575,6 +581,23 @@ function validateReturnedToolCalls(
 
   if (body.tool_choice === 'required' && toolCalls.length === 0) {
     throw new Error('Provider did not return a required function call.');
+  }
+
+  const declaredNames = new Set(body.tools?.map((tool) => tool.name) ?? []);
+  if (
+    toolCalls.some(
+      (call) => !call.function.name || !declaredNames.has(call.function.name),
+    )
+  ) {
+    throw new Error('Provider returned a function call for an undeclared tool.');
+  }
+
+  const callIds = toolCalls.map((call) => call.id.trim());
+  if (callIds.some((id) => !id)) {
+    throw new Error('Provider returned a function call without an ID.');
+  }
+  if (new Set(callIds).size !== callIds.length) {
+    throw new Error('Provider returned duplicate function call IDs.');
   }
 
   if (typeof body.tool_choice === 'object') {
@@ -696,6 +719,9 @@ async function executeNonStreaming(
         route.provider,
         () => provider.execute(providerOptions(context, route, signal)),
       );
+      if (result.finishReason === 'error') {
+        throw new Error('Provider reported an unsuccessful completion.');
+      }
       validateReturnedToolCalls(
         context.body,
         result.toolCalls ?? [],
@@ -704,7 +730,11 @@ async function executeNonStreaming(
       const includeReasoning = shouldIncludeReasoning(context.body, route);
 
       const incomplete = result.finishReason === 'length'
-        || result.content.length > deps.validation.maxResponseLength;
+        || result.content.length > deps.validation.maxResponseLength
+        || (
+          includeReasoning
+          && (result.reasoning?.length ?? 0) > deps.validation.maxResponseLength
+        );
       const response = baseResponse(
         context.responseId,
         context.body,
@@ -773,6 +803,7 @@ interface StreamState {
   message?: ResponseMessageOutput;
   reasoning?: ResponseReasoningOutput;
   functionCalls: Map<string, ResponseFunctionCallOutput>;
+  emittedFunctionCalls: Set<string>;
   usage: TokenUsage;
   finishReason: 'stop' | 'length' | 'tool_use' | 'error';
   responseLengthExceeded: boolean;
@@ -783,6 +814,7 @@ function initialStreamState(): StreamState {
   return {
     output: [],
     functionCalls: new Map(),
+    emittedFunctionCalls: new Set(),
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     finishReason: 'stop',
     responseLengthExceeded: false,
@@ -858,7 +890,7 @@ function consumeStreamEvent(
   }
 
   if (event.type === 'thinking') {
-    if (!includeReasoning) return;
+    if (!includeReasoning || state.responseLengthExceeded) return;
     if (!state.reasoning) {
       state.reasoning = {
         id: createItemId('rs'),
@@ -872,14 +904,23 @@ function consumeStreamEvent(
         item: state.reasoning,
       });
     }
-    state.reasoning.summary[0].text += event.text;
-    writeSSE(reply, 'response.reasoning_summary_text.delta', {
-      type: 'response.reasoning_summary_text.delta',
-      item_id: state.reasoning.id,
-      output_index: state.output.indexOf(state.reasoning),
-      summary_index: 0,
-      delta: event.text,
-    });
+    const summary = state.reasoning.summary[0];
+    const remaining = Math.max(0, maxResponseLength - summary.text.length);
+    const delta = event.text.slice(0, remaining);
+    if (delta) {
+      summary.text += delta;
+      writeSSE(reply, 'response.reasoning_summary_text.delta', {
+        type: 'response.reasoning_summary_text.delta',
+        item_id: state.reasoning.id,
+        output_index: state.output.indexOf(state.reasoning),
+        summary_index: 0,
+        delta,
+      });
+    }
+    if (event.text.length > remaining) {
+      state.responseLengthExceeded = true;
+      state.finishReason = 'length';
+    }
     return;
   }
 
@@ -887,22 +928,25 @@ function consumeStreamEvent(
     if (body.tool_choice === 'none') {
       throw new Error('Provider returned a function call when tool_choice is none.');
     }
-    const key = event.index !== undefined
-      ? `index-${event.index}`
-      : event.toolCallId || `index-${state.functionCalls.size}`;
+    let key = event.index !== undefined ? `index-${event.index}` : '';
+    if (!key && event.toolCallId) {
+      const matching = [...state.functionCalls.entries()]
+        .find(([, existing]) => existing.call_id === event.toolCallId);
+      const pending = [...state.functionCalls.entries()]
+        .filter(([, existing]) => !existing.call_id);
+      key = matching?.[0]
+        ?? (pending.length === 1 ? pending[0][0] : `id-${event.toolCallId}`);
+    }
+    if (!key) {
+      const pending = [...state.functionCalls.entries()]
+        .find(([, existing]) => !existing.call_id);
+      key = pending?.[0] ?? `anonymous-${state.functionCalls.size}`;
+    }
     let call = state.functionCalls.get(key);
     if (!call) {
       if (body.parallel_tool_calls === false && state.functionCalls.size > 0) {
         throw new Error(
           'Provider returned parallel function calls when parallel_tool_calls is false.',
-        );
-      }
-      if (
-        typeof body.tool_choice === 'object'
-        && event.toolName !== body.tool_choice.name
-      ) {
-        throw new Error(
-          `Provider did not return the required function '${body.tool_choice.name}'.`,
         );
       }
       if (event.input.length > maxMessageLength) {
@@ -914,17 +958,24 @@ function consumeStreamEvent(
         id: createItemId('fc'),
         type: 'function_call',
         status: 'in_progress',
-        call_id: event.toolCallId || `call_${nanoid(24)}`,
+        call_id: event.toolCallId,
         name: event.toolName,
         arguments: '',
       };
       state.functionCalls.set(key, call);
-      state.output.push(call);
-      writeSSE(reply, 'response.output_item.added', {
-        type: 'response.output_item.added',
-        output_index: state.output.length - 1,
-        item: call,
-      });
+    } else {
+      if (
+        event.toolCallId
+        && call.call_id
+        && event.toolCallId !== call.call_id
+      ) {
+        throw new Error('Provider changed a function call ID while streaming.');
+      }
+      if (event.toolName && call.name && event.toolName !== call.name) {
+        throw new Error('Provider changed a function name while streaming.');
+      }
+      if (event.toolCallId) call.call_id = event.toolCallId;
+      if (event.toolName) call.name = event.toolName;
     }
     if (call.arguments.length + event.input.length > maxMessageLength) {
       throw new Error(
@@ -932,11 +983,54 @@ function consumeStreamEvent(
       );
     }
     call.arguments += event.input;
+
+    if (call.call_id && !call.call_id.trim()) {
+      throw new Error('Provider returned a function call without an ID.');
+    }
+    const ready = Boolean(call.call_id.trim() && call.name);
+    if (!ready) return;
+
+    const declaredNames = new Set(body.tools?.map((tool) => tool.name) ?? []);
+    if (!declaredNames.has(call.name)) {
+      throw new Error('Provider returned a function call for an undeclared tool.');
+    }
+    if (
+      typeof body.tool_choice === 'object'
+      && call.name !== body.tool_choice.name
+    ) {
+      throw new Error(
+        `Provider did not return the required function '${body.tool_choice.name}'.`,
+      );
+    }
+    if (
+      [...state.functionCalls.entries()].some(
+        ([otherKey, other]) => (
+          otherKey !== key
+          && other.call_id.trim() === call.call_id.trim()
+        ),
+      )
+    ) {
+      throw new Error('Provider returned duplicate function call IDs.');
+    }
+
+    const wasEmitted = state.emittedFunctionCalls.has(key);
+    if (!wasEmitted) {
+      state.output.push(call);
+      state.emittedFunctionCalls.add(key);
+      writeSSE(reply, 'response.output_item.added', {
+        type: 'response.output_item.added',
+        output_index: state.output.length - 1,
+        item: { ...call, arguments: '' },
+      });
+      if (!call.arguments) return;
+    } else if (!event.input) {
+      return;
+    }
     writeSSE(reply, 'response.function_call_arguments.delta', {
       type: 'response.function_call_arguments.delta',
       item_id: call.id,
       output_index: state.output.indexOf(call),
-      delta: event.input,
+      delta: wasEmitted ? event.input : call.arguments,
     });
     return;
   }
@@ -1029,8 +1123,9 @@ async function executeStreaming(
   context: ExecutionContext,
   route: ResolvedRoute,
   outstandingCallIds: Set<string>,
-  signal: AbortSignal,
+  abortController: AbortController,
 ): Promise<void> {
+  const signal = abortController.signal;
   const provider = deps.registry.get(route.provider);
   if (!provider) {
     responseError(reply, 502, `Provider '${route.provider}' is unavailable.`, null, 'provider_error');
@@ -1069,32 +1164,47 @@ async function executeStreaming(
 
   try {
     await deps.queue.enqueue(route.provider, async () => {
-      for await (const event of provider.executeStream(
-        providerOptions(context, route, signal),
-      )) {
-        consumeStreamEvent(
-          reply,
-          state,
-          event,
-          context.body,
-          deps.validation.maxResponseLength,
-          deps.validation.maxMessageLength,
-          includeReasoning,
-        );
+      try {
+        for await (const event of provider.executeStream(
+          providerOptions(context, route, signal),
+        )) {
+          consumeStreamEvent(
+            reply,
+            state,
+            event,
+            context.body,
+            deps.validation.maxResponseLength,
+            deps.validation.maxMessageLength,
+            includeReasoning,
+          );
+          if (state.responseLengthExceeded) {
+            abortController.abort();
+            break;
+          }
+          if (reply.raw.destroyed || signal.aborted) break;
+        }
+      } catch (error) {
         if (
-          reply.raw.destroyed
-          || signal.aborted
-          || state.responseLengthExceeded
-        ) break;
+          !state.responseLengthExceeded
+          || !isCancellationError(
+            error instanceof Error ? error : new Error(String(error)),
+          )
+        ) {
+          throw error;
+        }
       }
     });
 
-    if (signal.aborted) {
+    if (signal.aborted && !state.responseLengthExceeded) {
       throw new Error('Request cancelled');
+    }
+    if (state.finishReason === 'error') {
+      throw new Error('Provider reported an unsuccessful completion.');
     }
     validateReturnedToolCalls(
       context.body,
       [...state.functionCalls.values()].map((call) => ({
+        id: call.call_id,
         function: { name: call.name, arguments: call.arguments },
       })),
       deps.validation.maxMessageLength,
@@ -1289,7 +1399,7 @@ export function registerResponsesRoute(
           context,
           available.route,
           continuation.data.outstandingCallIds,
-          abortController.signal,
+          abortController,
         );
         return;
       }

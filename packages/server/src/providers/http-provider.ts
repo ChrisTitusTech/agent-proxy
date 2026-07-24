@@ -116,7 +116,7 @@ export class HttpProvider extends BaseProvider {
 
   private static readonly RESERVED_BODY_KEYS = new Set([
     'model', 'messages', 'stream', 'max_tokens', 'temperature', 'tools', 'tool_choice',
-    'parallel_tool_calls',
+    'parallel_tool_calls', 'stream_options',
   ]);
 
   private buildRequestBody(options: ExecuteOptions, stream: boolean): Record<string, unknown> {
@@ -134,6 +134,9 @@ export class HttpProvider extends BaseProvider {
       }),
       stream,
     };
+    if (stream) {
+      body.stream_options = { include_usage: true };
+    }
 
     if (options.tools && options.tools.length > 0) {
       body.tools = options.tools;
@@ -337,6 +340,24 @@ export class HttpProvider extends BaseProvider {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let pendingDone: ProviderEvent | undefined;
+
+      const processEvents = async function* (
+        events: ProviderEvent[],
+      ): AsyncIterable<ProviderEvent> {
+        for (const event of events) {
+          if (event.type !== 'done') {
+            yield event;
+            continue;
+          }
+          if (event.finishReason !== undefined) {
+            pendingDone = event;
+            continue;
+          }
+          yield pendingDone ?? event;
+          pendingDone = undefined;
+        }
+      };
 
       try {
         while (true) {
@@ -355,7 +376,7 @@ export class HttpProvider extends BaseProvider {
             if (captureDebug) streamLines.push(trimmed);
 
             const events = parseSSELineToEvents(trimmed);
-            for (const event of events) {
+            for await (const event of processEvents(events)) {
               yield event;
               if (event.type === 'done') return;
             }
@@ -366,7 +387,13 @@ export class HttpProvider extends BaseProvider {
         if (buffer.trim()) {
           if (captureDebug) streamLines.push(buffer.trim());
           const events = parseSSELineToEvents(buffer.trim());
-          for (const event of events) yield event;
+          for await (const event of processEvents(events)) {
+            yield event;
+            if (event.type === 'done') return;
+          }
+        }
+        if (pendingDone) {
+          yield pendingDone;
         }
       } finally {
 
@@ -716,29 +743,20 @@ function parseSSELineToEvents(line: string): ProviderEvent[] {
     const json = JSON.parse(data) as OpenAIChatCompletionChunk;
     const delta = json.choices?.[0]?.delta;
     const finishReason = json.choices?.[0]?.finish_reason;
-
-    if (finishReason) {
-      const events: ProviderEvent[] = [];
-      if (json.usage) {
-        events.push({
-          type: 'usage',
-          usage: {
-            promptTokens: json.usage.prompt_tokens ?? 0,
-            completionTokens: json.usage.completion_tokens ?? 0,
-            totalTokens: json.usage.total_tokens ?? 0,
-          },
-        });
-      }
-      const reason = finishReason === 'length' ? 'length' as const
-        : finishReason === 'tool_calls' ? 'tool_use' as const
-        : 'stop' as const;
-      events.push({ type: 'done', finishReason: reason });
-      return events;
-    }
-
     const events: ProviderEvent[] = [];
 
-
+    if (json.usage) {
+      const promptTokens = json.usage.prompt_tokens ?? 0;
+      const completionTokens = json.usage.completion_tokens ?? 0;
+      events.push({
+        type: 'usage',
+        usage: {
+          promptTokens,
+          completionTokens,
+          totalTokens: json.usage.total_tokens ?? promptTokens + completionTokens,
+        },
+      });
+    }
 
     const reasoningText = delta?.reasoning_content || delta?.reasoning;
     if (reasoningText) {
@@ -760,6 +778,14 @@ function parseSSELineToEvents(line: string): ProviderEvent[] {
           ...(typeof tc.index === 'number' ? { index: tc.index } : {}),
         });
       }
+    }
+
+    if (finishReason) {
+      const reason = finishReason === 'length' ? 'length' as const
+        : finishReason === 'tool_calls' ? 'tool_use' as const
+        : finishReason === 'error' ? 'error' as const
+        : 'stop' as const;
+      events.push({ type: 'done', finishReason: reason });
     }
 
     return events;
@@ -840,6 +866,7 @@ type TeiRerankResponse = Array<{ index: number; score: number; text?: string }> 
 function mapFinishReason(reason?: string): 'stop' | 'length' | 'tool_calls' | 'error' {
   if (reason === 'length') return 'length';
   if (reason === 'tool_calls') return 'tool_calls';
+  if (reason === 'error') return 'error';
   return 'stop';
 }
 

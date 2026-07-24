@@ -434,6 +434,59 @@ describe('Responses SDK compatibility', () => {
     ]);
   });
 
+  it('waits for streamed function metadata before forwarding the call', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield {
+          type: 'tool_use',
+          toolCallId: '',
+          toolName: '',
+          input: '{"id":',
+          isPartial: true,
+          index: 0,
+        };
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_stream_late',
+          toolName: 'lookup',
+          input: '7}',
+          index: 0,
+        };
+        yield { type: 'done', finishReason: 'tool_use' };
+      },
+    });
+    const fixture = await createSdkClient(createDeps({ codex: provider }));
+    app = fixture.app;
+    const stream = await fixture.client.responses.create({
+      model: 'gpt-test',
+      input: 'lookup',
+      tools: [{
+        type: 'function',
+        name: 'lookup',
+        strict: false,
+        parameters: { type: 'object' },
+      }],
+      tool_choice: { type: 'function', name: 'lookup' },
+      stream: true,
+    });
+
+    const events = [];
+    for await (const event of stream) events.push(event);
+    const completed = events.find((event) => event.type === 'response.completed');
+    expect(completed?.response.output).toEqual([
+      expect.objectContaining({
+        type: 'function_call',
+        call_id: 'call_stream_late',
+        name: 'lookup',
+        arguments: '{"id":7}',
+      }),
+    ]);
+    expect(events
+      .filter((event) => event.type === 'response.function_call_arguments.delta')
+      .map((event) => event.delta)
+      .join('')).toBe('{"id":7}');
+  });
+
   it('reflects only configured CORS origins on raw SSE responses', async () => {
     const allowedDeps = createDeps();
     allowedDeps.corsOrigins = ['https://allowed.example'];
@@ -1129,6 +1182,89 @@ describe('Responses provider contract safeguards', () => {
     expect(response.json().error.message).toContain('parallel function calls');
   });
 
+  it('rejects provider calls for tools that were not advertised', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        content: '',
+        toolCalls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{}' },
+        }],
+        finishReason: 'tool_calls',
+      }),
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain('undeclared tool');
+  });
+
+  it.each([
+    { name: 'missing', ids: ['', 'call_2'], message: 'without an ID' },
+    { name: 'duplicate', ids: ['call_1', 'call_1'], message: 'duplicate function call IDs' },
+  ])('rejects $name provider function call IDs', async ({ ids, message }) => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        content: '',
+        toolCalls: ids.map((id) => ({
+          id,
+          type: 'function' as const,
+          function: { name: 'lookup', arguments: '{}' },
+        })),
+        finishReason: 'tool_calls',
+      }),
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        tools: [{ type: 'function', name: 'lookup' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain(message);
+  });
+
+  it('fails an undeclared streamed tool before emitting its output item', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_1',
+          toolName: 'unexpected',
+          input: '{}',
+        };
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+        tools: [{ type: 'function', name: 'lookup' }],
+      },
+    });
+
+    expect(response.body).toContain('event: response.failed');
+    expect(response.body).not.toContain('response.function_call_arguments.delta');
+    expect(response.body).not.toContain('"name":"unexpected"');
+  });
+
   it('enforces a named tool choice after provider execution', async () => {
     const provider = fakeProvider({
       execute: async () => ({
@@ -1313,6 +1449,36 @@ describe('Responses provider contract safeguards', () => {
     expect(streamed.body).not.toContain('reasoning_summary_text');
   });
 
+  it('bounds opted-in reasoning summaries in buffered responses', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        reasoning: '12345678',
+      }),
+    });
+    const deps = createDeps({ codex: provider });
+    deps.validation = { ...validation, maxResponseLength: 5 };
+    app = await createTestApp(deps);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        reasoning: { summary: 'auto' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe('incomplete');
+    expect(response.json().output).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: '12345' }],
+      }),
+    ]));
+  });
+
   it('fails a stream before forwarding oversized function arguments', async () => {
     const provider = fakeProvider({
       executeStream: async function* () {
@@ -1347,8 +1513,10 @@ describe('Responses provider contract safeguards', () => {
   });
 
   it('caps streamed text and completes with an incomplete response', async () => {
+    let providerSignal: AbortSignal | undefined;
     const provider = fakeProvider({
-      executeStream: async function* () {
+      executeStream: async function* (options) {
+        providerSignal = options.signal;
         yield { type: 'text_delta', text: '1234' };
         yield { type: 'text_delta', text: '5678' };
         yield { type: 'text_delta', text: 'not-forwarded' };
@@ -1382,6 +1550,37 @@ describe('Responses provider contract safeguards', () => {
     )].map((match) => JSON.parse(match[1]).delta).join('');
     expect(deltas).toBe('12345');
     expect(deltas).not.toContain('not-forwarded');
+    expect(providerSignal?.aborted).toBe(true);
+  });
+
+  it('caps streamed reasoning and aborts the provider', async () => {
+    let providerSignal: AbortSignal | undefined;
+    const provider = fakeProvider({
+      executeStream: async function* (options) {
+        providerSignal = options.signal;
+        yield { type: 'thinking', text: '1234' };
+        yield { type: 'thinking', text: '5678' };
+        yield { type: 'thinking', text: 'not-forwarded' };
+      },
+    });
+    const deps = createDeps({ codex: provider });
+    deps.validation = { ...validation, maxResponseLength: 5 };
+    app = await createTestApp(deps);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        reasoning: { summary: 'auto' },
+        stream: true,
+      },
+    });
+
+    expect(response.body).toContain('event: response.incomplete');
+    expect(response.body).toContain('"text":"12345"');
+    expect(response.body).not.toContain('not-forwarded');
+    expect(providerSignal?.aborted).toBe(true);
   });
 
   it('returns a provider rate limit after skipping an unhealthy route', async () => {
@@ -1414,6 +1613,45 @@ describe('Responses provider contract safeguards', () => {
 });
 
 describe('Responses cancellation, failures, and fallback', () => {
+  it('rejects a non-streaming provider error finish reason', async () => {
+    const provider = fakeProvider({
+      execute: async () => ({
+        ...defaultResult,
+        finishReason: 'error',
+      }),
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain('unsuccessful completion');
+  });
+
+  it('fails a stream whose done event reports an error', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        yield { type: 'text_delta', text: 'partial' };
+        yield { type: 'done', finishReason: 'error' };
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello', stream: true },
+    });
+
+    const terminals = [...response.body.matchAll(
+      /event: response\.(completed|incomplete|failed)/g,
+    )].map((match) => match[1]);
+    expect(terminals).toEqual(['failed']);
+    expect(response.body).toContain('unsuccessful completion');
+  });
+
   it('returns a timeout error with a compatible HTTP status', async () => {
     const provider = fakeProvider({
       execute: async () => {
