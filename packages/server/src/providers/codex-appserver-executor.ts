@@ -70,6 +70,13 @@ interface ThreadResumeResponse {
   [key: string]: unknown;
 }
 
+interface TurnStartResponse {
+  turn: {
+    id: string;
+    [key: string]: unknown;
+  };
+}
+
 interface ThreadStartedParams {
   thread?: { id?: string; [key: string]: unknown };
   threadId?: string;
@@ -541,6 +548,9 @@ export async function* executeStreamAppServer(
       proc, prompt, existingThread?.threadId ?? null, timeoutMs, model, options, config,
     );
   } catch (err) {
+    if (options.signal?.aborted) {
+      throw err;
+    }
 
     if (existingThread && sessionManager && clientKey) {
       sessionManager.invalidate(clientKey);
@@ -592,6 +602,12 @@ async function* executeStreamTurn(
 
   const channel = new AsyncChannel<ProviderEvent>();
   const cleanups: (() => void)[] = [];
+  let activeTurnId: string | null = null;
+  let turnCompleted = false;
+  let resolveTurnCompletion: (() => void) | undefined;
+  const turnCompletion = new Promise<void>((resolve) => {
+    resolveTurnCompletion = resolve;
+  });
 
 
   const timer = setTimeout(() => {
@@ -599,11 +615,12 @@ async function* executeStreamTurn(
   }, timeoutMs);
 
 
+  const onAbort = () => {
+    clearTimeout(timer);
+    channel.fail(new Error('Request was cancelled'));
+  };
   if (options.signal) {
-    options.signal.addEventListener('abort', () => {
-      clearTimeout(timer);
-      channel.fail(new Error('Request was cancelled'));
-    }, { once: true });
+    options.signal.addEventListener('abort', onAbort, { once: true });
   }
 
 
@@ -633,7 +650,12 @@ async function* executeStreamTurn(
 
   cleanups.push(proc.onNotification('turn/completed', (params) => {
     const p = params as TurnCompletedParams;
-    if (p.threadId === threadId) {
+    if (
+      p.threadId === threadId
+      && (!activeTurnId || p.turn.id === activeTurnId)
+    ) {
+      turnCompleted = true;
+      resolveTurnCompletion?.();
       clearTimeout(timer);
       if (finalUsage) channel.push({ type: 'usage', usage: finalUsage });
       channel.push({ type: 'done' });
@@ -643,13 +665,18 @@ async function* executeStreamTurn(
 
 
   try {
-    await proc.request('turn/start', {
+    const started = await proc.request<TurnStartResponse>('turn/start', {
       threadId,
       input: buildUserInput(prompt),
     }, timeoutMs);
+    activeTurnId = started.turn?.id ?? null;
+    if (!activeTurnId) {
+      throw new Error('turn/start did not return a usable turn ID.');
+    }
   } catch (err) {
     clearTimeout(timer);
     for (const cleanup of cleanups) cleanup();
+    options.signal?.removeEventListener('abort', onAbort);
     releaseTurnLock();
     throw err;
   }
@@ -697,9 +724,33 @@ async function* executeStreamTurn(
       retried: false,
     });
   } finally {
-
-    clearTimeout(timer);
-    for (const cleanup of cleanups) cleanup();
-    releaseTurnLock();
+    try {
+      if (activeTurnId && !turnCompleted) {
+        await proc.request(
+          'turn/interrupt',
+          { threadId, turnId: activeTurnId },
+          timeoutMs,
+        );
+        if (!turnCompleted) {
+          await new Promise<void>((resolve, reject) => {
+            const completionTimer = setTimeout(() => {
+              reject(new Error(
+                `Timed out waiting for interrupted turn/completed (${timeoutMs}ms)`,
+              ));
+            }, timeoutMs);
+            completionTimer.unref();
+            void turnCompletion.then(() => {
+              clearTimeout(completionTimer);
+              resolve();
+            });
+          });
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+      for (const cleanup of cleanups) cleanup();
+      options.signal?.removeEventListener('abort', onAbort);
+      releaseTurnLock();
+    }
   }
 }

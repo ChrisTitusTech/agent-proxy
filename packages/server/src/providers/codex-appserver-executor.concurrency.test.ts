@@ -36,11 +36,24 @@ class MockAppServer {
   private threadCounter = 0;
   private turnCounter = 0;
   private activeTurnsByThread = new Map<string, number>();
+  private activeTurnIds = new Set<string>();
+  private interruptPendingTurns = new Set<string>();
+  private interruptGate: Promise<void> | null = null;
   private activeTurnsTotal = 0;
 
 
   maxConcurrentTurnsPerThread = 0;
   maxConcurrentTurnsTotal = 0;
+  interruptRequests: Array<{ threadId: string; turnId: string }> = [];
+  turnStartPrompts: string[] = [];
+
+  deferInterruptCompletion(): () => void {
+    let release: (() => void) | undefined;
+    this.interruptGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return () => release?.();
+  }
 
   isAlive(): boolean {
     return true;
@@ -75,8 +88,19 @@ class MockAppServer {
       const threadId = p.threadId as string;
       const input = p.input as Array<{ text: string }>;
       const promptText = input[0]?.text ?? '';
+      const turnId = `turn-${++this.turnCounter}`;
 
-      void this.runTurn(threadId, `turn-${++this.turnCounter}`, promptText);
+      this.turnStartPrompts.push(promptText);
+      void this.runTurn(threadId, turnId, promptText);
+      return { turn: { id: turnId } };
+    }
+    if (method === 'turn/interrupt') {
+      const threadId = p.threadId as string;
+      const turnId = p.turnId as string;
+      this.interruptRequests.push({ threadId, turnId });
+      this.interruptPendingTurns.add(turnId);
+      await this.interruptGate;
+      this.completeTurn(threadId, turnId, 'interrupted');
       return {};
     }
     throw new Error(`Unexpected JSON-RPC method: ${method}`);
@@ -93,12 +117,17 @@ class MockAppServer {
     const active = (this.activeTurnsByThread.get(threadId) ?? 0) + 1;
     this.activeTurnsByThread.set(threadId, active);
     this.activeTurnsTotal++;
+    this.activeTurnIds.add(turnId);
     this.maxConcurrentTurnsPerThread = Math.max(this.maxConcurrentTurnsPerThread, active);
     this.maxConcurrentTurnsTotal = Math.max(this.maxConcurrentTurnsTotal, this.activeTurnsTotal);
 
     const chunks = ['echo(', promptText, ')'];
     for (const chunk of chunks) {
       await delay(TICK_MS);
+      if (
+        !this.activeTurnIds.has(turnId)
+        || this.interruptPendingTurns.has(turnId)
+      ) return;
       this.emit('item/agentMessage/delta', {
         threadId,
         turnId,
@@ -119,11 +148,21 @@ class MockAppServer {
     });
 
     await delay(TICK_MS);
+    this.completeTurn(threadId, turnId, 'completed');
+  }
+
+  private completeTurn(
+    threadId: string,
+    turnId: string,
+    status: 'completed' | 'interrupted',
+  ): void {
+    if (!this.activeTurnIds.delete(turnId)) return;
+    this.interruptPendingTurns.delete(turnId);
     this.activeTurnsByThread.set(threadId, this.activeTurnsByThread.get(threadId)! - 1);
     this.activeTurnsTotal--;
     this.emit('turn/completed', {
       threadId,
-      turn: { id: turnId, status: 'completed', error: null },
+      turn: { id: turnId, status, error: null },
     });
   }
 }
@@ -225,6 +264,46 @@ describe('serializes Codex app-server turns', () => {
       executeAppServer(createOptions('prompt-C'), createConfig(proc, sessionManager, 'client-1')),
     ]);
 
+    expect(proc.maxConcurrentTurnsPerThread).toBe(1);
+  });
+
+  it('interrupts an aborted stream before releasing the thread lock', async () => {
+    const proc = new MockAppServer();
+    sessionManager = new CodexAppServerSessionManager();
+    sessionManager.set('client-1', 'thread-shared', MODEL);
+    const controller = new AbortController();
+    const options = {
+      ...createOptions('prompt-A', true),
+      signal: controller.signal,
+    };
+    const stream = executeStreamAppServer(
+      options,
+      createConfig(proc, sessionManager, 'client-1'),
+    );
+    const releaseInterrupt = proc.deferInterruptCompletion();
+
+    const first = await stream.next();
+    expect(first.value).toMatchObject({ type: 'text_delta' });
+    controller.abort();
+    const returning = stream.return();
+    while (proc.interruptRequests.length === 0) await delay(TICK_MS);
+
+    expect(proc.interruptRequests).toEqual([{
+      threadId: 'thread-shared',
+      turnId: 'turn-1',
+    }]);
+
+    const nextTurn = executeAppServer(
+      createOptions('prompt-B'),
+      createConfig(proc, sessionManager, 'client-1'),
+    );
+    await delay(TICK_MS * 2);
+    expect(proc.turnStartPrompts).toEqual(['prompt-A']);
+
+    releaseInterrupt();
+    await returning;
+    await nextTurn;
+    expect(proc.turnStartPrompts).toEqual(['prompt-A', 'prompt-B']);
     expect(proc.maxConcurrentTurnsPerThread).toBe(1);
   });
 

@@ -108,7 +108,12 @@ export interface NormalizedResponsesInput {
 export interface ResponsesValidationError {
   error: {
     message: string;
-    type: 'invalid_request_error';
+    type:
+      | 'invalid_request_error'
+      | 'rate_limit_error'
+      | 'provider_error'
+      | 'timeout_error'
+      | 'request_cancelled';
     param: string | null;
     code: string;
   };
@@ -153,11 +158,12 @@ export function makeResponsesError(
   message: string,
   param: string | null,
   code: string,
+  type: ResponsesValidationError['error']['type'] = 'invalid_request_error',
 ): ResponsesValidationError {
   return {
     error: {
       message,
-      type: 'invalid_request_error',
+      type,
       param,
       code,
     },

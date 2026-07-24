@@ -808,11 +808,89 @@ describe('Responses continuation and retention', () => {
 
     expect(second.statusCode).toBe(200);
     expect(executions[1].messages).toEqual([
+      { role: 'developer', content: 'Persisted developer item' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'Hello from the provider.' },
       { role: 'developer', content: 'Second instructions' },
+      { role: 'user', content: 'second' },
+    ]);
+    expect(executions[0].clientKey).toBeDefined();
+    expect(executions[1].clientKey).toBeUndefined();
+
+    const third = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { 'x-agent-proxy-session-id': 'client-a' },
+      payload: {
+        model: 'gpt-test',
+        instructions: 'Third instructions',
+        previous_response_id: second.json().id,
+        input: 'third',
+      },
+    });
+    expect(third.statusCode).toBe(200);
+    expect(executions[2].messages).toEqual([
       { role: 'developer', content: 'Persisted developer item' },
       { role: 'user', content: 'first' },
       { role: 'assistant', content: 'Hello from the provider.' },
       { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'Hello from the provider.' },
+      { role: 'developer', content: 'Third instructions' },
+      { role: 'user', content: 'third' },
+    ]);
+    expect(executions[2].clientKey).toBeUndefined();
+  });
+
+  it('does not retain incomplete function calls as outstanding context', async () => {
+    let callCount = 0;
+    const executions: ExecuteOptions[] = [];
+    const provider = fakeProvider({
+      execute: async (options) => {
+        executions.push(options);
+        callCount++;
+        if (callCount === 1) {
+          return {
+            ...defaultResult,
+            content: '',
+            toolCalls: [{
+              id: 'call_incomplete',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"id":' },
+            }],
+            finishReason: 'length',
+          };
+        }
+        return defaultResult;
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'first',
+        tools: [{ type: 'function', name: 'lookup' }],
+      },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().status).toBe('incomplete');
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        previous_response_id: first.json().id,
+        input: 'continue without a tool result',
+      },
+    });
+
+    expect(second.statusCode).toBe(200);
+    expect(executions[1].messages).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'user', content: 'continue without a tool result' },
     ]);
   });
 
@@ -1608,6 +1686,7 @@ describe('Responses provider contract safeguards', () => {
 
     expect(response.statusCode).toBe(429);
     expect(response.headers['retry-after']).toBe('17');
+    expect(response.json().error.type).toBe('rate_limit_error');
     expect(response.json().error.code).toBe('rate_limit_exceeded');
   });
 });
@@ -1666,7 +1745,28 @@ describe('Responses cancellation, failures, and fallback', () => {
     });
 
     expect(response.statusCode).toBe(504);
+    expect(response.json().error.type).toBe('timeout_error');
     expect(response.json().error.code).toBe('timeout');
+  });
+
+  it('returns a typed provider error after provider failure', async () => {
+    const provider = fakeProvider({
+      execute: async () => {
+        throw new Error('provider exploded');
+      },
+    });
+    app = await createTestApp(createDeps({ codex: provider }));
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error).toMatchObject({
+      type: 'provider_error',
+      code: 'provider_error',
+    });
   });
 
   it('uses the next mapped provider after a bounded failure', async () => {

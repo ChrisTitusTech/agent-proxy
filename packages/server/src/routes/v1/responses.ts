@@ -273,7 +273,9 @@ function outputMessages(
     (item): item is ResponseMessageOutput => item.type === 'message',
   );
   const toolCalls = output
-    .filter((item): item is ResponseFunctionCallOutput => item.type === 'function_call')
+    .filter((item): item is ResponseFunctionCallOutput => (
+      item.type === 'function_call' && item.status === 'completed'
+    ))
     .map<ChatMessageToolCall>((item) => ({
       id: item.call_id,
       type: 'function',
@@ -327,7 +329,18 @@ function responseError(
   param: string | null,
   code: string,
 ) {
-  return reply.status(statusCode).send(makeResponsesError(message, param, code));
+  const type = statusCode === 429
+    ? 'rate_limit_error'
+    : statusCode === 504
+      ? 'timeout_error'
+      : statusCode === 499
+        ? 'request_cancelled'
+        : statusCode >= 500
+          ? 'provider_error'
+          : 'invalid_request_error';
+  return reply.status(statusCode).send(
+    makeResponsesError(message, param, code, type),
+  );
 }
 
 function chatMessagePromptLength(message: ChatMessage): number {
@@ -456,8 +469,8 @@ function prepareContinuation(
   }
 
   const messages = [
-    ...normalized.instructionMessages,
     ...(previous?.contextMessages ?? []),
+    ...normalized.instructionMessages,
     ...normalized.inputMessages,
   ];
   if (messages.length > validation.maxMessageCount) {
@@ -552,7 +565,9 @@ function providerOptions(
     maxTokens: context.body.max_output_tokens,
     temperature: context.body.temperature,
     signal,
-    clientKey: context.clientKey,
+    clientKey: context.body.previous_response_id
+      ? undefined
+      : context.clientKey,
     reasoningEffort: context.body.reasoning?.effort as ReasoningEffort | undefined
       ?? route.reasoningEffort,
     providerOverrides: route.providerOverrides,
@@ -635,15 +650,23 @@ function saveResponseContext(
   outstandingCallIds: Set<string>,
 ): void {
   if (context.body.store === false) return;
+  const inputStart = context.messages.length - context.normalized.inputMessages.length;
+  const instructionStart = inputStart - context.normalized.instructionMessages.length;
+  const retainedMessages = [
+    ...context.messages.slice(0, instructionStart),
+    ...context.messages.slice(inputStart),
+  ];
   const newCallIds = output
-    .filter((item): item is ResponseFunctionCallOutput => item.type === 'function_call')
+    .filter((item): item is ResponseFunctionCallOutput => (
+      item.type === 'function_call' && item.status === 'completed'
+    ))
     .map((item) => item.call_id);
   store.set({
     id: context.responseId,
     clientKey: context.clientKey,
     model: context.body.model,
     contextMessages: [
-      ...context.messages.slice(context.normalized.instructionMessages.length),
+      ...retainedMessages,
       ...outputMessages(output),
     ],
     outstandingCallIds: [
