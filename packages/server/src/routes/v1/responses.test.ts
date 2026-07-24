@@ -962,8 +962,11 @@ describe('Responses provider contract safeguards', () => {
     expect(terminalMatch).not.toBeNull();
     const terminal = JSON.parse(terminalMatch![1]);
     expect(terminal.response.output[0].content[0].text).toBe('12345');
-    expect(response.body).not.toContain('678');
-    expect(response.body).not.toContain('not-forwarded');
+    const deltas = [...response.body.matchAll(
+      /event: response\.output_text\.delta\ndata: (.+)\n/g,
+    )].map((match) => JSON.parse(match[1]).delta).join('');
+    expect(deltas).toBe('12345');
+    expect(deltas).not.toContain('not-forwarded');
   });
 
   it('returns a provider rate limit after skipping an unhealthy route', async () => {
