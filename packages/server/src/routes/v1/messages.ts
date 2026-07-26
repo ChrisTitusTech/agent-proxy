@@ -3,6 +3,7 @@ import type {
   ChatCompletionTool,
   ChatMessage,
   ChatMessageContent,
+  ChatMessageContentPart,
   ChatMessageToolCall,
   ToolChoice,
   ValidationConfig,
@@ -237,11 +238,19 @@ export function normalizeAnthropicMessages(
       continue;
     }
 
-    let textBuffer: string[] = [];
-    const flushUserText = () => {
-      if (textBuffer.length === 0) return;
-      messages.push({ role: 'user', content: textBuffer.join('\n') });
-      textBuffer = [];
+    let userContentBuffer: ChatMessageContentPart[] = [];
+    const flushUserContent = () => {
+      if (userContentBuffer.length === 0) return;
+      const textOnly = userContentBuffer.every(
+        (part) => part.type === 'text' && typeof part.text === 'string',
+      );
+      messages.push({
+        role: 'user',
+        content: textOnly
+          ? userContentBuffer.map((part) => part.text as string).join('\n')
+          : userContentBuffer,
+      });
+      userContentBuffer = [];
     };
     for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
       const block = message.content[blockIndex];
@@ -256,12 +265,30 @@ export function normalizeAnthropicMessages(
       }
       if (block.type === 'text' && typeof block.text === 'string') {
         const text = sanitizeString(block.text);
-        textBuffer.push(text);
+        userContentBuffer.push({ type: 'text', text });
         promptLength += text.length;
         continue;
       }
+      if (block.type === 'image') {
+        const source = block.source as Record<string, unknown> | undefined;
+        if (
+          source
+          && typeof source === 'object'
+          && (
+            (
+              source.type === 'base64'
+              && typeof source.data === 'string'
+              && typeof source.media_type === 'string'
+            )
+            || (source.type === 'url' && typeof source.url === 'string')
+          )
+        ) {
+          userContentBuffer.push(block as ChatMessageContentPart);
+          continue;
+        }
+      }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        flushUserText();
+        flushUserContent();
         const content = normalizeToolResultContent(block.content);
         const contentText = typeof content === 'string' ? content : stringifyToolValue(content);
         messages.push({
@@ -280,7 +307,7 @@ export function normalizeAnthropicMessages(
         },
       };
     }
-    flushUserText();
+    flushUserContent();
   }
 
   let tools: ChatCompletionTool[] | undefined;
@@ -752,8 +779,7 @@ export function registerMessagesRoute(
                   if (event.type === 'tool_use') {
                     const toolIndex = event.index ?? currentToolIndex ?? 0;
                     const startsNewTool = currentBlockType !== 'tool_use'
-                      || currentToolIndex !== toolIndex
-                      || (!event.isPartial && Boolean(event.toolCallId || event.toolName));
+                      || currentToolIndex !== toolIndex;
                     if (startsNewTool) {
                       closeCurrentBlock();
                       if (!event.toolCallId || !event.toolName) {

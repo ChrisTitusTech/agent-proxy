@@ -197,6 +197,38 @@ describe('Anthropic Messages normalization', () => {
     });
   });
 
+  it('preserves Anthropic image blocks alongside user text', () => {
+    const image = {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'aW1hZ2U=',
+      },
+    };
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Describe this image.' },
+          image,
+        ],
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Describe this image.' },
+        image,
+      ],
+    }]);
+  });
+
   it.each([
     ['assistant', null],
     ['user', 42],
@@ -308,9 +340,16 @@ describe('Anthropic Messages tool compatibility', () => {
       };
       yield {
         type: 'tool_use',
+        toolCallId: 'toolu_stream',
+        toolName: 'write_fixture',
+        input: '"phase',
+        index: 0,
+      };
+      yield {
+        type: 'tool_use',
         toolCallId: '',
         toolName: '',
-        input: '"phase3"}',
+        input: '3"}',
         isPartial: true,
         index: 0,
       };
@@ -346,6 +385,7 @@ describe('Anthropic Messages tool compatibility', () => {
       'message_start',
       'ping',
       'content_block_start',
+      'content_block_delta',
       'content_block_delta',
       'content_block_delta',
       'content_block_stop',

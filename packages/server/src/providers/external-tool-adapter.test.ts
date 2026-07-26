@@ -44,6 +44,25 @@ describe('external CLI tool adapter', () => {
     expect(prepared?.options.messages.at(-1)?.content).toContain('External tools:');
   });
 
+  it('preserves the effective caller system instruction', () => {
+    const prepared = prepareExternalToolRequest({
+      ...baseOptions,
+      messages: [
+        { role: 'system', content: 'Never disclose secrets.' },
+        ...baseOptions.messages,
+      ],
+    });
+
+    expect(prepared?.options.messages[0]).toMatchObject({
+      role: 'system',
+    });
+    expect(prepared?.options.messages[0].content).toContain('Never disclose secrets.');
+    expect(prepared?.options.messages[0].content).toContain(
+      'External client tool-selection mode is active.',
+    );
+    expect(prepared?.options.messages).toHaveLength(2);
+  });
+
   it('turns a valid envelope into a stable function-call result and stream events', () => {
     const prepared = prepareExternalToolRequest(baseOptions)!;
     const raw: ExecuteResult = {

@@ -419,6 +419,11 @@ export class CodexProvider extends BaseProvider {
 
   override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
     const prepared = prepareExternalToolRequest(options);
+    if (prepared && this.isAppServerMode) {
+      throw new Error(
+        'External tool selection is not supported in Codex app-server mode; use cli mode.',
+      );
+    }
     const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
     return prepared ? adaptExternalToolResult(result, prepared) : result;
   }
@@ -426,6 +431,11 @@ export class CodexProvider extends BaseProvider {
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
     const prepared = prepareExternalToolRequest(options);
     if (prepared) {
+      if (this.isAppServerMode) {
+        throw new Error(
+          'External tool selection is not supported in Codex app-server mode; use cli mode.',
+        );
+      }
       const result = adaptExternalToolResult(
         await this.executeWithoutExternalTools(prepared.options),
         prepared,

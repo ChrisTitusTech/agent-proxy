@@ -34,7 +34,11 @@ export function sanitizeProviderError(message: string): string {
       '[credential]',
     )
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[account]')
-    .replace(/\/(?:home|var|opt|etc|tmp|run)\/[\w/.@-]+/g, '[path]')
+    .replace(
+      /(^|[\s("'=])\/(?:[\w.@+-]+\/)*[\w.@+-]+/g,
+      '$1[path]',
+    )
+    .replace(/\b[A-Za-z]:\\(?:[\w.@+-]+\\)*[\w.@+-]+/g, '[path]')
     .replace(/at\s+\S+\s*\(.*?\)/g, '')
     .replace(/\s+/g, ' ')
     .trim()

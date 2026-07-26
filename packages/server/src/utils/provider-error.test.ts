@@ -36,6 +36,12 @@ describe('provider error classification', () => {
       'api_key=genericsecret123 token: tokensecret456 '
       + 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123',
     )).not.toMatch(/genericsecret|tokensecret|eyJ/);
+    expect(sanitizeProviderError(
+      'spawn /usr/local/bin/codex in /srv/agent-proxy and C:\\Users\\agent\\secret',
+    )).toBe('spawn [path] in [path] and [path]');
+    expect(sanitizeProviderError(
+      'request to https://example.test/v1 failed',
+    )).toBe('request to https://example.test/v1 failed');
   });
 
   it('does not classify words containing sign-in or DNS substrings', () => {

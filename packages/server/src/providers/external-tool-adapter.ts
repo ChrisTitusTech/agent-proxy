@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid';
 import type {
   ExecuteOptions,
   ExecuteResult,
+  ChatMessage,
   ProviderEvent,
   ToolChoice,
 } from '@agent-proxy/shared';
@@ -26,6 +27,32 @@ function requiresTool(choice: ToolChoice | undefined): boolean {
       && choice !== null
       && choice.type === 'function'
     );
+}
+
+function addExternalToolInstruction(
+  messages: ChatMessage[],
+  instruction: string,
+): ChatMessage[] {
+  let instructionTarget = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index].role === 'system' || messages[index].role === 'developer') {
+      instructionTarget = index;
+      break;
+    }
+  }
+  if (instructionTarget < 0) {
+    return [...messages, { role: 'system', content: instruction }];
+  }
+
+  const updated = [...messages];
+  const existing = messages[instructionTarget];
+  updated[instructionTarget] = {
+    ...existing,
+    content: typeof existing.content === 'string'
+      ? `${existing.content}\n\n${instruction}`
+      : [...existing.content, { type: 'text', text: instruction }],
+  };
+  return updated;
 }
 
 export function prepareExternalToolRequest(
@@ -64,10 +91,7 @@ export function prepareExternalToolRequest(
     parallelToolCalls: options.parallelToolCalls !== false,
     options: {
       ...options,
-      messages: [
-        ...options.messages,
-        { role: 'system', content: instruction },
-      ],
+      messages: addExternalToolInstruction(options.messages, instruction),
       tools: undefined,
       toolChoice: undefined,
       parallelToolCalls: undefined,
