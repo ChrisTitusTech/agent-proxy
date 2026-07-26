@@ -55,6 +55,31 @@ async function jsonRequest(path, init = {}, timeoutMs = 30_000) {
   return body;
 }
 
+async function proxyJsonRequest(path, timeoutMs = 30_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${proxyBase}${path}`, {
+      headers: { 'x-admin-token': adminToken },
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        `${path} returned HTTP ${response.status}: ${body.error?.message ?? 'request failed'}`,
+      );
+    }
+    return body;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`${path} timed out after ${timeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 const unique = `${Date.now()}-${process.pid}`;
 const auth = await jsonRequest('/api/v1/auths/signup', {
   method: 'POST',
@@ -74,6 +99,9 @@ const headers = {
 };
 
 async function connectBrowserSocket() {
+  if (typeof WebSocket !== 'function') {
+    throw new Error('This Node.js runtime does not provide the WebSocket API.');
+  }
   const socketUrl = `${webuiBase.replace(/^http/, 'ws')}/ws/socket.io/?EIO=4&transport=websocket`;
   const socket = new WebSocket(socketUrl);
 
@@ -100,7 +128,14 @@ async function connectBrowserSocket() {
       }
       if (message.startsWith('40')) {
         clearTimeout(timeout);
-        const payload = message.length > 2 ? JSON.parse(message.slice(2)) : {};
+        let payload;
+        try {
+          payload = message.length > 2 ? JSON.parse(message.slice(2)) : {};
+        } catch (error) {
+          socket.close();
+          reject(error);
+          return;
+        }
         if (typeof payload.sid !== 'string' || payload.sid.length === 0) {
           socket.close();
           reject(new Error('Open WebUI browser socket did not return a session ID.'));
@@ -133,11 +168,8 @@ async function proxyRequestCount() {
   if (!adminToken) {
     throw new Error('AGENT_PROXY_ADMIN_TOKEN is required for the accounting check.');
   }
-  const response = await fetch(`${proxyBase}/admin/dashboard?days=1`, {
-    headers: { 'x-admin-token': adminToken },
-  });
-  const body = await response.json();
-  if (!response.ok || typeof body.overview?.totalRequests !== 'number') {
+  const body = await proxyJsonRequest('/admin/dashboard?days=1');
+  if (typeof body.overview?.totalRequests !== 'number') {
     throw new Error('agent-proxy accounting could not be read.');
   }
   return body.overview.totalRequests;
@@ -149,11 +181,8 @@ async function waitForProxyIdle(timeoutMs = 200_000) {
   }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const response = await fetch(`${proxyBase}/admin/active-requests`, {
-      headers: { 'x-admin-token': adminToken },
-    });
-    const body = await response.json();
-    if (!response.ok || typeof body.count !== 'number') {
+    const body = await proxyJsonRequest('/admin/active-requests');
+    if (typeof body.count !== 'number') {
       throw new Error('agent-proxy active request state could not be read.');
     }
     if (body.count === 0) return;
@@ -188,21 +217,44 @@ if (selectedCases.has('nonstream')) {
 
 if (selectedCases.has('stream')) {
   const marker = 'OPENWEBUI_STREAM_OK';
-  const response = await fetch(`${webuiBase}/openai/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: aliases[0],
-      messages: [{ role: 'user', content: `Reply with exactly ${marker}.` }],
-      stream: true,
-    }),
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(`Streaming request returned HTTP ${response.status}.`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 200_000);
+  let response;
+  let text = '';
+  let readTicks = 0;
+  try {
+    response = await fetch(`${webuiBase}/openai/chat/completions`, {
+      method: 'POST',
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: aliases[0],
+        messages: [{ role: 'user', content: `Reply with exactly ${marker}.` }],
+        stream: true,
+      }),
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Streaming request returned HTTP ${response.status}.`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.length > 0) readTicks += 1;
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    clearTimeout(timeout);
   }
-  const text = await response.text();
   const dataEvents = text.split('\n').filter((line) => line.startsWith('data: '));
-  if (dataEvents.length < 2 || !text.includes(marker) || !text.includes('[DONE]')) {
+  if (
+    readTicks < 2
+    || dataEvents.length < 2
+    || !text.includes(marker)
+    || !text.includes('[DONE]')
+  ) {
     throw new Error('Open WebUI did not relay a complete incremental SSE response.');
   }
   console.log('PASS stream');
@@ -329,11 +381,8 @@ if (selectedCases.has('cancel')) {
 
     let activeCount = 0;
     for (let attempt = 0; attempt < 50; attempt++) {
-      const active = await fetch(`${proxyBase}/admin/active-requests`, {
-        headers: { 'x-admin-token': adminToken },
-      });
-      const state = await active.json();
-      if (!active.ok || typeof state.count !== 'number') {
+      const state = await proxyJsonRequest('/admin/active-requests');
+      if (typeof state.count !== 'number') {
         throw new Error('agent-proxy active request state could not be read.');
       }
       activeCount = state.count;
@@ -354,11 +403,8 @@ if (selectedCases.has('cancel')) {
 
     activeCount = -1;
     for (let attempt = 0; attempt < 50; attempt++) {
-      const active = await fetch(`${proxyBase}/admin/active-requests`, {
-        headers: { 'x-admin-token': adminToken },
-      });
-      const state = await active.json();
-      if (!active.ok || typeof state.count !== 'number') {
+      const state = await proxyJsonRequest('/admin/active-requests');
+      if (typeof state.count !== 'number') {
         throw new Error('agent-proxy active request state could not be read.');
       }
       activeCount = state.count;

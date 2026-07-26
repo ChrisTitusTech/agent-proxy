@@ -62,10 +62,18 @@ if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain=v1 2>/dev/null)" ]]; then
 					git ls-files --stage -z -- "$path"
 					printf 'worktree\0'
 					if [[ -L "$path" ]]; then
-						printf 'symlink\0mode\0%s\0target\0' "$(stat -c '%f' -- "$path")"
+						mode=$(stat -c '%f' -- "$path") || {
+							printf 'Cannot read symlink mode for release fingerprint: %s\n' "$path" >&2
+							exit 1
+						}
+						printf 'symlink\0mode\0%s\0target\0' "$mode"
 						readlink -z -- "$path"
 					elif [[ -f "$path" ]]; then
-						printf 'file\0mode\0%s\0sha256\0' "$(stat -c '%f' -- "$path")"
+						mode=$(stat -c '%f' -- "$path") || {
+							printf 'Cannot read file mode for release fingerprint: %s\n' "$path" >&2
+							exit 1
+						}
+						printf 'file\0mode\0%s\0sha256\0' "$mode"
 						sha256sum -- "$path" | cut -d ' ' -f 1
 					elif [[ -d "$path" ]] &&
 						git ls-files --stage -- "$path" | grep -q '^160000 '; then
@@ -74,7 +82,11 @@ if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain=v1 2>/dev/null)" ]]; then
 						printf 'status\0'
 						git -C "$path" status --porcelain=v1 -z 2>/dev/null || true
 					elif [[ -e "$path" ]]; then
-						printf 'other\0mode\0%s\n' "$(stat -c '%f' -- "$path")"
+						mode=$(stat -c '%f' -- "$path") || {
+							printf 'Cannot read special-file mode for release fingerprint: %s\n' "$path" >&2
+							exit 1
+						}
+						printf 'other\0mode\0%s\n' "$mode"
 					else
 						printf 'DELETED\n'
 					fi

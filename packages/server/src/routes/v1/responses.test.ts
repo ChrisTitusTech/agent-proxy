@@ -519,7 +519,14 @@ describe('Responses SDK compatibility', () => {
           type: 'tool_use',
           toolCallId: 'call_custom_1',
           toolName: 'exec',
-          input: '{"input":"text(true);"}',
+          input: '{"input":"text',
+          index: 0,
+        };
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_custom_1',
+          toolName: 'exec',
+          input: '(true);"}',
           index: 0,
         };
         yield { type: 'done', finishReason: 'tool_use' };
@@ -1265,11 +1272,22 @@ describe('Responses continuation and retention', () => {
       payload: {
         model: 'gpt-test',
         previous_response_id: first.json().id,
-        input: [{
-          type: 'function_call_output',
-          call_id: 'call_once',
-          output: 'done',
-        }],
+        input: [
+          {
+            type: 'additional_tools',
+            role: 'developer',
+            tools: [{
+              type: 'function',
+              name: 'lookup',
+              parameters: { type: 'object' },
+            }],
+          },
+          {
+            type: 'function_call_output',
+            call_id: 'call_once',
+            output: 'done',
+          },
+        ],
       },
     });
     expect(second.statusCode).toBe(200);
@@ -1909,6 +1927,37 @@ describe('Responses cancellation, failures, and fallback', () => {
     });
   });
 
+  it('labels the final error with the provider that actually failed', async () => {
+    const codex = fakeProvider({
+      name: 'codex',
+      execute: async () => {
+        throw new Error('token expired');
+      },
+    });
+    const grok = fakeProvider({ name: 'grok' });
+    const deps = createDeps(
+      { codex, grok },
+      [
+        { provider: 'codex', actualModel: 'codex-model' },
+        { provider: 'grok', actualModel: 'grok-model' },
+      ],
+    );
+    deps.healthChecker.isHealthy = vi.fn(
+      async (provider) => provider === 'codex',
+    );
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain('Codex service-account login expired');
+    expect(response.json().error.message).not.toContain('Grok');
+  });
+
   it('uses the next mapped provider after a bounded failure', async () => {
     const codex = fakeProvider({
       name: 'codex',
@@ -1961,6 +2010,30 @@ describe('Responses cancellation, failures, and fallback', () => {
     )].map((match) => match[1]);
     expect(terminals).toEqual(['failed']);
     expect(response.body).toContain('"code":"provider_error"');
+  });
+
+  it('sanitizes provider failures before writing streaming request logs', async () => {
+    const secret = 'genericsecret123456';
+    const provider = fakeProvider({
+      executeStream: async function* () {
+        throw new Error(`token=${secret}`);
+      },
+    });
+    const deps = createDeps({ codex: provider });
+    const requestLogger = vi.mocked(deps.requestLogger!);
+    app = await createTestApp(deps);
+
+    await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello', stream: true },
+    });
+
+    const failureLog = requestLogger.mock.calls
+      .map(([entry]) => entry)
+      .find((entry) => entry.status === 'error');
+    expect(failureLog?.errorMessage).toContain('[credential]');
+    expect(failureLog?.errorMessage).not.toContain(secret);
   });
 
   it('propagates a client disconnect to the provider abort signal', async () => {

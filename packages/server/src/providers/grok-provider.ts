@@ -113,21 +113,7 @@ export class GrokProvider extends BaseProvider {
 
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
     const result = await this.execute({ ...options, stream: false });
-
-    if (result.toolCalls?.length) {
-      yield* externalToolEvents(result);
-      return;
-    }
-    if (result.content) yield { type: 'text_delta', text: result.content };
-    yield {
-      type: 'usage',
-      usage: result.usage,
-    };
-    yield {
-      type: 'done',
-
-      finishReason: result.finishReason === 'tool_calls' ? 'tool_use' : (result.finishReason ?? 'stop'),
-    };
+    yield* externalToolEvents(result);
   }
 
 

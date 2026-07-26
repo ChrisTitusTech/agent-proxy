@@ -95,11 +95,14 @@ process.exit(1);
 ' "$COMPAT_FIXTURE_DIR/continuation-first.jsonl"
 )
 timeout --signal=TERM --kill-after=5s "${TURN_TIMEOUT}s" \
-	"$COMPAT_CLIENT_BINARY" exec resume "$thread_id" \
+	"$COMPAT_CLIENT_BINARY" exec \
 	--json \
 	--strict-config \
 	--skip-git-repo-check \
 	--ignore-rules \
+	--sandbox workspace-write \
+	-C "$COMPAT_WORKSPACE" \
+	resume "$thread_id" \
 	'Reply with only the marker I asked you to remember.' \
 	>"$COMPAT_FIXTURE_DIR/continuation-second.jsonl"
 rg -q 'CODEX_CONTINUATION_ALPHA' "$COMPAT_FIXTURE_DIR/continuation-second.jsonl"

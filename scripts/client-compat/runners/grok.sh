@@ -23,7 +23,8 @@ chmod 0600 "$HOME/.grok/config.toml"
 
 (
 	cd "$COMPAT_WORKSPACE"
-	"$COMPAT_CLIENT_BINARY" inspect --json >"$COMPAT_FIXTURE_DIR/inspect.json"
+	timeout --signal=TERM --kill-after=5s "${TURN_TIMEOUT}s" \
+		"$COMPAT_CLIENT_BINARY" inspect --json >"$COMPAT_FIXTURE_DIR/inspect.json"
 )
 
 run_grok_in_workspace() {

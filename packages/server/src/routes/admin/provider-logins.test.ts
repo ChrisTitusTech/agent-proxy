@@ -102,6 +102,41 @@ describe('provider login admin routes', () => {
     expect(manager.submitCode).toHaveBeenCalledWith('claude', 'one-time-code');
   });
 
+  it.each([
+    undefined,
+    42,
+  ])('rejects an invalid Claude authorization code payload', async (code) => {
+    const { app, manager } = await setup();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/admin/provider-logins/claude/code',
+      payload: code === undefined ? {} : { code },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(manager.submitCode).not.toHaveBeenCalled();
+  });
+
+  it('returns a bounded error when Claude rejects an authorization code', async () => {
+    const { app, manager } = await setup();
+    manager.submitCode.mockImplementationOnce(() => {
+      throw new Error('Authorization code is no longer valid.');
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/admin/provider-logins/claude/code',
+      payload: { code: 'expired-code' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toBe(
+      'Authorization code is no longer valid.',
+    );
+    expect(response.body).not.toContain('expired-code');
+  });
+
   it('rejects unsupported providers without invoking a command', async () => {
     const { app, manager } = await setup();
 

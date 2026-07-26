@@ -6,7 +6,11 @@ import { modelMappings } from '../../db/schema.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 
 export interface ModelsDeps {
-  registry: Pick<ProviderRegistry, 'has'>;
+  registry: Pick<ProviderRegistry, 'has' | 'getProviderConfig'>;
+}
+
+function providerIsEnabled(registry: ModelsDeps['registry'], provider: string): boolean {
+  return registry.has(provider) && registry.getProviderConfig(provider)?.enabled !== false;
 }
 
 export function registerModelsRoute(app: FastifyInstance, deps: ModelsDeps): void {
@@ -19,7 +23,9 @@ export function registerModelsRoute(app: FastifyInstance, deps: ModelsDeps): voi
       .from(modelMappings)
       .where(eq(modelMappings.enabled, true));
 
-    const availableMappings = mappings.filter((mapping) => deps.registry.has(mapping.provider));
+    const availableMappings = mappings.filter(
+      (mapping) => providerIsEnabled(deps.registry, mapping.provider),
+    );
 
     const uniqueAliases = new Map<string, typeof mappings[0]>();
     for (const m of availableMappings) {
@@ -56,7 +62,9 @@ export function registerModelsRoute(app: FastifyInstance, deps: ModelsDeps): voi
         eq(modelMappings.enabled, true),
       ));
 
-    const m = results.find((mapping) => deps.registry.has(mapping.provider));
+    const m = results.find(
+      (mapping) => providerIsEnabled(deps.registry, mapping.provider),
+    );
     if (!m) {
       return reply.status(404).send({
         error: {

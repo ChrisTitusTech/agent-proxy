@@ -32,5 +32,16 @@ describe('provider error classification', () => {
     expect(sanitizeProviderError(
       'Authorization: Bearer abcdefghijklmnop123456',
     )).toBe('Authorization: [credential]');
+    expect(sanitizeProviderError(
+      'api_key=genericsecret123 token: tokensecret456 '
+      + 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123',
+    )).not.toMatch(/genericsecret|tokensecret|eyJ/);
+  });
+
+  it('does not classify words containing sign-in or DNS substrings', () => {
+    expect(classifyProviderError('The design input was rejected', 'codex').code)
+      .toBe('provider_error');
+    expect(classifyProviderError('dnsmasq configuration was rejected', 'codex').code)
+      .toBe('provider_error');
   });
 });

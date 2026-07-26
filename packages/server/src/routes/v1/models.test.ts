@@ -36,6 +36,9 @@ beforeEach(async () => {
   registerModelsRoute(app, {
     registry: {
       has: (provider) => provider === 'codex',
+      getProviderConfig: (provider) => provider === 'codex'
+        ? ({ enabled: true } as never)
+        : undefined,
     },
   });
   await app.ready();
@@ -65,5 +68,22 @@ describe('models route', () => {
     expect(available.json()).toMatchObject({ id: 'gpt-5.6-sol' });
     expect(unavailable.statusCode).toBe(404);
     expect(unavailable.json().error.code).toBe('model_not_found');
+  });
+
+  it('stops advertising a provider disabled at runtime', async () => {
+    await app.close();
+    app = Fastify();
+    registerModelsRoute(app, {
+      registry: {
+        has: () => true,
+        getProviderConfig: () => ({ enabled: false } as never),
+      },
+    });
+    await app.ready();
+
+    const response = await app.inject({ method: 'GET', url: '/v1/models' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual([]);
   });
 });

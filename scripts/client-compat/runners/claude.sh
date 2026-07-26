@@ -61,7 +61,12 @@ printf 'seed\n' >"$COMPAT_WORKSPACE/claude-tool.txt"
 		'Use the Write tool to replace claude-tool.txt with exactly CLAUDE_TOOL_OK and then reply exactly CLAUDE_TOOL_DONE.' \
 		>"$COMPAT_FIXTURE_DIR/tool-loop.json"
 )
-[[ $(tr -d '\r\n' <"$COMPAT_WORKSPACE/claude-tool.txt") == CLAUDE_TOOL_OK ]]
+tool_result=$(<"$COMPAT_WORKSPACE/claude-tool.txt")
+tool_result=${tool_result%$'\r'}
+if [[ "$tool_result" != CLAUDE_TOOL_OK ]]; then
+	printf 'Claude tool loop wrote %q; expected CLAUDE_TOOL_OK.\n' "$tool_result" >&2
+	exit 1
+fi
 
 session_a=11111111-1111-4111-8111-111111111111
 session_b=22222222-2222-4222-8222-222222222222

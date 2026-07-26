@@ -24,6 +24,7 @@ interface SdkQueryOptions {
   allowDangerouslySkipPermissions?: boolean;
   allowedTools?: string[];
   disallowedTools?: string[];
+  tools?: string[];
   persistSession?: boolean;
   resume?: string;
   includePartialMessages?: boolean;
@@ -122,6 +123,9 @@ function buildQueryOptions(
   }
   if (sdkOptions.disallowed_tools?.length) {
     queryOptions.disallowedTools = sdkOptions.disallowed_tools;
+  }
+  if (options.extraBody?.__agentProxyExternalToolSelection === true) {
+    queryOptions.tools = [];
   }
 
 

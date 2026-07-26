@@ -143,13 +143,18 @@ describe('external CLI tool adapter', () => {
     }, serial)).toThrow(/parallel external tool calls/);
   });
 
-  it('does not request another tool immediately after a tool result', () => {
-    expect(prepareExternalToolRequest({
+  it('keeps external tool selection active after a tool result', () => {
+    const prepared = prepareExternalToolRequest({
       ...baseOptions,
       messages: [
         ...baseOptions.messages,
         { role: 'tool', content: '72F', tool_call_id: 'call_1' },
       ],
-    })).toBeNull();
+    });
+
+    expect(prepared).not.toBeNull();
+    expect(prepared?.options.extraBody).toMatchObject({
+      __agentProxyExternalToolSelection: true,
+    });
   });
 });

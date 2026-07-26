@@ -8,7 +8,7 @@ Last updated: 2026-07-23
 
 ## Phase 1: Linux service baseline
 
-Status: Complete with waivers
+Status: Complete
 
 - [x] P1-01: Build a versioned Linux release archive.
   - Acceptance: the archive contains compiled server/shared output, production

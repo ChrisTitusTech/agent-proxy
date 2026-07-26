@@ -7,7 +7,7 @@ Last updated: 2026-07-26
 
 ## Phase 0: Repository cleanup
 
-Status: Complete with waivers
+Status: Complete
 
 Scope:
 

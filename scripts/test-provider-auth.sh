@@ -22,6 +22,10 @@ EOF
 append_provider() {
 	local candidate=$1
 	local supported
+	local existing
+	for existing in ${SELECTED[@]+"${SELECTED[@]}"}; do
+		[[ "$candidate" == "$existing" ]] && return
+	done
 	for supported in "${SUPPORTED[@]}"; do
 		if [[ "$candidate" == "$supported" ]]; then
 			SELECTED+=("$candidate")
@@ -134,7 +138,6 @@ SYSTEMD_PROPERTIES=(
 	--property=WorkingDirectory=/var/lib/agent-proxy
 	--property=Environment=HOME=/var/lib/agent-proxy
 	--property=Environment=PATH=/var/lib/agent-proxy/.local/bin:/usr/local/bin:/usr/bin:/bin
-	--property=RuntimeMaxSec=60
 	--property=NoNewPrivileges=yes
 	--property=PrivateDevices=yes
 	--property=PrivateTmp=yes
@@ -153,13 +156,15 @@ SYSTEMD_PROPERTIES=(
 
 run_hardened() {
 	local unit=$1
-	shift
+	local runtime_max_sec=$2
+	shift 2
 	"${SUDO[@]}" systemd-run \
 		--wait \
 		--pipe \
 		--quiet \
 		--collect \
 		--unit "$unit" \
+		"--property=RuntimeMaxSec=$runtime_max_sec" \
 		"${SYSTEMD_PROPERTIES[@]}" \
 		-- "$@"
 }
@@ -169,6 +174,7 @@ for provider in "${SELECTED[@]}"; do
 	raw="$temp_root/$provider.txt"
 	sanitized="$ARTIFACT_ROOT/$provider.txt"
 	unit="agent-proxy-auth-${provider}-$$"
+	runtime_max_sec=60
 	case "$provider" in
 	claude)
 		binary=/var/lib/agent-proxy/.local/bin/claude
@@ -179,6 +185,7 @@ for provider in "${SELECTED[@]}"; do
 		check=("$binary" login status)
 		;;
 	grok)
+		runtime_max_sec=240
 		binary=/var/lib/agent-proxy/.local/bin/grok
 		check=(
 			"$binary"
@@ -204,7 +211,7 @@ for provider in "${SELECTED[@]}"; do
 	fi
 
 	set +e
-	run_hardened "$unit" "${check[@]}" >"$raw" 2>&1
+	run_hardened "$unit" "$runtime_max_sec" "${check[@]}" >"$raw" 2>&1
 	status=$?
 	set -e
 	if ! node "$REDACTOR" "$raw" "$sanitized"; then

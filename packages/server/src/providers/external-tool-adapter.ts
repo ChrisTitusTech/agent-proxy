@@ -32,7 +32,6 @@ export function prepareExternalToolRequest(
   options: ExecuteOptions,
 ): PreparedExternalToolRequest | null {
   if (!options.tools?.length || options.toolChoice === 'none') return null;
-  if (options.messages.at(-1)?.role === 'tool') return null;
 
   const namedChoice = typeof options.toolChoice === 'object'
     && options.toolChoice !== null

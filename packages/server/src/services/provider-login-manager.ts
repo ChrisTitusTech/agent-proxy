@@ -1,8 +1,16 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import {
+  spawn,
+  type ChildProcess,
+  type SpawnOptions,
+} from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ProviderConfigYaml } from '@agent-proxy/shared';
-import { gracefulKill, trackProcess } from '../providers/base-provider.js';
+import {
+  gracefulKill,
+  terminateChildProcess,
+  trackProcess,
+} from '../providers/base-provider.js';
 import { getProviderEnvironment } from '../utils/provider-env.js';
 
 export const LOGIN_PROVIDERS = ['claude', 'codex', 'grok'] as const;
@@ -32,6 +40,17 @@ interface LoginTask {
   output: string;
   timeout: NodeJS.Timeout;
   codeSubmitted: boolean;
+}
+
+type SpawnProcess = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcess;
+
+interface ProviderLoginManagerOptions {
+  spawnProcess?: SpawnProcess;
+  terminateProcess?: typeof terminateChildProcess;
 }
 
 const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
@@ -134,10 +153,15 @@ export class ProviderLoginManager {
   private readonly statuses = new Map<LoginProvider, ProviderLoginStatus>();
   private readonly tasks = new Map<LoginProvider, LoginTask>();
   private readonly probes = new Map<LoginProvider, Promise<ProviderLoginStatus>>();
+  private readonly spawnProcess: SpawnProcess;
+  private readonly terminateProcess: typeof terminateChildProcess;
 
   constructor(
     private readonly configs: Record<string, ProviderConfigYaml>,
+    options: ProviderLoginManagerOptions = {},
   ) {
+    this.spawnProcess = options.spawnProcess ?? spawn as SpawnProcess;
+    this.terminateProcess = options.terminateProcess ?? terminateChildProcess;
     for (const provider of LOGIN_PROVIDERS) {
       this.statuses.set(
         provider,
@@ -150,7 +174,11 @@ export class ProviderLoginManager {
     return this.configs[provider];
   }
 
-  private spawn(provider: LoginProvider, args: string[]): ChildProcess {
+  private spawn(
+    provider: LoginProvider,
+    args: string[],
+    requiresInput = false,
+  ): ChildProcess {
     const config = this.config(provider);
     if (!config?.cli_path) {
       throw new Error(`${provider} executable is not configured.`);
@@ -160,10 +188,10 @@ export class ProviderLoginManager {
       NO_COLOR: '1',
       TERM: 'dumb',
     };
-    const child = spawn(config.cli_path, args, {
+    const child = this.spawnProcess(config.cli_path, args, {
       cwd: config.working_dir ?? process.env.HOME ?? process.cwd(),
       env,
-      stdio: [args[0] === 'auth' && args[1] === 'login' ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      stdio: [requiresInput ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });
     child.stdin?.on('error', () => {
@@ -253,6 +281,13 @@ export class ProviderLoginManager {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        const activeLogin = this.tasks.get(provider)
+          ? this.statuses.get(provider)
+          : undefined;
+        if (activeLogin?.state === 'waiting') {
+          resolve(activeLogin);
+          return;
+        }
         this.statuses.set(provider, next);
         resolve(next);
       };
@@ -291,7 +326,11 @@ export class ProviderLoginManager {
 
     let child: ChildProcess;
     try {
-      child = this.spawn(provider, actionArgs(provider, 'login'));
+      child = this.spawn(
+        provider,
+        actionArgs(provider, 'login'),
+        provider === 'claude',
+      );
     } catch {
       const next = status(provider, 'unavailable', `${provider} executable is unavailable.`);
       this.statuses.set(provider, next);
@@ -424,12 +463,13 @@ export class ProviderLoginManager {
   }
 
   async stopAll(): Promise<void> {
-    for (const provider of LOGIN_PROVIDERS) {
-      const task = this.tasks.get(provider);
-      if (!task) continue;
-      clearTimeout(task.timeout);
-      gracefulKill(task.child);
-    }
+    const tasks = [...this.tasks.values()];
     this.tasks.clear();
+    for (const task of tasks) {
+      clearTimeout(task.timeout);
+    }
+    await Promise.allSettled(
+      tasks.map((task) => this.terminateProcess(task.child)),
+    );
   }
 }

@@ -189,6 +189,15 @@ export function normalizeAnthropicMessages(
       const toolCalls: ChatMessageToolCall[] = [];
       for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
         const block = message.content[blockIndex];
+        if (!block || typeof block !== 'object') {
+          return {
+            success: false,
+            error: {
+              type: 'invalid_request_error',
+              message: `Unsupported content block at messages[${messageIndex}].content[${blockIndex}].`,
+            },
+          };
+        }
         if (block.type === 'text' && typeof block.text === 'string') {
           const text = sanitizeString(block.text);
           textParts.push(text);
@@ -236,6 +245,15 @@ export function normalizeAnthropicMessages(
     };
     for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
       const block = message.content[blockIndex];
+      if (!block || typeof block !== 'object') {
+        return {
+          success: false,
+          error: {
+            type: 'invalid_request_error',
+            message: `Unsupported content block at messages[${messageIndex}].content[${blockIndex}].`,
+          },
+        };
+      }
       if (block.type === 'text' && typeof block.text === 'string') {
         const text = sanitizeString(block.text);
         textBuffer.push(text);
@@ -333,6 +351,30 @@ export function normalizeAnthropicMessages(
     if (typeof choice.disable_parallel_tool_use === 'boolean') {
       parallelToolCalls = !choice.disable_parallel_tool_use;
     }
+  }
+  if (
+    (toolChoice === 'required' || typeof toolChoice === 'object')
+    && (!tools || tools.length === 0)
+  ) {
+    return {
+      success: false,
+      error: {
+        type: 'invalid_request_error',
+        message: 'tool_choice requires at least one declared tool.',
+      },
+    };
+  }
+  if (
+    typeof toolChoice === 'object'
+    && !tools?.some((tool) => tool.function.name === toolChoice.function.name)
+  ) {
+    return {
+      success: false,
+      error: {
+        type: 'invalid_request_error',
+        message: `tool_choice references undeclared tool "${toolChoice.function.name}".`,
+      },
+    };
   }
 
   return {

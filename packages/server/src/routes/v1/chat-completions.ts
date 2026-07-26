@@ -351,6 +351,7 @@ export function registerChatCompletionsRoute(
 
 
       let lastError: Error | null = null;
+      let lastErrorProvider: string | undefined;
 
       let rateLimitRetryAfter: number | null = null;
 
@@ -358,6 +359,7 @@ export function registerChatCompletionsRoute(
         const healthy = await deps.healthChecker.isHealthy(route.provider);
         if (!healthy) {
           lastError = new Error(`Provider ${route.provider} is unhealthy`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
@@ -366,12 +368,14 @@ export function registerChatCompletionsRoute(
         if (!provRate.allowed) {
           rateLimitRetryAfter = provRate.retryAfterSeconds ?? 30;
           lastError = new Error(`Provider ${route.provider} rate limit exceeded`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
         const provider = deps.registry.get(route.provider);
         if (!provider) {
           lastError = new Error(`Provider ${route.provider} not available`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
@@ -739,6 +743,7 @@ export function registerChatCompletionsRoute(
           return reply.status(200).send(response);
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
+          lastErrorProvider = route.provider;
           const isTimeout = lastError.message.includes('timed out');
 
           const errLatency = Date.now() - startTime;
@@ -809,7 +814,7 @@ export function registerChatCompletionsRoute(
 
       const failure = classifyProviderError(
         lastError ?? 'Provider request failed.',
-        routes.at(-1)?.provider,
+        lastErrorProvider,
       );
 
       return reply.status(failure.statusCode).send({

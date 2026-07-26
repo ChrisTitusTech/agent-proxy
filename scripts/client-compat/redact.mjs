@@ -37,6 +37,14 @@ for (const secret of secrets) {
 
 const structuredPatterns = [
   {
+    pattern: /\bsk-[A-Za-z0-9._-]{8,}\b/gu,
+    replacement: '[REDACTED]',
+  },
+  {
+    pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu,
+    replacement: '[REDACTED]',
+  },
+  {
     pattern: /(\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer\s+)?)[^\s"',;]+/giu,
     replacement: '$1[REDACTED]',
   },

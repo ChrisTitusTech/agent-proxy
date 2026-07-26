@@ -196,6 +196,56 @@ describe('Anthropic Messages normalization', () => {
       },
     });
   });
+
+  it.each([
+    ['assistant', null],
+    ['user', 42],
+  ])('rejects primitive %s content blocks without throwing', (role, block) => {
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{
+        role: role as 'user' | 'assistant',
+        content: [block as never],
+      }],
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'invalid_request_error',
+        message: 'Unsupported content block at messages[0].content[0].',
+      },
+    });
+  });
+
+  it('rejects required and named tool choices without matching declarations', () => {
+    const required = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Hello.' }],
+      tool_choice: { type: 'any' },
+    });
+    const unknown = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Hello.' }],
+      tools: [{
+        name: 'lookup',
+        input_schema: { type: 'object' },
+      }],
+      tool_choice: { type: 'tool', name: 'missing' },
+    });
+
+    expect(required).toMatchObject({
+      success: false,
+      error: { type: 'invalid_request_error' },
+    });
+    expect(unknown).toMatchObject({
+      success: false,
+      error: { type: 'invalid_request_error' },
+    });
+  });
 });
 
 describe('Anthropic Messages tool compatibility', () => {

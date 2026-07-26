@@ -51,7 +51,7 @@ append_client() {
 		printf 'Unsupported client: %s\n' "$candidate" >&2
 		exit 2
 	}
-	for client in "${SELECTED_CLIENTS[@]}"; do
+	for client in ${SELECTED_CLIENTS[@]+"${SELECTED_CLIENTS[@]}"}; do
 		[[ "$candidate" == "$client" ]] && return
 	done
 	SELECTED_CLIENTS+=("$candidate")
@@ -106,6 +106,14 @@ command -v curl >/dev/null || {
 }
 command -v node >/dev/null || {
 	printf 'Node.js is required for live client compatibility checks.\n' >&2
+	exit 1
+}
+command -v timeout >/dev/null || {
+	printf 'timeout is required for live client compatibility checks.\n' >&2
+	exit 1
+}
+command -v rg >/dev/null || {
+	printf 'ripgrep (rg) is required for live client compatibility checks.\n' >&2
 	exit 1
 }
 [[ "$TURN_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {

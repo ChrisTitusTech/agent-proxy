@@ -22,6 +22,14 @@ function safeProviderName(provider?: string): string {
 export function sanitizeProviderError(message: string): string {
   return message
     .replace(
+      /(\b(?:api[_-]?key|token|secret)\b["']?\s*[:=]\s*["']?)[A-Za-z0-9._~+/-]{8,}={0,2}/gi,
+      '$1[credential]',
+    )
+    .replace(
+      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+      '[credential]',
+    )
+    .replace(
       /\b(?:sk|xai|sess|oauth)[-_][A-Za-z0-9._-]{8,}\b|\bBearer\s+[A-Za-z0-9._~+/-]{8,}={0,2}\b/gi,
       '[credential]',
     )
@@ -62,7 +70,7 @@ export function classifyProviderError(
     };
   }
   if (
-    /not logged in|login required|sign in|authentication required|unauthenticated|no cached credentials|missing credentials/.test(normalized)
+    /not logged in|login required|\bsign in\b|authentication required|unauthenticated|no cached credentials|missing credentials/.test(normalized)
   ) {
     return {
       kind: 'login_required',
@@ -72,7 +80,7 @@ export function classifyProviderError(
     };
   }
   if (
-    /\benotfound\b|\beconnrefused\b|connection refused|network is unreachable|dns|failed to connect|could not connect|upstream unavailable/.test(normalized)
+    /\benotfound\b|\beconnrefused\b|connection refused|network is unreachable|\bdns\b|failed to connect|could not connect|upstream unavailable/.test(normalized)
   ) {
     return {
       kind: 'unreachable',

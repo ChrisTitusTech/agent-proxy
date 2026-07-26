@@ -444,6 +444,7 @@ function prepareContinuation(
         outstandingCallIds.size > 0
         && item.type !== 'function_call_output'
         && item.type !== 'custom_tool_call_output'
+        && item.type !== 'additional_tools'
       ) {
         return {
           success: false,
@@ -768,6 +769,7 @@ async function executeNonStreaming(
   signal: AbortSignal,
 ) {
   let lastError: Error | null = null;
+  let lastErrorProvider: string | undefined;
   let retryAfter: number | null = null;
 
   for (const route of routes) {
@@ -845,6 +847,7 @@ async function executeNonStreaming(
       return reply.status(200).send(response);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      lastErrorProvider = route.provider;
       const timeout = isTimeoutError(lastError);
       logExecution(
         deps,
@@ -874,7 +877,7 @@ async function executeNonStreaming(
 
   const failure = classifyProviderError(
     lastError ?? 'Provider request failed.',
-    routes.at(-1)?.provider,
+    lastErrorProvider,
   );
   return responseError(
     reply,
@@ -890,6 +893,7 @@ interface StreamState {
   message?: ResponseMessageOutput;
   reasoning?: ResponseReasoningOutput;
   functionCalls: Map<string, ResponseFunctionCallOutput | ResponseCustomToolCallOutput>;
+  rawCustomToolInputs: Map<string, string>;
   emittedFunctionCalls: Set<string>;
   usage: TokenUsage;
   finishReason: 'stop' | 'length' | 'tool_use' | 'error';
@@ -901,6 +905,7 @@ function initialStreamState(): StreamState {
   return {
     output: [],
     functionCalls: new Map(),
+    rawCustomToolInputs: new Map(),
     emittedFunctionCalls: new Set(),
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     finishReason: 'stop',
@@ -1090,15 +1095,23 @@ function consumeStreamEvent(
       if (event.toolCallId) call.call_id = event.toolCallId;
       if (event.toolName) call.name = event.toolName;
     }
-    if (streamedToolInput(call).length + event.input.length > maxMessageLength) {
+    const existingInputLength = call.type === 'custom_tool_call'
+      ? (state.rawCustomToolInputs.get(key)?.length ?? 0)
+      : streamedToolInput(call).length;
+    if (existingInputLength + event.input.length > maxMessageLength) {
       throw new Error(
         `Provider returned function arguments longer than ${maxMessageLength} characters.`,
       );
     }
-    const normalizedInput = call.type === 'custom_tool_call'
-      ? customToolInput(event.input)
-      : event.input;
-    appendStreamedToolInput(call, normalizedInput);
+    const normalizedInput = call.type === 'custom_tool_call' ? '' : event.input;
+    if (call.type === 'custom_tool_call') {
+      state.rawCustomToolInputs.set(
+        key,
+        `${state.rawCustomToolInputs.get(key) ?? ''}${event.input}`,
+      );
+    } else {
+      appendStreamedToolInput(call, normalizedInput);
+    }
 
     if (call.call_id && !call.call_id.trim()) {
       throw new Error('Provider returned a function call without an ID.');
@@ -1144,9 +1157,8 @@ function consumeStreamEvent(
     } else if (!event.input) {
       return;
     }
-    const deltaEvent = call.type === 'custom_tool_call'
-      ? 'response.custom_tool_call_input.delta'
-      : 'response.function_call_arguments.delta';
+    if (call.type === 'custom_tool_call') return;
+    const deltaEvent = 'response.function_call_arguments.delta';
     writeSSE(reply, deltaEvent, {
       type: deltaEvent,
       item_id: call.id,
@@ -1219,9 +1231,18 @@ function finishStreamItems(reply: FastifyReply, state: StreamState): void {
     });
   }
 
-  for (const call of state.functionCalls.values()) {
+  for (const [key, call] of state.functionCalls) {
     const outputIndex = state.output.indexOf(call);
     if (call.type === 'custom_tool_call') {
+      call.input = customToolInput(state.rawCustomToolInputs.get(key) ?? '');
+      if (call.input) {
+        writeSSE(reply, 'response.custom_tool_call_input.delta', {
+          type: 'response.custom_tool_call_input.delta',
+          item_id: call.id,
+          output_index: outputIndex,
+          delta: call.input,
+        });
+      }
       writeSSE(reply, 'response.custom_tool_call_input.done', {
         type: 'response.custom_tool_call_input.done',
         item_id: call.id,
@@ -1397,7 +1418,7 @@ async function executeStreaming(
       route,
       isTimeoutError(failure) ? 'timeout' : 'error',
       undefined,
-      failure.message,
+      sanitizeProviderError(failure.message),
     );
     await deps.healthChecker.onRequestFailure(route.provider);
   } finally {
