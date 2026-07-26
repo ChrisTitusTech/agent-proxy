@@ -181,6 +181,31 @@ function isSupportedAnthropicImageBlock(block: AnthropicContentBlock): boolean {
   );
 }
 
+function validateToolSelectionResult(
+  toolChoice: ToolChoice | undefined,
+  parallelToolCalls: boolean | undefined,
+  toolNames: string[],
+): string | undefined {
+  if (toolChoice === 'none' && toolNames.length > 0) {
+    return 'Provider returned a tool call when tool_choice is none.';
+  }
+  if (toolChoice === 'required' && toolNames.length === 0) {
+    return 'Provider did not return a required tool call.';
+  }
+  if (typeof toolChoice === 'object') {
+    if (
+      toolNames.length === 0
+      || toolNames.some((name) => name !== toolChoice.function.name)
+    ) {
+      return `Provider did not return the required tool "${toolChoice.function.name}".`;
+    }
+  }
+  if (parallelToolCalls === false && toolNames.length > 1) {
+    return 'Provider returned parallel tool calls when parallel tool use is disabled.';
+  }
+  return undefined;
+}
+
 export function normalizeAnthropicMessages(
   request: AnthropicMessagesRequest,
 ): { success: true; data: NormalizedAnthropicRequest } | {
@@ -244,6 +269,18 @@ export function normalizeAnthropicMessages(
           const text = sanitizeString(block.text);
           textParts.push(text);
           promptLength += text.length;
+          continue;
+        }
+        if (
+          (block.type === 'thinking' && typeof block.thinking === 'string')
+          || (
+            block.type === 'redacted_thinking'
+            && typeof block.data === 'string'
+          )
+        ) {
+          promptLength += block.type === 'thinking'
+            ? (block.thinking as string).length
+            : (block.data as string).length;
           continue;
         }
         if (
@@ -734,6 +771,7 @@ export function registerMessagesRoute(
               let currentBlockType: 'text' | 'thinking' | 'tool_use' | null = null;
               let currentToolIndex: number | undefined;
               let currentToolInputLength = 0;
+              const streamedToolNames: string[] = [];
               let streamFinishReason: 'end_turn' | 'max_tokens' | 'tool_use' = 'end_turn';
 
               const closeCurrentBlock = () => {
@@ -825,6 +863,7 @@ export function registerMessagesRoute(
                       });
                       currentBlockType = 'tool_use';
                       currentToolIndex = toolIndex;
+                      streamedToolNames.push(event.toolName);
                     }
                     currentToolInputLength += event.input.length;
                     if (currentToolInputLength > v.maxMessageLength) {
@@ -875,6 +914,36 @@ export function registerMessagesRoute(
                   errorMessage: errMsg,
                 });
 
+                deps.activeRequests.finish(requestId);
+                deps.healthChecker.onRequestFailure(route.provider);
+                return;
+              }
+
+              const toolSelectionError = validateToolSelectionResult(
+                normalized.data.toolChoice,
+                normalized.data.parallelToolCalls,
+                streamedToolNames,
+              );
+              if (toolSelectionError) {
+                writeSSE(
+                  reply.raw,
+                  'error',
+                  makeAnthropicError('api_error', toolSelectionError),
+                );
+                reply.raw.end();
+                logRequest({
+                  requestId,
+                  apiKeyId,
+                  modelAlias: body.model,
+                  provider: route.provider,
+                  actualModel: route.actualModel,
+                  reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
+                  status: 'error',
+                  statusCode: 200,
+                  latencyMs: Date.now() - startTime,
+                  isStream: true,
+                  errorMessage: toolSelectionError,
+                });
                 deps.activeRequests.finish(requestId);
                 deps.healthChecker.onRequestFailure(route.provider);
                 return;
@@ -1001,6 +1070,14 @@ export function registerMessagesRoute(
             deps.activeRequests.finish(requestId);
             return reply.status(502).send(makeAnthropicError('api_error', message));
           };
+          const toolSelectionError = validateToolSelectionResult(
+            normalized.data.toolChoice,
+            normalized.data.parallelToolCalls,
+            (result.toolCalls ?? []).map((toolCall) => toolCall.function.name),
+          );
+          if (toolSelectionError) {
+            return rejectToolOutput(toolSelectionError);
+          }
           for (const toolCall of result.toolCalls ?? []) {
             let input: unknown;
             const argumentsJson = toolCall.function.arguments;

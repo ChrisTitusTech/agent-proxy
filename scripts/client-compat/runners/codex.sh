@@ -48,6 +48,24 @@ run_codex() {
 	run_codex_in_workspace "$COMPAT_WORKSPACE" "$@"
 }
 
+active_request_count() {
+	curl --silent --show-error --fail \
+		--connect-timeout 5 \
+		--max-time 10 \
+		-H "@$ADMIN_HEADER_FILE" \
+		"${AGENT_PROXY_BASE_URL%/}/admin/active-requests" |
+		node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const state = JSON.parse(input);
+  if (!Number.isInteger(state.count) || state.count < 0) process.exit(1);
+  process.stdout.write(String(state.count));
+});
+'
+}
+
 run_codex --ephemeral \
 	'Reply with exactly CODEX_PROXY_TEXT_OK and do not use tools.' \
 	>"$COMPAT_FIXTURE_DIR/text.jsonl"
@@ -132,19 +150,65 @@ if rg -q 'CODEX_ISOLATION_ALPHA' "$COMPAT_FIXTURE_DIR/isolation-b.jsonl"; then
 	exit 1
 fi
 
-set +e
-timeout --signal=TERM --kill-after=5s 1s \
-	"$COMPAT_CLIENT_BINARY" exec \
-	--json \
-	--strict-config \
-	--ephemeral \
-	--skip-git-repo-check \
-	--ignore-rules \
-	--sandbox read-only \
-	-C "$COMPAT_WORKSPACE" \
-	'Compatibility cancellation probe: produce a long response for at least thirty seconds.' \
-	>"$COMPAT_FIXTURE_DIR/cancellation.jsonl" 2>&1
-cancel_status=$?
-set -e
-[[ "$cancel_status" -eq 124 || "$cancel_status" -eq 137 ]]
-printf 'cancel_exit=%s\n' "$cancel_status" >"$COMPAT_FIXTURE_DIR/cancellation-status.txt"
+if [[ -z ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+	[[ ${AGENT_PROXY_COMPAT_REQUIRE_LIVE:-false} == false ]] || {
+		printf 'AGENT_PROXY_ADMIN_TOKEN is required to verify Codex cancellation.\n' >&2
+		exit 1
+	}
+	printf 'cancel_verification=skipped_missing_admin_token\n' \
+		>"$COMPAT_FIXTURE_DIR/cancellation-status.txt"
+else
+	ADMIN_HEADER_FILE="$COMPAT_WORKSPACE/.admin-header"
+	printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" >"$ADMIN_HEADER_FILE"
+	chmod 0600 "$ADMIN_HEADER_FILE"
+	active_before=$(active_request_count)
+	set +e
+	timeout --signal=TERM --kill-after=5s 1s \
+		"$COMPAT_CLIENT_BINARY" exec \
+		--json \
+		--strict-config \
+		--ephemeral \
+		--skip-git-repo-check \
+		--ignore-rules \
+		--sandbox read-only \
+		-C "$COMPAT_WORKSPACE" \
+		'Compatibility cancellation probe: produce a long response for at least thirty seconds.' \
+		>"$COMPAT_FIXTURE_DIR/cancellation.jsonl" 2>&1 &
+	cancel_pid=$!
+	set -e
+
+	cancel_started=false
+	for _ in {1..30}; do
+		active_during=$(active_request_count)
+		if ((active_during > active_before)); then
+			cancel_started=true
+			break
+		fi
+		kill -0 "$cancel_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+
+	set +e
+	wait "$cancel_pid"
+	cancel_status=$?
+	set -e
+	[[ "$cancel_status" -eq 124 || "$cancel_status" -eq 137 ]]
+	[[ "$cancel_started" == true ]] || {
+		printf 'Codex cancellation probe did not start provider work.\n' >&2
+		exit 1
+	}
+
+	active_after=-1
+	for _ in {1..50}; do
+		active_after=$(active_request_count)
+		((active_after <= active_before)) && break
+		sleep 0.1
+	done
+	((active_after <= active_before)) || {
+		printf 'Codex cancellation left provider work active.\n' >&2
+		exit 1
+	}
+	printf 'cancel_exit=%s active_before=%s active_after=%s\n' \
+		"$cancel_status" "$active_before" "$active_after" \
+		>"$COMPAT_FIXTURE_DIR/cancellation-status.txt"
+fi

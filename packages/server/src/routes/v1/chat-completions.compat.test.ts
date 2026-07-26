@@ -125,6 +125,56 @@ describe('Chat Completions tool compatibility', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('rejects malformed tool definitions before provider dispatch', async () => {
+    const execute = vi.fn(async () => result);
+    const deps = createDeps({ name: 'fixture', execute } as unknown as BaseProvider);
+    app = await createApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'fixture',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [{}],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.param).toBe('tools[0]');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('counts assistant tool-call arguments toward message limits', async () => {
+    const execute = vi.fn(async () => result);
+    const deps = createDeps({ name: 'fixture', execute } as unknown as BaseProvider);
+    app = await createApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      payload: {
+        model: 'fixture',
+        messages: [{
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: {
+              name: 'lookup',
+              arguments: 'x'.repeat(validation.maxMessageLength + 1),
+            },
+          }],
+        }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.message).toContain('function.arguments too long');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('bypasses cache and forwards parallel_tool_calls for tools', async () => {
     const execute = vi.fn(async (_options: ExecuteOptions) => result);
     const provider = { name: 'fixture', execute } as unknown as BaseProvider;

@@ -296,6 +296,41 @@ describe('Anthropic Messages normalization', () => {
     }]);
   });
 
+  it('accepts thinking blocks on assistant tool-use continuations', () => {
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'private reasoning' },
+          { type: 'redacted_thinking', data: 'opaque-signature' },
+          {
+            type: 'tool_use',
+            id: 'toolu_thinking',
+            name: 'lookup',
+            input: { city: 'Chicago' },
+          },
+        ],
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.messages).toEqual([{
+      role: 'assistant',
+      content: '',
+      tool_calls: [{
+        id: 'toolu_thinking',
+        type: 'function',
+        function: {
+          name: 'lookup',
+          arguments: '{"city":"Chicago"}',
+        },
+      }],
+    }]);
+  });
+
   it.each([
     ['assistant', null],
     ['user', 42],
@@ -468,6 +503,55 @@ describe('Anthropic Messages tool compatibility', () => {
       type: 'message_delta',
       delta: { stop_reason: 'tool_use' },
     });
+  });
+
+  it('rejects a non-streaming required-tool response without a tool call', async () => {
+    app = await createTestApp(createDeps(fakeProvider({
+      execute: async () => defaultResult,
+    })));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-test',
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'Use the lookup tool.' }],
+        tools: [{
+          name: 'lookup',
+          input_schema: { type: 'object' },
+        }],
+        tool_choice: { type: 'any' },
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.message).toContain('required tool call');
+  });
+
+  it('streams an error when a provider ignores a required tool', async () => {
+    app = await createTestApp(createDeps(fakeProvider()));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-test',
+        max_tokens: 256,
+        stream: true,
+        messages: [{ role: 'user', content: 'Use the lookup tool.' }],
+        tools: [{
+          name: 'lookup',
+          input_schema: { type: 'object' },
+        }],
+        tool_choice: { type: 'any' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"type":"error"');
+    expect(response.body).toContain('required tool call');
+    expect(response.body).not.toContain('"type":"message_stop"');
   });
 });
 

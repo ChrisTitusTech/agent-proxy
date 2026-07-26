@@ -11,6 +11,7 @@ validated by P3-02, P3-03, and P3-04.
 ```bash
 export AGENT_PROXY_BASE_URL=http://127.0.0.1:8300
 export PROXY_API_KEY=sk-proxy-replace-me
+export AGENT_PROXY_ADMIN_TOKEN=replace-with-admin-token
 
 scripts/test-client-compat.sh --client codex
 scripts/test-client-compat.sh --all --require-live
@@ -46,10 +47,11 @@ minimal environment and removes the temporary tree after the runner exits,
 fails, or receives a termination signal.
 
 The proxy key is passed through the runner environment, never through command
-arguments. Evidence redaction removes the exact configured proxy or provider
-secrets and common authorization headers, cookies, token fields, and query
-parameters. Protocol fixtures must be UTF-8 text; binary artifacts are
-rejected.
+arguments. The admin token is passed only when configured and is required for
+the required-live cancellation check. Evidence redaction removes the exact
+configured proxy or provider secrets and common authorization headers, cookies,
+token fields, and query parameters. Protocol fixtures must be UTF-8 text;
+binary artifacts are rejected.
 
 Do not place account credentials in client arguments, filenames, fixture
 filenames, or the base URL. `AGENT_PROXY_BASE_URL` must be a bare HTTP(S)
@@ -68,6 +70,8 @@ named `<client>.sh` and receives this clean environment:
 - `COMPAT_FIXTURE_DIR`
 - `COMPAT_WORKSPACE`
 - `AGENT_PROXY_COMPAT_TURN_TIMEOUT`
+- `AGENT_PROXY_COMPAT_REQUIRE_LIVE`
+- `AGENT_PROXY_ADMIN_TOKEN`, when configured
 - isolated `HOME`, `TMPDIR`, and XDG paths
 - the host `PATH` and locale
 

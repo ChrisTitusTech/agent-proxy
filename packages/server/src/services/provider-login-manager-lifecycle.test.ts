@@ -49,6 +49,23 @@ describe('provider login lifecycle', () => {
     await expect(concurrent).resolves.toMatchObject({ state: 'authenticated' });
   });
 
+  it('does not treat a successful not-logged-in status command as authenticated', async () => {
+    const probeChild = fakeChild();
+    const manager = new ProviderLoginManager(configs(), {
+      spawnProcess: vi.fn(() => probeChild),
+      terminateProcess: vi.fn(async () => undefined),
+    });
+
+    const probe = manager.getStatus('codex');
+    probeChild.stdout?.emit('data', Buffer.from('Not logged in\n'));
+    probeChild.emit('close', 0);
+
+    await expect(probe).resolves.toMatchObject({
+      state: 'unauthenticated',
+      authenticated: false,
+    });
+  });
+
   it('does not let a completed probe overwrite a newly started login', async () => {
     const probeChild = fakeChild();
     const loginChild = fakeChild();

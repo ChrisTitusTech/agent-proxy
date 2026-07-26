@@ -45,6 +45,37 @@ function validateToolSelection(body: ChatCompletionRequest): {
   if (body.tools !== undefined && !Array.isArray(body.tools)) {
     return { message: 'tools must be an array.', param: 'tools' };
   }
+  for (let index = 0; index < (body.tools?.length ?? 0); index++) {
+    const tool = body.tools![index];
+    if (
+      !tool
+      || tool.type !== 'function'
+      || !tool.function
+      || typeof tool.function.name !== 'string'
+      || !tool.function.name
+      || (
+        tool.function.description !== undefined
+        && typeof tool.function.description !== 'string'
+      )
+      || (
+        tool.function.parameters !== undefined
+        && (
+          typeof tool.function.parameters !== 'object'
+          || tool.function.parameters === null
+          || Array.isArray(tool.function.parameters)
+        )
+      )
+      || (
+        tool.function.strict !== undefined
+        && typeof tool.function.strict !== 'boolean'
+      )
+    ) {
+      return {
+        message: `Invalid tool definition at tools[${index}].`,
+        param: `tools[${index}]`,
+      };
+    }
+  }
   if (
     body.parallel_tool_calls !== undefined
     && typeof body.parallel_tool_calls !== 'boolean'
@@ -280,12 +311,45 @@ export function registerChatCompletionsRoute(
         msg.content = normalizedContent;
 
 
-        const textLength = extractTextFromContent(normalizedContent).length;
-        if (textLength > v.maxMessageLength) {
-          return reply.status(400).send(makeValidationError(`messages[${i}].content too long: ${textLength} chars. Maximum is ${v.maxMessageLength}.`, 'messages'));
+        let messageLength = extractTextFromContent(normalizedContent).length;
+        if (msg.tool_calls !== undefined && !Array.isArray(msg.tool_calls)) {
+          return reply.status(400).send(
+            makeValidationError(`messages[${i}].tool_calls must be an array.`, 'messages'),
+          );
+        }
+        for (let toolIndex = 0; toolIndex < (msg.tool_calls?.length ?? 0); toolIndex++) {
+          const call = msg.tool_calls![toolIndex];
+          if (
+            !call
+            || typeof call.id !== 'string'
+            || !call.id
+            || call.type !== 'function'
+            || !call.function
+            || typeof call.function.name !== 'string'
+            || !call.function.name
+            || typeof call.function.arguments !== 'string'
+          ) {
+            return reply.status(400).send(makeValidationError(
+              `Invalid tool call at messages[${i}].tool_calls[${toolIndex}].`,
+              'messages',
+            ));
+          }
+          if (call.function.arguments.length > v.maxMessageLength) {
+            return reply.status(400).send(makeValidationError(
+              `messages[${i}].tool_calls[${toolIndex}].function.arguments too long: `
+              + `${call.function.arguments.length} chars. Maximum is ${v.maxMessageLength}.`,
+              'messages',
+            ));
+          }
+          messageLength += call.id.length
+            + call.function.name.length
+            + call.function.arguments.length;
+        }
+        if (messageLength > v.maxMessageLength) {
+          return reply.status(400).send(makeValidationError(`messages[${i}] too long: ${messageLength} chars. Maximum is ${v.maxMessageLength}.`, 'messages'));
         }
 
-        totalPromptLength += textLength;
+        totalPromptLength += messageLength;
       }
 
 

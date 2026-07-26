@@ -128,6 +128,13 @@ export function classifyProviderLoginFailure(
   return `${label} login could not be verified. Start a new login.`;
 }
 
+function reportsUnauthenticated(output: string): boolean {
+  const clean = stripAnsi(output).toLowerCase();
+  return /not logged in|\bsign in\b|required.*auth|unauthenticated|no cached|expired|invalid.*token|unauthorized|\b401\b/.test(
+    clean,
+  );
+}
+
 function actionArgs(provider: LoginProvider, action: 'probe' | 'login'): string[] {
   if (provider === 'claude') {
     return action === 'probe'
@@ -323,6 +330,14 @@ export class ProviderLoginManager {
       });
       child.on('close', (code) => {
         if (code === 0) {
+          if (reportsUnauthenticated(output)) {
+            finish(status(
+              provider,
+              'unauthenticated',
+              classifyProviderLoginFailure(provider, output),
+            ));
+            return;
+          }
           finish(status(
             provider,
             'authenticated',

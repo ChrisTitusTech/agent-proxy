@@ -253,6 +253,7 @@ run_client() {
 	local server_version
 	local runner_status
 	local result
+	local runner_environment_file="$state_dir/runner-env.sh"
 
 	[[ -x "$runner" ]] || {
 		report_unavailable "$client" "runner is not implemented: $runner"
@@ -331,24 +332,35 @@ process.stdout.write(health.version);
 		return 1
 	fi
 
+	{
+		printf 'export HOME=%q\n' "$state_dir/home"
+		printf 'export PATH=%q\n' "$PATH"
+		printf 'export LANG=%q\n' "${LANG:-C.UTF-8}"
+		printf 'export XDG_CONFIG_HOME=%q\n' "$state_dir/config"
+		printf 'export XDG_CACHE_HOME=%q\n' "$state_dir/cache"
+		printf 'export XDG_DATA_HOME=%q\n' "$state_dir/data"
+		printf 'export XDG_RUNTIME_DIR=%q\n' "$state_dir/runtime"
+		printf 'export TMPDIR=%q\n' "$state_dir/tmp"
+		printf 'export AGENT_PROXY_BASE_URL=%q\n' "$base_url"
+		printf 'export AGENT_PROXY_COMPAT_REQUIRE_LIVE=%q\n' "$REQUIRE_LIVE"
+		printf 'export AGENT_PROXY_COMPAT_TURN_TIMEOUT=%q\n' "$TURN_TIMEOUT"
+		printf 'export PROXY_API_KEY=%q\n' "$api_key"
+		printf 'export COMPAT_CLIENT=%q\n' "$client"
+		printf 'export COMPAT_CLIENT_BINARY=%q\n' "$client_binary"
+		printf 'export COMPAT_FIXTURE_DIR=%q\n' "$raw_dir/protocol"
+		printf 'export COMPAT_WORKSPACE=%q\n' "$state_dir/workspace"
+		if [[ -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+			printf 'export AGENT_PROXY_ADMIN_TOKEN=%q\n' "$AGENT_PROXY_ADMIN_TOKEN"
+		fi
+	} >"$runner_environment_file"
+	chmod 0600 "$runner_environment_file"
+
 	set +e
-	timeout --signal=TERM --kill-after=5s "$((TURN_TIMEOUT * 8))s" env -i \
-		HOME="$state_dir/home" \
-		PATH="$PATH" \
-		LANG="${LANG:-C.UTF-8}" \
-		XDG_CONFIG_HOME="$state_dir/config" \
-		XDG_CACHE_HOME="$state_dir/cache" \
-		XDG_DATA_HOME="$state_dir/data" \
-		XDG_RUNTIME_DIR="$state_dir/runtime" \
-		TMPDIR="$state_dir/tmp" \
-		AGENT_PROXY_BASE_URL="$base_url" \
-		AGENT_PROXY_COMPAT_TURN_TIMEOUT="$TURN_TIMEOUT" \
-		PROXY_API_KEY="$api_key" \
-		COMPAT_CLIENT="$client" \
-		COMPAT_CLIENT_BINARY="$client_binary" \
-		COMPAT_FIXTURE_DIR="$raw_dir/protocol" \
-		COMPAT_WORKSPACE="$state_dir/workspace" \
-		"$runner" >"$raw_dir/runner.log" 2>&1
+	# shellcheck disable=SC2016 # Positional parameters expand in the isolated child shell.
+	timeout --signal=TERM --kill-after=5s "$((TURN_TIMEOUT * 8))s" \
+		env -i bash -c 'source "$1"; exec "$2"' \
+		bash "$runner_environment_file" "$runner" \
+		>"$raw_dir/runner.log" 2>&1
 	runner_status=$?
 	set -e
 

@@ -42,7 +42,9 @@ printf 'Authorization: Bearer %s\n' "$PROXY_API_KEY" \
 	>"$COMPAT_FIXTURE_DIR/request.txt"
 printf '{"api_key":"%s","access_token":"unstructured-test-token"}\n' \
 	"$PROXY_API_KEY" >>"$COMPAT_FIXTURE_DIR/request.txt"
-printf 'x-admin-token: admin-test-secret\n' >>"$COMPAT_FIXTURE_DIR/request.txt"
+printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" \
+	>>"$COMPAT_FIXTURE_DIR/request.txt"
+[[ "$AGENT_PROXY_COMPAT_REQUIRE_LIVE" == true ]]
 printf 'event: response.completed\ndata: {"token":"response-token"}\n' \
 	>"$COMPAT_FIXTURE_DIR/response.sse"
 printf 'unstructured secret value: %s\n' "$PROXY_API_KEY"
@@ -104,6 +106,7 @@ curl --silent --fail "http://127.0.0.1:$PORT/health" >/dev/null
 
 export AGENT_PROXY_BASE_URL="http://127.0.0.1:$PORT"
 export PROXY_API_KEY=sk-proxy-self-test-secret
+export AGENT_PROXY_ADMIN_TOKEN=admin-test-secret
 export PATH="$FAKE_BIN_DIR:$PATH"
 export AGENT_PROXY_COMPAT_RUNNER_DIR="$RUNNER_DIR"
 
