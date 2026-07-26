@@ -153,6 +153,7 @@ export class ProviderLoginManager {
   private readonly statuses = new Map<LoginProvider, ProviderLoginStatus>();
   private readonly tasks = new Map<LoginProvider, LoginTask>();
   private readonly probes = new Map<LoginProvider, Promise<ProviderLoginStatus>>();
+  private readonly operationGenerations = new Map<LoginProvider, number>();
   private readonly spawnProcess: SpawnProcess;
   private readonly terminateProcess: typeof terminateChildProcess;
 
@@ -163,11 +164,18 @@ export class ProviderLoginManager {
     this.spawnProcess = options.spawnProcess ?? spawn as SpawnProcess;
     this.terminateProcess = options.terminateProcess ?? terminateChildProcess;
     for (const provider of LOGIN_PROVIDERS) {
+      this.operationGenerations.set(provider, 0);
       this.statuses.set(
         provider,
         status(provider, 'checking', 'Checking login status.'),
       );
     }
+  }
+
+  private advanceOperation(provider: LoginProvider): number {
+    const generation = (this.operationGenerations.get(provider) ?? 0) + 1;
+    this.operationGenerations.set(provider, generation);
+    return generation;
   }
 
   private config(provider: LoginProvider): ProviderConfigYaml | undefined {
@@ -205,6 +213,7 @@ export class ProviderLoginManager {
   private cached(provider: LoginProvider): ProviderLoginStatus | undefined {
     const current = this.statuses.get(provider);
     if (!current) return undefined;
+    if (current.state === 'checking') return undefined;
     if (current.state === 'waiting') return current;
     const checkedAt = Date.parse(current.lastCheckedAt);
     if (Number.isFinite(checkedAt) && Date.now() - checkedAt < STATUS_CACHE_MS) {
@@ -223,7 +232,8 @@ export class ProviderLoginManager {
     const activeProbe = this.probes.get(provider);
     if (activeProbe) return activeProbe;
 
-    const probe = this.runProbe(provider).finally(() => {
+    const generation = this.advanceOperation(provider);
+    const probe = this.runProbe(provider, generation).finally(() => {
       this.probes.delete(provider);
     });
     this.probes.set(provider, probe);
@@ -234,7 +244,10 @@ export class ProviderLoginManager {
     return Promise.all(LOGIN_PROVIDERS.map((provider) => this.getStatus(provider, force)));
   }
 
-  private async runProbe(provider: LoginProvider): Promise<ProviderLoginStatus> {
+  private async runProbe(
+    provider: LoginProvider,
+    generation: number,
+  ): Promise<ProviderLoginStatus> {
     const config = this.config(provider);
     if (!config?.cli_path) {
       const next = status(provider, 'unavailable', `${provider} executable is not configured.`);
@@ -281,6 +294,10 @@ export class ProviderLoginManager {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        if (this.operationGenerations.get(provider) !== generation) {
+          resolve(this.statuses.get(provider) ?? next);
+          return;
+        }
         const activeLogin = this.tasks.get(provider)
           ? this.statuses.get(provider)
           : undefined;
@@ -323,6 +340,7 @@ export class ProviderLoginManager {
   start(provider: LoginProvider): ProviderLoginStatus {
     const existing = this.tasks.get(provider);
     if (existing) return this.statuses.get(provider)!;
+    this.advanceOperation(provider);
 
     let child: ChildProcess;
     try {
@@ -449,6 +467,7 @@ export class ProviderLoginManager {
   }
 
   cancel(provider: LoginProvider): ProviderLoginStatus {
+    this.advanceOperation(provider);
     const task = this.tasks.get(provider);
     if (!task) {
       return this.statuses.get(provider)
@@ -463,6 +482,9 @@ export class ProviderLoginManager {
   }
 
   async stopAll(): Promise<void> {
+    for (const provider of LOGIN_PROVIDERS) {
+      this.advanceOperation(provider);
+    }
     const tasks = [...this.tasks.values()];
     this.tasks.clear();
     for (const task of tasks) {

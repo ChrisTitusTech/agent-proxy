@@ -178,6 +178,51 @@ describe('Anthropic Messages normalization', () => {
     expect(result.data.parallelToolCalls).toBe(false);
   });
 
+  it('preserves images in Anthropic tool-result content', () => {
+    const image = {
+      type: 'image',
+      source: {
+        type: 'url',
+        url: 'https://example.test/tool-result.png',
+      },
+    };
+    const normalizedContent = [
+      { type: 'text', text: 'Generated image.' },
+      image,
+      {
+        type: 'text',
+        text: '{"type":"document","source":{"type":"text","data":"notes"}}',
+      },
+    ];
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_image',
+          content: [
+            { type: 'text', text: 'Generated image.' },
+            image,
+            { type: 'document', source: { type: 'text', data: 'notes' } },
+          ],
+        }],
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.messages).toEqual([{
+      role: 'tool',
+      tool_call_id: 'toolu_image',
+      content: normalizedContent,
+    }]);
+    expect(result.data.promptLength).toBe(
+      'toolu_image'.length + JSON.stringify(normalizedContent).length,
+    );
+  });
+
   it('identifies unsupported content blocks exactly', () => {
     const result = normalizeAnthropicMessages({
       model: 'claude-test',
@@ -185,6 +230,28 @@ describe('Anthropic Messages normalization', () => {
       messages: [{
         role: 'user',
         content: [{ type: 'document', source: {} }],
+      }],
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'invalid_request_error',
+        message: 'Unsupported content block at messages[0].content[0].',
+      },
+    });
+  });
+
+  it('rejects image blocks with empty source values', () => {
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'image',
+          source: { type: 'url', url: '' },
+        }],
       }],
     });
 

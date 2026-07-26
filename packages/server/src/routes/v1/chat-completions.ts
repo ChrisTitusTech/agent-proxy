@@ -26,7 +26,7 @@ import type { ResponseCache } from '../../services/cache.js';
 import type { DebugService } from '../../services/debug.js';
 import type { DebugCaptureInfo } from '@agent-proxy/shared';
 
-interface ChatCompletionDeps {
+export interface ChatCompletionDeps {
   router: ModelRouter;
   queue: QueueManager;
   rateLimiter: RateLimiter;
@@ -36,6 +36,53 @@ interface ChatCompletionDeps {
   activeRequests: ActiveRequestTracker;
   cache: ResponseCache;
   debug: DebugService;
+}
+
+function validateToolSelection(body: ChatCompletionRequest): {
+  message: string;
+  param: string;
+} | undefined {
+  if (body.tools !== undefined && !Array.isArray(body.tools)) {
+    return { message: 'tools must be an array.', param: 'tools' };
+  }
+  if (
+    body.parallel_tool_calls !== undefined
+    && typeof body.parallel_tool_calls !== 'boolean'
+  ) {
+    return {
+      message: 'parallel_tool_calls must be a boolean.',
+      param: 'parallel_tool_calls',
+    };
+  }
+
+  const choice = body.tool_choice;
+  if (choice === undefined || choice === 'none' || choice === 'auto') {
+    return undefined;
+  }
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  if (choice === 'required') {
+    return tools.length > 0
+      ? undefined
+      : {
+        message: 'tool_choice requires at least one declared tool.',
+        param: 'tool_choice',
+      };
+  }
+  if (
+    !choice
+    || typeof choice !== 'object'
+    || choice.type !== 'function'
+    || typeof choice.function?.name !== 'string'
+    || !choice.function.name
+  ) {
+    return { message: 'tool_choice is invalid.', param: 'tool_choice' };
+  }
+  return tools.some((tool) => tool?.function?.name === choice.function.name)
+    ? undefined
+    : {
+      message: `tool_choice references undeclared tool "${choice.function.name}".`,
+      param: 'tool_choice',
+    };
 }
 
 
@@ -249,6 +296,12 @@ export function registerChatCompletionsRoute(
 
       body.model = sanitizeString(body.model);
 
+      const toolSelectionError = validateToolSelection(body);
+      if (toolSelectionError) {
+        return reply.status(400).send(
+          makeValidationError(toolSelectionError.message, toolSelectionError.param),
+        );
+      }
 
       const unsupportedParams: string[] = [];
       if (body.temperature != null) unsupportedParams.push('temperature');
@@ -300,7 +353,7 @@ export function registerChatCompletionsRoute(
       const clientKey = extractClientKey(request, apiKeyId);
 
 
-      const requestHash = !body.stream
+      const requestHash = !body.stream && !body.tools?.length
         ? deps.cache.generateHash(body.model, body.messages)
         : undefined;
 
@@ -476,6 +529,7 @@ export function registerChatCompletionsRoute(
               extraBody: route.extraBody,
               tools: body.tools,
               toolChoice: body.tool_choice,
+              parallelToolCalls: body.parallel_tool_calls,
             });
 
 
@@ -630,6 +684,7 @@ export function registerChatCompletionsRoute(
               extraBody: route.extraBody,
               tools: body.tools,
               toolChoice: body.tool_choice,
+              parallelToolCalls: body.parallel_tool_calls,
             }),
           );
 

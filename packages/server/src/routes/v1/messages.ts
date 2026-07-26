@@ -132,12 +132,53 @@ function normalizeToolResultContent(value: unknown): ChatMessageContent {
   if (typeof value === 'string') return sanitizeString(value);
   if (!Array.isArray(value)) return stringifyToolValue(value);
 
-  const text = value
-    .filter((block): block is AnthropicContentBlock => typeof block === 'object' && block !== null)
-    .filter((block) => block.type === 'text' && typeof block.text === 'string')
-    .map((block) => sanitizeString(block.text as string))
-    .join('\n');
-  return text || stringifyToolValue(value);
+  const parts: ChatMessageContentPart[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') {
+      const text = stringifyToolValue(candidate);
+      if (text) parts.push({ type: 'text', text });
+      continue;
+    }
+    const block = candidate as AnthropicContentBlock;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      parts.push({ type: 'text', text: sanitizeString(block.text) });
+      continue;
+    }
+    if (isSupportedAnthropicImageBlock(block)) {
+      parts.push(block as ChatMessageContentPart);
+      continue;
+    }
+    const text = stringifyToolValue(block);
+    if (text) parts.push({ type: 'text', text });
+  }
+  if (parts.length === 0) return stringifyToolValue(value);
+  if (parts.every((part) => part.type === 'text' && typeof part.text === 'string')) {
+    return parts.map((part) => part.text as string).join('\n');
+  }
+  return parts;
+}
+
+function isSupportedAnthropicImageBlock(block: AnthropicContentBlock): boolean {
+  if (block.type !== 'image') return false;
+  const source = block.source as Record<string, unknown> | undefined;
+  return Boolean(
+    source
+    && typeof source === 'object'
+    && (
+      (
+        source.type === 'base64'
+        && typeof source.data === 'string'
+        && source.data.length > 0
+        && typeof source.media_type === 'string'
+        && source.media_type.trim().length > 0
+      )
+      || (
+        source.type === 'url'
+        && typeof source.url === 'string'
+        && source.url.trim().length > 0
+      )
+    ),
+  );
 }
 
 export function normalizeAnthropicMessages(
@@ -270,19 +311,7 @@ export function normalizeAnthropicMessages(
         continue;
       }
       if (block.type === 'image') {
-        const source = block.source as Record<string, unknown> | undefined;
-        if (
-          source
-          && typeof source === 'object'
-          && (
-            (
-              source.type === 'base64'
-              && typeof source.data === 'string'
-              && typeof source.media_type === 'string'
-            )
-            || (source.type === 'url' && typeof source.url === 'string')
-          )
-        ) {
+        if (isSupportedAnthropicImageBlock(block)) {
           userContentBuffer.push(block as ChatMessageContentPart);
           continue;
         }
@@ -290,13 +319,13 @@ export function normalizeAnthropicMessages(
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         flushUserContent();
         const content = normalizeToolResultContent(block.content);
-        const contentText = typeof content === 'string' ? content : stringifyToolValue(content);
         messages.push({
           role: 'tool',
           content,
           tool_call_id: sanitizeString(block.tool_use_id),
         });
-        promptLength += block.tool_use_id.length + contentText.length;
+        const contentLength = stringifyToolValue(content).length;
+        promptLength += block.tool_use_id.length + contentLength;
         continue;
       }
       return {

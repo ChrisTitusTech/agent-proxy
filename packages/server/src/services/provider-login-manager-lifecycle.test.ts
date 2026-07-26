@@ -32,6 +32,23 @@ function configs(): Record<string, ProviderConfigYaml> {
 }
 
 describe('provider login lifecycle', () => {
+  it('probes the initial checking status and shares the active probe', async () => {
+    const probeChild = fakeChild();
+    const spawnProcess = vi.fn(() => probeChild);
+    const manager = new ProviderLoginManager(configs(), {
+      spawnProcess,
+      terminateProcess: vi.fn(async () => undefined),
+    });
+
+    const first = manager.getStatus('codex');
+    const concurrent = manager.getStatus('codex');
+    expect(spawnProcess).toHaveBeenCalledOnce();
+
+    probeChild.emit('close', 0);
+    await expect(first).resolves.toMatchObject({ state: 'authenticated' });
+    await expect(concurrent).resolves.toMatchObject({ state: 'authenticated' });
+  });
+
   it('does not let a completed probe overwrite a newly started login', async () => {
     const probeChild = fakeChild();
     const loginChild = fakeChild();
@@ -53,6 +70,28 @@ describe('provider login lifecycle', () => {
       message: 'Waiting for login instructions.',
     });
     await manager.stopAll();
+  });
+
+  it('does not let a stale probe overwrite a completed login', async () => {
+    const probeChild = fakeChild();
+    const loginChild = fakeChild();
+    const spawnProcess = vi.fn()
+      .mockReturnValueOnce(probeChild)
+      .mockReturnValueOnce(loginChild);
+    const manager = new ProviderLoginManager(configs(), {
+      spawnProcess,
+      terminateProcess: vi.fn(async () => undefined),
+    });
+
+    const probe = manager.getStatus('codex', true);
+    manager.start('codex');
+    loginChild.emit('close', 0);
+    probeChild.emit('close', 1);
+
+    await expect(probe).resolves.toMatchObject({ state: 'authenticated' });
+    await expect(manager.getStatus('codex')).resolves.toMatchObject({
+      state: 'authenticated',
+    });
   });
 
   it('waits for every active login process to terminate during shutdown', async () => {
