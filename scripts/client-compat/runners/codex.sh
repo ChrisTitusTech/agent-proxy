@@ -184,7 +184,11 @@ else
 			cancel_started=true
 			break
 		fi
-		kill -0 "$cancel_pid" 2>/dev/null || break
+		if ! kill -0 "$cancel_pid" 2>/dev/null; then
+			active_during=$(active_request_count)
+			((active_during > active_before)) && cancel_started=true
+			break
+		fi
 		sleep 0.1
 	done
 
