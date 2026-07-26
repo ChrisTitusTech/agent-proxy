@@ -1,4 +1,3 @@
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from '../../i18n/context';
 import type { DashboardData } from '../../api/client';
 import { formatTime, formatDurationShort } from './format';
@@ -11,7 +10,6 @@ interface Props {
 
 export function RecentRequests({ recentRequests, activeRequests }: Props) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const isEmpty = recentRequests.length === 0 && activeRequests.count === 0;
 
   return (
@@ -19,7 +17,7 @@ export function RecentRequests({ recentRequests, activeRequests }: Props) {
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400">{t('dashboard.recentRequests')}</h3>
         <button
-          onClick={() => navigate('/logs')}
+          onClick={() => window.location.assign('/logs')}
           className="text-xs text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors"
         >
           {t('common.viewAll')}

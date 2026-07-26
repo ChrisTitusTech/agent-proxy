@@ -82,6 +82,56 @@ describe('convertMessages', () => {
     expect(result.userPrompt).toContain('<|user|> Summarize them.');
   });
 
+  it('preserves assistant tool calls and correlates results by call ID', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'Call the marker tool.' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_marker_1',
+          type: 'function',
+          function: {
+            name: 'phase3_marker',
+            arguments: '{"value":"OPENWEBUI_TOOL_OK"}',
+          },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_marker_1',
+        content: 'OPENWEBUI_TOOL_RESULT_OK',
+      },
+    ];
+
+    const result = convertMessages(messages);
+    expect(result.userPrompt).toContain(
+      '[Tool call phase3_marker id=call_marker_1] {"value":"OPENWEBUI_TOOL_OK"}',
+    );
+    expect(result.userPrompt).toContain(
+      '[Tool result call_marker_1] OPENWEBUI_TOOL_RESULT_OK',
+    );
+  });
+
+  it('normalizes malformed assistant tool-call fields without throwing', () => {
+    const messages = [
+      { role: 'user', content: 'Call a tool.' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 42,
+          type: 'function',
+          function: { name: null, arguments: { unexpected: true } },
+        }],
+      },
+    ] as unknown as ChatMessage[];
+
+    expect(convertMessages(messages).userPrompt).toContain(
+      '[Tool call tool id=] ',
+    );
+  });
+
   it('converts messages safely', () => {
     const messages: ChatMessage[] = [
       { role: 'assistant', content: 'Calling tool now.' },

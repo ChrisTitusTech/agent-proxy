@@ -140,6 +140,29 @@ describe('GrokProvider.buildArgs', () => {
     );
     expect(args.indexOf('--effort')).toBeLessThan(args.indexOf('-p'));
   });
+
+  it('does not duplicate operator-configured tools for external selection', () => {
+    const provider = new GrokProvider(baseConfig({
+      extra_args: ['--tools', ''],
+    }));
+    const args = (provider as unknown as BuildArgs).buildArgs(
+      baseOptions({
+        extraBody: { __agentProxyExternalToolSelection: true },
+      }),
+    );
+    expect(args.filter((arg) => arg === '--tools')).toHaveLength(1);
+  });
+
+  it('rejects enabled native tools during external selection', () => {
+    const provider = new GrokProvider(baseConfig({
+      extra_args: ['--tools', 'shell'],
+    }));
+    expect(() => (provider as unknown as BuildArgs).buildArgs(
+      baseOptions({
+        extraBody: { __agentProxyExternalToolSelection: true },
+      }),
+    )).toThrow(/native tools to be disabled/);
+  });
 });
 
 describe('executes the Grok provider', () => {

@@ -6,6 +6,11 @@ import { ClaudeSdkSessionManager } from './claude-sdk-session-manager.js';
 import { executeChannel, executeStreamChannel, type ChannelExecutorConfig } from './claude-channel-executor.js';
 import { mergeProviderConfig } from './provider-override.js';
 import { channelBridgeManager } from '../channel-bridge/manager.js';
+import {
+  adaptExternalToolResult,
+  externalToolEvents,
+  prepareExternalToolRequest,
+} from './external-tool-adapter.js';
 
 
 async function pingBridgeHealth(baseUrl: string, apiKey?: string): Promise<boolean> {
@@ -113,6 +118,21 @@ export class ClaudeProvider extends BaseProvider {
     if (options.stream) {
       args.push('--verbose');
     }
+    const configuredTools = effective.extra_args.flatMap(
+      (arg, index, args): Array<string | null> => {
+        if (arg === '--tools') {
+          return [typeof args[index + 1] === 'string' ? args[index + 1] : null];
+        }
+        if (arg.startsWith('--tools=')) return [arg.slice('--tools='.length)];
+        return [];
+      },
+    );
+    if (options.extraBody?.__agentProxyExternalToolSelection === true) {
+      if (configuredTools.some((value) => value === null || value.length > 0)) {
+        throw new Error('External tool selection requires Claude native tools to be disabled.');
+      }
+      if (configuredTools.length === 0) args.push('--tools', '');
+    }
 
     if (systemPrompt) {
       args.push('--system-prompt', systemPrompt);
@@ -177,7 +197,7 @@ export class ClaudeProvider extends BaseProvider {
     return args;
   }
 
-  override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
+  private async executeWithoutExternalTools(options: ExecuteOptions): Promise<ExecuteResult> {
     const effective = this.getEffectiveConfig(options);
     if (effective.mode === 'sdk') {
       const result = await executeSdk(options, this.buildSdkConfig(options, effective, options.clientKey));
@@ -195,7 +215,22 @@ export class ClaudeProvider extends BaseProvider {
     return super.execute(options);
   }
 
+  override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
+    const prepared = prepareExternalToolRequest(options);
+    const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
+    return prepared ? adaptExternalToolResult(result, prepared) : result;
+  }
+
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
+    const prepared = prepareExternalToolRequest(options);
+    if (prepared) {
+      const result = adaptExternalToolResult(
+        await this.executeWithoutExternalTools(prepared.options),
+        prepared,
+      );
+      yield* externalToolEvents(result);
+      return;
+    }
     const effective = this.getEffectiveConfig(options);
     if (effective.mode === 'sdk') {
       const sdkLines: string[] = [];

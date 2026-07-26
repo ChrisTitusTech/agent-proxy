@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import serverPackage from '../package.json' with { type: 'json' };
 import type { AppConfig } from '@agent-proxy/shared';
 import { initDatabase } from './db/client.js';
 import { createProviderRegistry } from './providers/provider-registry.js';
@@ -36,10 +37,12 @@ import { registerSettingsRoutes, loadValidationFromDb } from './routes/admin/set
 import { registerExportImportRoutes } from './routes/admin/export-import.js';
 import { registerGenericProviderRoutes } from './routes/admin/generic-providers.js';
 import { registerHttpProviderRoutes } from './routes/admin/http-providers.js';
+import { registerProviderLoginRoutes } from './routes/admin/provider-logins.js';
 import { loadGenericProviders } from './providers/generic-provider-loader.js';
 import { loadHttpProviders } from './providers/http-provider-loader.js';
 import { seedDatabase } from './db/seed.js';
 import type { ValidationConfig } from '@agent-proxy/shared';
+import { ProviderLoginManager } from './services/provider-login-manager.js';
 
 export type AgentProxyApp = FastifyInstance & {
   stopProviderProcesses: () => Promise<void>;
@@ -88,6 +91,7 @@ export async function createApp(
   const activeRequests = new ActiveRequestTracker();
   const cache = new ResponseCache(config.cache);
   const debug = new DebugService();
+  const providerLoginManager = new ProviderLoginManager(config.providers);
   const apiAuthLimiter = new RequestRateLimiter(600);
   const adminAuthLimiter = new RequestRateLimiter(300);
 
@@ -136,6 +140,7 @@ export async function createApp(
   app.get('/health', async (_request, reply) => {
     return reply.send({
       status: 'ok',
+      version: serverPackage.version,
       timestamp: new Date().toISOString(),
       providers: registry.getAll().map((p) => p.name),
     });
@@ -225,7 +230,7 @@ export async function createApp(
     cache,
     debug,
   });
-  registerModelsRoute(app);
+  registerModelsRoute(app, { registry });
   registerImageGenerationsRoute(app, {
     router,
     queue: queueManager,
@@ -273,6 +278,7 @@ export async function createApp(
     queueManager,
     defaultConfigs: config.providers,
   });
+  registerProviderLoginRoutes(app, providerLoginManager);
   registerChannelBridgeRoutes(app, { defaultConfigs: config.providers });
 
   registerTestModelRoute(app, registry);
@@ -324,6 +330,7 @@ export async function createApp(
     providerStopPromise ??= Promise.all([
       registry.shutdownAll(),
       channelBridgeManager.stop(),
+      providerLoginManager.stopAll(),
     ]).then(() => undefined);
     return providerStopPromise;
   };

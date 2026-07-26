@@ -2,6 +2,11 @@ import type { ExecuteOptions, ExecuteResult, ProviderConfigYaml, ProviderEvent, 
 import { BaseProvider, gracefulKill, trackProcess } from './base-provider.js';
 import { convertMessagesToSinglePrompt } from '../utils/message-converter.js';
 import { spawn } from 'node:child_process';
+import {
+  adaptExternalToolResult,
+  externalToolEvents,
+  prepareExternalToolRequest,
+} from './external-tool-adapter.js';
 
 
 
@@ -54,13 +59,38 @@ export class GrokProvider extends BaseProvider {
 
 
     const modelArgs = model ? ['-m', model] : [];
-    return [...this.config.extra_args, ...effortArgs, ...modelArgs, '-p', prompt];
+    const userHasTools = this.config.extra_args.some(
+      (arg) => arg === '--tools' || arg.startsWith('--tools='),
+    );
+    const externalSelection = options.extraBody?.__agentProxyExternalToolSelection === true;
+    const configuredTools = this.config.extra_args.flatMap((arg, index, args) => {
+      if (arg === '--tools') return [args[index + 1] ?? ''];
+      if (arg.startsWith('--tools=')) return [arg.slice('--tools='.length)];
+      return [];
+    });
+    if (externalSelection && configuredTools.some((value) => value.trim() !== '')) {
+      throw new Error('External tool selection requires Grok native tools to be disabled.');
+    }
+    const externalToolArgs = externalSelection
+      && !userHasTools
+      ? ['--tools', '']
+      : [];
+    return [
+      ...this.config.extra_args,
+      ...effortArgs,
+      ...modelArgs,
+      ...externalToolArgs,
+      '-p',
+      prompt,
+    ];
   }
 
 
 
   override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
-    const args = this.buildArgs({ ...options, stream: false });
+    const prepared = prepareExternalToolRequest(options);
+    const effectiveOptions = prepared?.options ?? options;
+    const args = this.buildArgs({ ...effectiveOptions, stream: false });
     const { stdout, stderr, exitCode } = await this.runOnce(args, options.signal);
 
     if (exitCode !== 0) {
@@ -71,11 +101,12 @@ export class GrokProvider extends BaseProvider {
     options.onDebug?.({ cliArgs: [this.config.cli_path, ...args], stdout, stderr });
 
     const content = stripAnsi(stdout).trim();
-    return {
+    const result: ExecuteResult = {
       content,
       usage: estimateTokens(content),
       finishReason: 'stop',
     };
+    return prepared ? adaptExternalToolResult(result, prepared) : result;
   }
 
 
@@ -83,9 +114,11 @@ export class GrokProvider extends BaseProvider {
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
     const result = await this.execute({ ...options, stream: false });
 
-    if (result.content) {
-      yield { type: 'text_delta', text: result.content };
+    if (result.toolCalls?.length) {
+      yield* externalToolEvents(result);
+      return;
     }
+    if (result.content) yield { type: 'text_delta', text: result.content };
     yield {
       type: 'usage',
       usage: result.usage,

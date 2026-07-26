@@ -1,0 +1,387 @@
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type {
+  ExecuteOptions,
+  ExecuteResult,
+  ProviderEvent,
+  ValidationConfig,
+} from '@agent-proxy/shared';
+import type { BaseProvider } from '../../providers/base-provider.js';
+import type { ResolvedRoute } from '../../services/router.js';
+import {
+  normalizeAnthropicMessages,
+  registerMessagesRoute,
+  type MessagesDeps,
+} from './messages.js';
+
+vi.mock('../../middleware/request-logger.js', () => ({
+  logRequest: vi.fn(),
+}));
+
+const validation: ValidationConfig = {
+  maxMessageCount: 100,
+  maxMessageLength: 10_000,
+  maxPromptLength: 100_000,
+  maxResponseLength: 100_000,
+  bodyLimitBytes: 1_000_000,
+};
+
+const defaultResult: ExecuteResult = {
+  content: 'Hello from the provider.',
+  usage: { promptTokens: 4, completionTokens: 5, totalTokens: 9 },
+  finishReason: 'stop',
+};
+
+interface FakeProviderOptions {
+  execute?: (options: ExecuteOptions) => Promise<ExecuteResult>;
+  executeStream?: (options: ExecuteOptions) => AsyncIterable<ProviderEvent>;
+}
+
+function fakeProvider(options: FakeProviderOptions = {}): BaseProvider {
+  return {
+    name: 'fixture',
+    execute: options.execute ?? (async () => defaultResult),
+    executeStream: options.executeStream ?? (async function* () {
+      yield { type: 'text_delta', text: 'Hello ' };
+      yield { type: 'text_delta', text: 'stream.' };
+      yield { type: 'usage', usage: defaultResult.usage };
+      yield { type: 'done', finishReason: 'stop' };
+    }),
+  } as unknown as BaseProvider;
+}
+
+function createDeps(
+  provider = fakeProvider(),
+  routes: ResolvedRoute[] = [{ provider: 'fixture', actualModel: 'fixture-model' }],
+): MessagesDeps {
+  return {
+    router: {
+      resolve: vi.fn(async () => routes),
+    } as unknown as MessagesDeps['router'],
+    queue: {
+      enqueue: vi.fn(async (_provider: string, run: () => Promise<unknown>) => run()),
+    } as unknown as MessagesDeps['queue'],
+    rateLimiter: {
+      checkGlobalAndKey: vi.fn(() => ({ allowed: true })),
+      checkProvider: vi.fn(() => ({ allowed: true })),
+    } as unknown as MessagesDeps['rateLimiter'],
+    registry: {
+      get: vi.fn(() => provider),
+    } as unknown as MessagesDeps['registry'],
+    healthChecker: {
+      isHealthy: vi.fn(async () => true),
+      onRequestFailure: vi.fn(),
+    } as unknown as MessagesDeps['healthChecker'],
+    validation,
+    activeRequests: {
+      start: vi.fn(),
+      finish: vi.fn(),
+    } as unknown as MessagesDeps['activeRequests'],
+    cache: {
+      generateHash: vi.fn(() => 'hash'),
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => undefined),
+    } as unknown as MessagesDeps['cache'],
+    debug: {
+      isEnabled: vi.fn(() => false),
+      logStart: vi.fn(),
+      logComplete: vi.fn(),
+    } as unknown as MessagesDeps['debug'],
+  };
+}
+
+async function createTestApp(deps: MessagesDeps): Promise<FastifyInstance> {
+  const app = Fastify();
+  registerMessagesRoute(app, deps);
+  await app.ready();
+  return app;
+}
+
+let app: FastifyInstance | undefined;
+
+afterEach(async () => {
+  await app?.close();
+  app = undefined;
+});
+
+describe('Anthropic Messages normalization', () => {
+  it('preserves tool definitions, calls, results, and choice', () => {
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      system: 'Be concise.',
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Checking.' },
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'lookup',
+              input: { city: 'Chicago' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: [{ type: 'text', text: '72F' }],
+          }],
+        },
+      ],
+      tools: [{
+        name: 'lookup',
+        description: 'Look up weather.',
+        input_schema: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city'],
+        },
+        strict: true,
+      }],
+      tool_choice: {
+        type: 'tool',
+        name: 'lookup',
+        disable_parallel_tool_use: true,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.messages).toEqual([
+      { role: 'system', content: 'Be concise.' },
+      {
+        role: 'assistant',
+        content: 'Checking.',
+        tool_calls: [{
+          id: 'toolu_1',
+          type: 'function',
+          function: {
+            name: 'lookup',
+            arguments: '{"city":"Chicago"}',
+          },
+        }],
+      },
+      { role: 'tool', content: '72F', tool_call_id: 'toolu_1' },
+    ]);
+    expect(result.data.tools?.[0].function).toMatchObject({
+      name: 'lookup',
+      strict: true,
+    });
+    expect(result.data.toolChoice).toEqual({
+      type: 'function',
+      function: { name: 'lookup' },
+    });
+    expect(result.data.parallelToolCalls).toBe(false);
+  });
+
+  it('identifies unsupported content blocks exactly', () => {
+    const result = normalizeAnthropicMessages({
+      model: 'claude-test',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'document', source: {} }],
+      }],
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        type: 'invalid_request_error',
+        message: 'Unsupported content block at messages[0].content[0].',
+      },
+    });
+  });
+});
+
+describe('Anthropic Messages tool compatibility', () => {
+  it('forwards tools and returns non-streaming tool-use blocks', async () => {
+    const execute = vi.fn(async (options: ExecuteOptions): Promise<ExecuteResult> => {
+      expect(options.tools?.[0].function.name).toBe('write_fixture');
+      expect(options.toolChoice).toBe('required');
+      return {
+        content: '',
+        toolCalls: [{
+          id: 'toolu_fixture',
+          type: 'function',
+          function: {
+            name: 'write_fixture',
+            arguments: '{"content":"phase3"}',
+          },
+        }],
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: 'tool_calls',
+      };
+    });
+    app = await createTestApp(createDeps(fakeProvider({ execute })));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-test',
+        max_tokens: 256,
+        messages: [{ role: 'user', content: 'Write the fixture.' }],
+        tools: [{
+          name: 'write_fixture',
+          input_schema: { type: 'object' },
+        }],
+        tool_choice: { type: 'any' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      stop_reason: 'tool_use',
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_fixture',
+        name: 'write_fixture',
+        input: { content: 'phase3' },
+      }],
+    });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('streams one ordered tool-use block with incremental JSON', async () => {
+    const executeStream = async function* (): AsyncIterable<ProviderEvent> {
+      yield {
+        type: 'tool_use',
+        toolCallId: 'toolu_stream',
+        toolName: 'write_fixture',
+        input: '{"content":',
+        index: 0,
+      };
+      yield {
+        type: 'tool_use',
+        toolCallId: '',
+        toolName: '',
+        input: '"phase3"}',
+        isPartial: true,
+        index: 0,
+      };
+      yield {
+        type: 'usage',
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      };
+      yield { type: 'done', finishReason: 'tool_use' };
+    };
+    app = await createTestApp(createDeps(fakeProvider({ executeStream })));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-test',
+        max_tokens: 256,
+        stream: true,
+        messages: [{ role: 'user', content: 'Write the fixture.' }],
+        tools: [{
+          name: 'write_fixture',
+          input_schema: { type: 'object' },
+        }],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const events = response.body
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>);
+    expect(events.map((event) => event.type)).toEqual([
+      'message_start',
+      'ping',
+      'content_block_start',
+      'content_block_delta',
+      'content_block_delta',
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ]);
+    const partialJson = events
+      .filter((event) => event.type === 'content_block_delta')
+      .map((event) => (event.delta as { partial_json: string }).partial_json)
+      .join('');
+    expect(partialJson).toBe('{"content":"phase3"}');
+    expect(events.at(-2)).toMatchObject({
+      type: 'message_delta',
+      delta: { stop_reason: 'tool_use' },
+    });
+  });
+});
+
+describe('Anthropic Messages provider errors', () => {
+  it.each([
+    ['invalid JSON', '{'],
+    ['oversized JSON', 'x'.repeat(validation.maxMessageLength + 1)],
+  ])('returns %s tool arguments directly without fallback', async (_label, args) => {
+    const execute = vi.fn(async (): Promise<ExecuteResult> => ({
+      content: '',
+      toolCalls: [{
+        id: 'toolu_invalid',
+        type: 'function',
+        function: { name: 'fixture', arguments: args },
+      }],
+      usage: { promptTokens: 4, completionTokens: 5, totalTokens: 9 },
+      finishReason: 'tool_calls',
+    }));
+    const deps = createDeps(
+      fakeProvider({ execute }),
+      [
+        { provider: 'primary', actualModel: 'fixture-model' },
+        { provider: 'fallback', actualModel: 'fixture-model' },
+      ],
+    );
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-test',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Hello.' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error.type).toBe('api_error');
+    expect(execute).toHaveBeenCalledOnce();
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
+  it('returns an actionable sanitized expired-login error', async () => {
+    app = await createTestApp(createDeps(fakeProvider({
+      execute: async () => {
+        throw new Error(
+          'OAuth token expired for person@example.test in /var/lib/agent-proxy/private.',
+        );
+      },
+    })));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'claude-test',
+        max_tokens: 64,
+        messages: [{ role: 'user', content: 'Hello.' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      type: 'error',
+      error: {
+        type: 'authentication_error',
+        message: 'Fixture service-account login expired. Refresh it from Dashboard > Provider Login.',
+      },
+    });
+    expect(response.body).not.toContain('person@example.test');
+    expect(response.body).not.toContain('/var/lib');
+  });
+});

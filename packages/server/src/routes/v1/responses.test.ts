@@ -133,6 +133,83 @@ afterEach(async () => {
 });
 
 describe('Responses request validation', () => {
+  it('accepts the current Codex custom-provider request envelope', () => {
+    const parsed = parseResponsesRequest({
+      model: 'gpt-test',
+      input: [
+        {
+          type: 'additional_tools',
+          role: 'developer',
+          tools: [
+            {
+              type: 'custom',
+              name: 'exec',
+              description: 'Run a command.',
+              format: {
+                type: 'grammar',
+                syntax: 'lark',
+                definition: 'start: /.+/',
+              },
+            },
+            {
+              type: 'function',
+              name: 'wait',
+              description: 'Wait for completion.',
+              strict: false,
+              parameters: {
+                type: 'object',
+                properties: { cell_id: { type: 'string' } },
+                required: ['cell_id'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Hello' }],
+        },
+      ],
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      reasoning: {
+        effort: 'low',
+        context: 'all_turns',
+      },
+      store: false,
+      stream: true,
+      include: ['reasoning.encrypted_content'],
+      prompt_cache_key: 'session-1',
+      text: { verbosity: 'low' },
+      client_metadata: {
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const normalized = normalizeResponsesInput(parsed.data, validation);
+    expect(normalized.success).toBe(true);
+    if (!normalized.success) return;
+    expect(normalized.data.inputMessages).toEqual([{
+      role: 'user',
+      content: [{ type: 'text', text: 'Hello' }],
+    }]);
+    expect(normalized.data.tools?.map((tool) => tool.function.name)).toEqual([
+      'exec',
+      'wait',
+    ]);
+    expect(normalized.data.tools?.[0].function.parameters).toMatchObject({
+      'x-agent-proxy-custom-tool-format': {
+        type: 'grammar',
+        syntax: 'lark',
+        definition: 'start: /.+/',
+      },
+    });
+  });
+
   it('accepts the documented Phase 2 request fields', () => {
     const parsed = parseResponsesRequest({
       model: 'gpt-test',
@@ -430,6 +507,69 @@ describe('Responses SDK compatibility', () => {
         call_id: 'call_stream_1',
         name: 'lookup',
         arguments: '{"id":7}',
+      }),
+    ]);
+  });
+
+  it('streams Codex custom tool calls with raw custom input', async () => {
+    const provider = fakeProvider({
+      executeStream: async function* (options) {
+        expect(options.tools?.map((tool) => tool.function.name)).toContain('exec');
+        yield {
+          type: 'tool_use',
+          toolCallId: 'call_custom_1',
+          toolName: 'exec',
+          input: '{"input":"text(true);"}',
+          index: 0,
+        };
+        yield { type: 'done', finishReason: 'tool_use' };
+      },
+    });
+    const fixture = await createSdkClient(createDeps({ codex: provider }));
+    app = fixture.app;
+    const stream = await fixture.client.responses.create({
+      model: 'gpt-test',
+      input: [
+        {
+          type: 'additional_tools',
+          role: 'developer',
+          tools: [{
+            type: 'custom',
+            name: 'exec',
+            description: 'Run JavaScript.',
+            format: { type: 'text' },
+          }],
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Use exec.' }],
+        },
+      ],
+      stream: true,
+    });
+
+    const events: Array<Record<string, unknown>> = [];
+    for await (const event of stream) {
+      events.push(event as unknown as Record<string, unknown>);
+    }
+    expect(events.map((event) => event.type)).toContain(
+      'response.custom_tool_call_input.delta',
+    );
+    expect(events.find(
+      (event) => event.type === 'response.custom_tool_call_input.delta',
+    )).toMatchObject({
+      delta: 'text(true);',
+    });
+    const completed = events.find((event) => event.type === 'response.completed') as {
+      response?: { output?: unknown[] };
+    } | undefined;
+    expect(completed?.response?.output).toEqual([
+      expect.objectContaining({
+        type: 'custom_tool_call',
+        call_id: 'call_custom_1',
+        name: 'exec',
+        input: 'text(true);',
       }),
     ]);
   });

@@ -16,13 +16,13 @@ server and credits the upstream project for that work.
 
 ## Status
 
-Status updated: 2026-07-23
+Status updated: 2026-07-26
 
-The repository contains a working gateway foundation, but the full drop-in
-compatibility target is still in progress. Chat Completions and Anthropic
-Messages are the most mature paths. The Responses adapter passes its
-provider-independent OpenAI SDK contract, while unmodified Codex, Grok, and
-Open WebUI acceptance remains in Phase 3.
+Phase 3 is complete for the Codex-only production profile. The Responses
+adapter, unmodified Codex live matrix, pinned Open WebUI matrix, and supported
+topologies pass. Claude and Grok remain implemented and offline-tested, but
+their live tests are explicitly waived and both providers are disabled because
+this installation has no usable subscription login for them.
 
 See [SPEC.md](./SPEC.md) for the product contract and
 [ROADMAP.md](./ROADMAP.md) for implementation phases.
@@ -36,9 +36,11 @@ See [SPEC.md](./SPEC.md) for the product contract and
 | Google Antigravity | `agy` | Complete the normal Google login |
 | Grok Build | `grok` | Run `grok login` |
 
-The server invokes these tools as child processes. It does not copy or manage
-their credentials. Each operator is responsible for complying with the terms
-and usage limits of every configured provider.
+The server invokes these tools as child processes under its service account.
+Provider credentials stay in the CLI-owned service-account state; agent-proxy
+does not return or store provider tokens in its database. Each operator is
+responsible for complying with the terms and usage limits of every configured
+provider.
 
 ## API surface
 
@@ -102,6 +104,14 @@ For development:
 
 The dashboard development server listens on `127.0.0.1:5300`.
 
+The dashboard's **Provider Login** page checks subscription authentication for
+the service account and starts or refreshes the official Claude, Codex, and
+Grok CLI login flows. It displays only verification URLs and one-time codes;
+provider tokens and account identifiers are never returned by the admin API.
+Desktop-user CLI sessions are separate from the hardened service account, so a
+provider may need one service-account device login even when the desktop CLI
+is already signed in.
+
 ## Containers
 
 The Dockerfile provides `server` and `dashboard` targets:
@@ -125,6 +135,10 @@ binaries, and the authenticated service-user state required by those CLIs.
 Set `AGENT_PROXY_UPSTREAM` on the dashboard container to the server URL visible
 from its container network. Its standalone-safe default is
 `http://127.0.0.1:8300`.
+
+See [Open WebUI compatibility](./docs/open-webui-compatibility.md) for the
+pinned release, loopback-only native/Docker/Podman topologies, background-task
+settings, and the live validation commands.
 
 ## Client examples
 
@@ -168,9 +182,9 @@ default = "agent-proxy"
 ```
 
 These client examples define the intended compatibility target. The Responses
-wire contract is covered by OpenAI SDK and provider-adapter tests, but native
-Codex and Grok client behavior remains experimental until the Phase 3
-acceptance matrix passes.
+wire contract is covered by OpenAI SDK and provider-adapter tests. Native Codex
+passes. Claude and Grok require their own live acceptance before either is
+enabled in a future production profile.
 
 ## Configuration
 

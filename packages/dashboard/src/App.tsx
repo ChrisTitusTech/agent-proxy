@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Routes, Route, NavLink } from 'react-router-dom';
 import { useTranslation } from './i18n/context';
 import { useTheme } from './theme/context';
 import { useAdminAuth } from './auth/context';
@@ -13,11 +12,13 @@ import DebugPage from './pages/DebugPage';
 import SettingsPage from './pages/SettingsPage';
 import ProvidersPage from './pages/ProvidersPage';
 import PlaygroundPage from './pages/PlaygroundPage';
+import ProviderLoginPage from './pages/ProviderLoginPage';
 
 const navItems = [
   { to: '/', labelKey: 'nav.dashboard', icon: '~' },
   { to: '/playground', labelKey: 'nav.playground', icon: '^' },
   { to: '/providers', labelKey: 'nav.providers', icon: '&' },
+  { to: '/provider-login', labelKey: 'nav.providerLogin', icon: '+' },
   { to: '/models', labelKey: 'nav.models', icon: '#' },
   { to: '/debug', labelKey: 'nav.debug', icon: '!' },
   { to: '/keys', labelKey: 'nav.apiKeys', icon: '*' },
@@ -27,11 +28,26 @@ const navItems = [
   { to: '/guide', labelKey: 'nav.apiGuide', icon: '?' },
 ];
 
+const routePages = new Map([
+  ['/', DashboardPage],
+  ['/playground', PlaygroundPage],
+  ['/models', ModelMappingsPage],
+  ['/keys', ApiKeysPage],
+  ['/logs', LogsPage],
+  ['/rate-limits', RateLimitsPage],
+  ['/providers', ProvidersPage],
+  ['/provider-login', ProviderLoginPage],
+  ['/debug', DebugPage],
+  ['/settings', SettingsPage],
+  ['/guide', ApiGuidePage],
+]);
+
 export default function App() {
   const { t } = useTranslation();
   const { theme, toggleTheme } = useTheme();
   const { adminToken, saveAdminToken, clearAdminToken } = useAdminAuth();
   const [tokenDraft, setTokenDraft] = useState(adminToken);
+  const CurrentPage = routePages.get(window.location.pathname) ?? DashboardPage;
 
   useEffect(() => {
     setTokenDraft(adminToken);
@@ -50,21 +66,18 @@ export default function App() {
         </div>
         <div className="flex-1 p-2 space-y-1">
           {navItems.map((item) => (
-            <NavLink
+            <a
               key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  isActive
-                    ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
-                }`
-              }
+              href={item.to}
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                window.location.pathname === item.to
+                  ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
             >
               <span className="font-mono text-xs w-4 text-center">{item.icon}</span>
               {t(item.labelKey)}
-            </NavLink>
+            </a>
           ))}
         </div>
 
@@ -143,18 +156,7 @@ export default function App() {
         </div>
         <div className="flex-1 px-6 pb-6">
           {adminToken ? (
-            <Routes>
-              <Route path="/" element={<DashboardPage />} />
-              <Route path="/playground" element={<PlaygroundPage />} />
-              <Route path="/models" element={<ModelMappingsPage />} />
-              <Route path="/keys" element={<ApiKeysPage />} />
-              <Route path="/logs" element={<LogsPage />} />
-              <Route path="/rate-limits" element={<RateLimitsPage />} />
-              <Route path="/providers" element={<ProvidersPage />} />
-              <Route path="/debug" element={<DebugPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/guide" element={<ApiGuidePage />} />
-            </Routes>
+            <CurrentPage />
           ) : (
             <div className="h-full flex items-center justify-center">
               <div className="w-full max-w-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-8 space-y-4">

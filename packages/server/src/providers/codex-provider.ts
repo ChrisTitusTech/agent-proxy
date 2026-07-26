@@ -8,6 +8,11 @@ import { executeAppServer, executeStreamAppServer, type AppServerExecutorConfig,
 import { CodexCliSessionManager } from './codex-cli-session-manager.js';
 import { mergeProviderConfig } from './provider-override.js';
 import { unlink } from 'node:fs/promises';
+import {
+  adaptExternalToolResult,
+  externalToolEvents,
+  prepareExternalToolRequest,
+} from './external-tool-adapter.js';
 
 interface CodexExecuteContext {
   text: string;
@@ -33,6 +38,19 @@ const RESUME_UNSUPPORTED_FLAGS_WITH_VALUE = new Set([
 const RESUME_UNSUPPORTED_FLAGS_STANDALONE = new Set([
   '--oss',
 ]);
+const EXTERNAL_TOOL_DISABLED_FEATURES = [
+  'apply_patch_freeform',
+  'apply_patch_streaming_events',
+  'apps',
+  'browser_use',
+  'code_mode',
+  'code_mode_host',
+  'computer_use',
+  'image_generation',
+  'multi_agent',
+  'shell_tool',
+  'unified_exec',
+] as const;
 
 
 
@@ -262,6 +280,18 @@ export class CodexProvider extends BaseProvider {
         : options.reasoningEffort;
       reasoningArgs.push('-c', `model_reasoning_effort=${effort}`);
     }
+    const configuredDisables = new Set(effective.extra_args.flatMap(
+      (arg, index, args) => {
+        if (arg === '--disable') return args[index + 1] ? [args[index + 1]] : [];
+        if (arg.startsWith('--disable=')) return [arg.slice('--disable='.length)];
+        return [];
+      },
+    ));
+    const externalToolArgs = options.extraBody?.__agentProxyExternalToolSelection === true
+      ? EXTERNAL_TOOL_DISABLED_FEATURES.flatMap(
+        (feature) => configuredDisables.has(feature) ? [] : ['--disable', feature],
+      )
+      : [];
 
     if (resumeThreadId) {
 
@@ -287,6 +317,7 @@ export class CodexProvider extends BaseProvider {
       ...(injectEphemeral ? ['--ephemeral'] : []),
       ...reasoningArgs,
       ...effective.extra_args,
+      ...externalToolArgs,
       ...((ctx?.imageFiles ?? []).flatMap((file) => ['--image', file])),
 
       ...(model ? ['-m', model] : []),
@@ -337,7 +368,7 @@ export class CodexProvider extends BaseProvider {
 
 
 
-  override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
+  private async executeWithoutExternalTools(options: ExecuteOptions): Promise<ExecuteResult> {
     if (this.isAppServerMode) {
       if (!this.appServerProcess?.isAlive()) {
         throw new Error('Codex app-server process is not running');
@@ -386,7 +417,22 @@ export class CodexProvider extends BaseProvider {
     }
   }
 
+  override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
+    const prepared = prepareExternalToolRequest(options);
+    const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
+    return prepared ? adaptExternalToolResult(result, prepared) : result;
+  }
+
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
+    const prepared = prepareExternalToolRequest(options);
+    if (prepared) {
+      const result = adaptExternalToolResult(
+        await this.executeWithoutExternalTools(prepared.options),
+        prepared,
+      );
+      yield* externalToolEvents(result);
+      return;
+    }
     if (this.isAppServerMode) {
       if (!this.appServerProcess?.isAlive()) {
         throw new Error('Codex app-server process is not running');

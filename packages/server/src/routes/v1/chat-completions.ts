@@ -11,6 +11,10 @@ import { extractTextFromContent, isImagePart } from '../../utils/message-convert
 import { createRequestId, formatAsSSE } from '../../utils/stream-transformer.js';
 import { splitReasoning, ReasoningSplitter } from '../../utils/reasoning-splitter.js';
 import { extractClientKey } from '../../utils/client-key.js';
+import {
+  classifyProviderError,
+  sanitizeProviderError,
+} from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { ModelRouter } from '../../services/router.js';
 import type { QueueManager } from '../../services/queue.js';
@@ -157,14 +161,6 @@ export function isToolsUnsupportedError(message: string): boolean {
 }
 
 
-
-function sanitizeProviderError(message: string): string {
-  return message
-    .replace(/\/[\w/.@-]+/g, '[path]')
-    .replace(/at\s+\S+\s*\(.*?\)/g, '')
-    .trim()
-    .substring(0, 200);
-}
 
 function safeWrite(raw: NodeJS.WritableStream, data: string): boolean {
   try {
@@ -757,7 +753,7 @@ export function registerChatCompletionsRoute(
             statusCode: isTimeout ? 504 : 502,
             latencyMs: errLatency,
             isStream: body.stream ?? false,
-            errorMessage: lastError.message,
+            errorMessage: sanitizeProviderError(lastError.message),
           });
 
           if (debugLogId) {
@@ -773,7 +769,7 @@ export function registerChatCompletionsRoute(
               rawResponseText: debugCapture?.rawResponseText,
               status: isTimeout ? 'timeout' : 'error',
               latencyMs: errLatency,
-              errorMessage: lastError.message,
+              errorMessage: sanitizeProviderError(lastError.message),
             });
           }
 
@@ -811,15 +807,17 @@ export function registerChatCompletionsRoute(
       }
 
 
-      const isTimeout = lastError?.message.includes('timed out') ?? false;
-      const statusCode = isTimeout ? 504 : 502;
+      const failure = classifyProviderError(
+        lastError ?? 'Provider request failed.',
+        routes.at(-1)?.provider,
+      );
 
-      return reply.status(statusCode).send({
+      return reply.status(failure.statusCode).send({
         error: {
-          message: `All providers failed for model "${body.model}". Last error: ${sanitizeProviderError(lastError?.message ?? 'unknown')}`,
-          type: isTimeout ? 'timeout_error' : 'provider_error',
+          message: failure.message,
+          type: failure.kind === 'timeout' ? 'timeout_error' : 'provider_error',
           param: null,
-          code: isTimeout ? 'timeout' : 'provider_error',
+          code: failure.code,
         },
       });
     },

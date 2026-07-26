@@ -1,10 +1,15 @@
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { ModelObject, ModelListResponse } from '@agent-proxy/shared';
 import { getDatabase } from '../../db/client.js';
 import { modelMappings } from '../../db/schema.js';
+import type { ProviderRegistry } from '../../providers/provider-registry.js';
 
-export function registerModelsRoute(app: FastifyInstance): void {
+export interface ModelsDeps {
+  registry: Pick<ProviderRegistry, 'has'>;
+}
+
+export function registerModelsRoute(app: FastifyInstance, deps: ModelsDeps): void {
 
   app.get('/v1/models', async (_request, reply) => {
     const db = getDatabase();
@@ -14,9 +19,10 @@ export function registerModelsRoute(app: FastifyInstance): void {
       .from(modelMappings)
       .where(eq(modelMappings.enabled, true));
 
+    const availableMappings = mappings.filter((mapping) => deps.registry.has(mapping.provider));
 
     const uniqueAliases = new Map<string, typeof mappings[0]>();
-    for (const m of mappings) {
+    for (const m of availableMappings) {
       if (!uniqueAliases.has(m.alias)) {
         uniqueAliases.set(m.alias, m);
       }
@@ -45,10 +51,13 @@ export function registerModelsRoute(app: FastifyInstance): void {
     const results = await db
       .select()
       .from(modelMappings)
-      .where(eq(modelMappings.alias, id))
-      .limit(1);
+      .where(and(
+        eq(modelMappings.alias, id),
+        eq(modelMappings.enabled, true),
+      ));
 
-    if (results.length === 0) {
+    const m = results.find((mapping) => deps.registry.has(mapping.provider));
+    if (!m) {
       return reply.status(404).send({
         error: {
           message: `Model "${id}" not found.`,
@@ -59,7 +68,6 @@ export function registerModelsRoute(app: FastifyInstance): void {
       });
     }
 
-    const m = results[0];
     const model: ModelObject = {
       id: m.alias,
       object: 'model',

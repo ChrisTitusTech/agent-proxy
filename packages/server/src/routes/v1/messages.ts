@@ -1,9 +1,21 @@
 import type { FastifyInstance } from 'fastify';
-import type { ValidationConfig, ReasoningEffort } from '@agent-proxy/shared';
+import type {
+  ChatCompletionTool,
+  ChatMessage,
+  ChatMessageContent,
+  ChatMessageToolCall,
+  ToolChoice,
+  ValidationConfig,
+  ReasoningEffort,
+} from '@agent-proxy/shared';
 import { isReasoningEffort } from '@agent-proxy/shared';
 import { nanoid } from 'nanoid';
 import { createRequestId } from '../../utils/stream-transformer.js';
 import { extractClientKey } from '../../utils/client-key.js';
+import {
+  classifyProviderError,
+  sanitizeProviderError,
+} from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { ModelRouter } from '../../services/router.js';
 import type { QueueManager } from '../../services/queue.js';
@@ -15,7 +27,7 @@ import type { ResponseCache } from '../../services/cache.js';
 import type { DebugService } from '../../services/debug.js';
 import type { DebugCaptureInfo } from '@agent-proxy/shared';
 
-interface MessagesDeps {
+export interface MessagesDeps {
   router: ModelRouter;
   queue: QueueManager;
   rateLimiter: RateLimiter;
@@ -28,9 +40,39 @@ interface MessagesDeps {
 }
 
 
+interface AnthropicContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: unknown;
+  [key: string]: unknown;
+}
+
 interface AnthropicMessage {
   role: 'user' | 'assistant';
-  content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
+  content: string | AnthropicContentBlock[];
+}
+
+interface AnthropicTool {
+  name: string;
+  description?: string;
+  input_schema: Record<string, unknown>;
+  strict?: boolean;
+}
+
+type AnthropicToolChoice =
+  | { type: 'auto' | 'any' | 'none'; disable_parallel_tool_use?: boolean }
+  | { type: 'tool'; name: string; disable_parallel_tool_use?: boolean };
+
+interface NormalizedAnthropicRequest {
+  messages: ChatMessage[];
+  tools?: ChatCompletionTool[];
+  toolChoice?: ToolChoice;
+  parallelToolCalls?: boolean;
+  promptLength: number;
 }
 
 interface AnthropicMessagesRequest {
@@ -43,8 +85,8 @@ interface AnthropicMessagesRequest {
   top_p?: number;
   top_k?: number;
   stop_sequences?: string[];
-  tools?: unknown[];
-  tool_choice?: unknown;
+  tools?: AnthropicTool[];
+  tool_choice?: AnthropicToolChoice;
   thinking?: unknown;
   metadata?: unknown;
   reasoning_effort?: string;
@@ -55,15 +97,6 @@ function sanitizeString(str: string): string {
   return str.replace(/\x00/g, '');
 }
 
-
-
-function sanitizeProviderError(message: string): string {
-  return message
-    .replace(/\/[\w/.@-]+/g, '[path]')
-    .replace(/at\s+\S+\s*\(.*?\)/g, '')
-    .trim()
-    .substring(0, 200);
-}
 
 
 function makeAnthropicError(type: string, message: string) {
@@ -84,15 +117,234 @@ function toAnthropicStopReason(finishReason: string): string {
 }
 
 
-function normalizeContent(content: string | Array<{ type: string; text?: string; [key: string]: unknown }>): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((block) => block.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text as string)
-      .join('\n');
+function stringifyToolValue(value: unknown): string {
+  if (typeof value === 'string') return sanitizeString(value);
+  if (value == null) return '';
+  try {
+    return sanitizeString(JSON.stringify(value));
+  } catch {
+    return sanitizeString(String(value));
   }
-  return '';
+}
+
+function normalizeToolResultContent(value: unknown): ChatMessageContent {
+  if (typeof value === 'string') return sanitizeString(value);
+  if (!Array.isArray(value)) return stringifyToolValue(value);
+
+  const text = value
+    .filter((block): block is AnthropicContentBlock => typeof block === 'object' && block !== null)
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => sanitizeString(block.text as string))
+    .join('\n');
+  return text || stringifyToolValue(value);
+}
+
+export function normalizeAnthropicMessages(
+  request: AnthropicMessagesRequest,
+): { success: true; data: NormalizedAnthropicRequest } | {
+  success: false;
+  error: { type: string; message: string };
+} {
+  const messages: ChatMessage[] = [];
+  let promptLength = 0;
+
+  if (request.system) {
+    const systemContent = sanitizeString(normalizeSystem(request.system));
+    if (systemContent) {
+      messages.push({ role: 'system', content: systemContent });
+      promptLength += systemContent.length;
+    }
+  }
+
+  for (let messageIndex = 0; messageIndex < request.messages.length; messageIndex++) {
+    const message = request.messages[messageIndex];
+    if (message.role !== 'user' && message.role !== 'assistant') {
+      return {
+        success: false,
+        error: {
+          type: 'invalid_request_error',
+          message: `Invalid role "${message.role}" at messages[${messageIndex}]. Allowed: user, assistant`,
+        },
+      };
+    }
+
+    if (typeof message.content === 'string') {
+      const content = sanitizeString(message.content);
+      messages.push({ role: message.role, content });
+      promptLength += content.length;
+      continue;
+    }
+    if (!Array.isArray(message.content)) {
+      return {
+        success: false,
+        error: {
+          type: 'invalid_request_error',
+          message: `messages[${messageIndex}].content must be a string or content block array.`,
+        },
+      };
+    }
+
+    if (message.role === 'assistant') {
+      const textParts: string[] = [];
+      const toolCalls: ChatMessageToolCall[] = [];
+      for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
+        const block = message.content[blockIndex];
+        if (block.type === 'text' && typeof block.text === 'string') {
+          const text = sanitizeString(block.text);
+          textParts.push(text);
+          promptLength += text.length;
+          continue;
+        }
+        if (
+          block.type === 'tool_use'
+          && typeof block.id === 'string'
+          && typeof block.name === 'string'
+        ) {
+          const argumentsText = stringifyToolValue(block.input ?? {});
+          toolCalls.push({
+            id: sanitizeString(block.id),
+            type: 'function',
+            function: {
+              name: sanitizeString(block.name),
+              arguments: argumentsText,
+            },
+          });
+          promptLength += block.id.length + block.name.length + argumentsText.length;
+          continue;
+        }
+        return {
+          success: false,
+          error: {
+            type: 'invalid_request_error',
+            message: `Unsupported content block at messages[${messageIndex}].content[${blockIndex}].`,
+          },
+        };
+      }
+      messages.push({
+        role: 'assistant',
+        content: textParts.join('\n'),
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      });
+      continue;
+    }
+
+    let textBuffer: string[] = [];
+    const flushUserText = () => {
+      if (textBuffer.length === 0) return;
+      messages.push({ role: 'user', content: textBuffer.join('\n') });
+      textBuffer = [];
+    };
+    for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
+      const block = message.content[blockIndex];
+      if (block.type === 'text' && typeof block.text === 'string') {
+        const text = sanitizeString(block.text);
+        textBuffer.push(text);
+        promptLength += text.length;
+        continue;
+      }
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        flushUserText();
+        const content = normalizeToolResultContent(block.content);
+        const contentText = typeof content === 'string' ? content : stringifyToolValue(content);
+        messages.push({
+          role: 'tool',
+          content,
+          tool_call_id: sanitizeString(block.tool_use_id),
+        });
+        promptLength += block.tool_use_id.length + contentText.length;
+        continue;
+      }
+      return {
+        success: false,
+        error: {
+          type: 'invalid_request_error',
+          message: `Unsupported content block at messages[${messageIndex}].content[${blockIndex}].`,
+        },
+      };
+    }
+    flushUserText();
+  }
+
+  let tools: ChatCompletionTool[] | undefined;
+  if (request.tools !== undefined) {
+    if (!Array.isArray(request.tools)) {
+      return {
+        success: false,
+        error: { type: 'invalid_request_error', message: 'tools must be an array.' },
+      };
+    }
+    tools = [];
+    for (let index = 0; index < request.tools.length; index++) {
+      const tool = request.tools[index];
+      if (
+        !tool
+        || typeof tool.name !== 'string'
+        || tool.name.length === 0
+        || typeof tool.input_schema !== 'object'
+        || tool.input_schema === null
+        || Array.isArray(tool.input_schema)
+      ) {
+        return {
+          success: false,
+          error: {
+            type: 'invalid_request_error',
+            message: `Invalid tool definition at tools[${index}].`,
+          },
+        };
+      }
+      tools.push({
+        type: 'function',
+        function: {
+          name: sanitizeString(tool.name),
+          ...(typeof tool.description === 'string'
+            ? { description: sanitizeString(tool.description) }
+            : {}),
+          parameters: tool.input_schema,
+          ...(typeof tool.strict === 'boolean' ? { strict: tool.strict } : {}),
+        },
+      });
+    }
+  }
+
+  let toolChoice: ToolChoice | undefined;
+  let parallelToolCalls: boolean | undefined;
+  if (request.tool_choice !== undefined) {
+    const choice = request.tool_choice;
+    if (!choice || typeof choice !== 'object' || typeof choice.type !== 'string') {
+      return {
+        success: false,
+        error: { type: 'invalid_request_error', message: 'tool_choice is invalid.' },
+      };
+    }
+    if (choice.type === 'auto') toolChoice = 'auto';
+    else if (choice.type === 'any') toolChoice = 'required';
+    else if (choice.type === 'none') toolChoice = 'none';
+    else if (choice.type === 'tool' && typeof choice.name === 'string' && choice.name.length > 0) {
+      toolChoice = {
+        type: 'function',
+        function: { name: sanitizeString(choice.name) },
+      };
+    } else {
+      return {
+        success: false,
+        error: { type: 'invalid_request_error', message: 'tool_choice is invalid.' },
+      };
+    }
+    if (typeof choice.disable_parallel_tool_use === 'boolean') {
+      parallelToolCalls = !choice.disable_parallel_tool_use;
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      messages,
+      ...(tools ? { tools } : {}),
+      ...(toolChoice !== undefined ? { toolChoice } : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+      promptLength,
+    },
+  };
 }
 
 
@@ -161,42 +413,40 @@ export function registerMessagesRoute(
 
 
 
-      const internalMessages: Array<{ role: 'system' | 'user' | 'assistant' | 'developer'; content: string }> = [];
-
-
-      if (body.system) {
-        const systemContent = sanitizeString(normalizeSystem(body.system));
-        if (systemContent) {
-          internalMessages.push({ role: 'system', content: systemContent });
-        }
+      const normalized = normalizeAnthropicMessages(body);
+      if (!normalized.success) {
+        return reply.status(400).send(makeAnthropicError(
+          normalized.error.type,
+          normalized.error.message,
+        ));
       }
+      const internalMessages = normalized.data.messages;
 
-
-      let totalPromptLength = 0;
-      for (let i = 0; i < body.messages.length; i++) {
-        const msg = body.messages[i];
-
-
-        if (msg.role !== 'user' && msg.role !== 'assistant') {
-          return reply.status(400).send(makeAnthropicError('invalid_request_error', `Invalid role "${msg.role}" at messages[${i}]. Allowed: user, assistant`));
-        }
-
-
-        let content = normalizeContent(msg.content);
-        content = sanitizeString(content);
-
-
+      for (const message of internalMessages) {
+        const content = typeof message.content === 'string'
+          ? message.content
+          : stringifyToolValue(message.content);
         if (content.length > v.maxMessageLength) {
-          return reply.status(400).send(makeAnthropicError('invalid_request_error', `messages[${i}].content too long: ${content.length} chars. Maximum is ${v.maxMessageLength}.`));
+          return reply.status(400).send(makeAnthropicError(
+            'invalid_request_error',
+            `Message content too long: ${content.length} chars. Maximum is ${v.maxMessageLength}.`,
+          ));
         }
-
-        totalPromptLength += content.length;
-        internalMessages.push({ role: msg.role, content });
+        for (const toolCall of message.tool_calls ?? []) {
+          if (toolCall.function.arguments.length > v.maxMessageLength) {
+            return reply.status(400).send(makeAnthropicError(
+              'invalid_request_error',
+              `Tool input is too long. Maximum is ${v.maxMessageLength}.`,
+            ));
+          }
+        }
       }
 
-
-      if (totalPromptLength > v.maxPromptLength) {
-        return reply.status(400).send(makeAnthropicError('invalid_request_error', `Total prompt length too long: ${totalPromptLength} chars. Maximum is ${v.maxPromptLength}.`));
+      if (normalized.data.promptLength > v.maxPromptLength) {
+        return reply.status(400).send(makeAnthropicError(
+          'invalid_request_error',
+          `Total prompt length too long: ${normalized.data.promptLength} chars. Maximum is ${v.maxPromptLength}.`,
+        ));
       }
 
 
@@ -208,8 +458,6 @@ export function registerMessagesRoute(
       if (body.top_p != null) unsupportedParams.push('top_p');
       if (body.top_k != null) unsupportedParams.push('top_k');
       if (body.stop_sequences != null) unsupportedParams.push('stop_sequences');
-      if (body.tools != null) unsupportedParams.push('tools');
-      if (body.tool_choice != null) unsupportedParams.push('tool_choice');
       if (body.thinking != null) unsupportedParams.push('thinking');
       if (body.metadata != null) unsupportedParams.push('metadata');
 
@@ -240,7 +488,7 @@ export function registerMessagesRoute(
       const clientKey = extractClientKey(request, apiKeyId);
 
 
-      const requestHash = !body.stream
+      const requestHash = !body.stream && !normalized.data.tools?.length
         ? deps.cache.generateHash(body.model, internalMessages)
         : undefined;
 
@@ -283,12 +531,14 @@ export function registerMessagesRoute(
 
 
       let lastError: Error | null = null;
+      let lastErrorProvider: string | undefined;
       let rateLimitRetryAfter: number | null = null;
 
       for (const route of routes) {
         const healthy = await deps.healthChecker.isHealthy(route.provider);
         if (!healthy) {
           lastError = new Error(`Provider ${route.provider} is unhealthy`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
@@ -297,12 +547,14 @@ export function registerMessagesRoute(
         if (!provRate.allowed) {
           rateLimitRetryAfter = provRate.retryAfterSeconds ?? 30;
           lastError = new Error(`Provider ${route.provider} rate limit exceeded`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
         const provider = deps.registry.get(route.provider);
         if (!provider) {
           lastError = new Error(`Provider ${route.provider} not available`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
@@ -375,21 +627,28 @@ export function registerMessagesRoute(
                 },
               })) return;
 
-
-              if (!writeSSE(reply.raw, 'content_block_start', {
-                type: 'content_block_start',
-                index: 0,
-                content_block: { type: 'text', text: '' },
-              })) return;
-
-
               writeSSE(reply.raw, 'ping', { type: 'ping' });
 
               let totalContent = '';
               let ttfbMs: number | undefined;
               let streamUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
               let blockIndex = 0;
-              let currentBlockType: 'text' | 'thinking' | 'tool_use' | null = 'text';
+              let currentBlockType: 'text' | 'thinking' | 'tool_use' | null = null;
+              let currentToolIndex: number | undefined;
+              let currentToolInputLength = 0;
+              let streamFinishReason: 'end_turn' | 'max_tokens' | 'tool_use' = 'end_turn';
+
+              const closeCurrentBlock = () => {
+                if (currentBlockType === null) return;
+                writeSSE(reply.raw, 'content_block_stop', {
+                  type: 'content_block_stop',
+                  index: blockIndex,
+                });
+                blockIndex++;
+                currentBlockType = null;
+                currentToolIndex = undefined;
+                currentToolInputLength = 0;
+              };
 
               const streamIterator = provider.executeStream({
                 messages: internalMessages,
@@ -402,6 +661,10 @@ export function registerMessagesRoute(
                 clientKey,
                 reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
                 providerOverrides: route.providerOverrides,
+                extraBody: route.extraBody,
+                tools: normalized.data.tools,
+                toolChoice: normalized.data.toolChoice,
+                parallelToolCalls: normalized.data.parallelToolCalls,
               });
 
               try {
@@ -413,10 +676,7 @@ export function registerMessagesRoute(
                   if (event.type === 'text_delta') {
 
                     if (currentBlockType !== 'text') {
-                      if (currentBlockType !== null) {
-                        writeSSE(reply.raw, 'content_block_stop', { type: 'content_block_stop', index: blockIndex });
-                        blockIndex++;
-                      }
+                      closeCurrentBlock();
                       writeSSE(reply.raw, 'content_block_start', {
                         type: 'content_block_start', index: blockIndex,
                         content_block: { type: 'text', text: '' },
@@ -433,10 +693,7 @@ export function registerMessagesRoute(
 
                   if (event.type === 'thinking') {
                     if (currentBlockType !== 'thinking') {
-                      if (currentBlockType !== null) {
-                        writeSSE(reply.raw, 'content_block_stop', { type: 'content_block_stop', index: blockIndex });
-                        blockIndex++;
-                      }
+                      closeCurrentBlock();
                       writeSSE(reply.raw, 'content_block_start', {
                         type: 'content_block_start', index: blockIndex,
                         content_block: { type: 'thinking', thinking: '' },
@@ -451,21 +708,39 @@ export function registerMessagesRoute(
                   }
 
                   if (event.type === 'tool_use') {
-
-                    if (currentBlockType !== null) {
-                      writeSSE(reply.raw, 'content_block_stop', { type: 'content_block_stop', index: blockIndex });
-                      blockIndex++;
+                    const toolIndex = event.index ?? currentToolIndex ?? 0;
+                    const startsNewTool = currentBlockType !== 'tool_use'
+                      || currentToolIndex !== toolIndex
+                      || (!event.isPartial && Boolean(event.toolCallId || event.toolName));
+                    if (startsNewTool) {
+                      closeCurrentBlock();
+                      if (!event.toolCallId || !event.toolName) {
+                        throw new Error('Provider returned a tool call without an ID or name.');
+                      }
+                      writeSSE(reply.raw, 'content_block_start', {
+                        type: 'content_block_start', index: blockIndex,
+                        content_block: {
+                          type: 'tool_use',
+                          id: event.toolCallId,
+                          name: event.toolName,
+                          input: {},
+                        },
+                      });
+                      currentBlockType = 'tool_use';
+                      currentToolIndex = toolIndex;
                     }
-                    writeSSE(reply.raw, 'content_block_start', {
-                      type: 'content_block_start', index: blockIndex,
-                      content_block: { type: 'tool_use', id: event.toolCallId, name: event.toolName, input: {} },
-                    });
+                    currentToolInputLength += event.input.length;
+                    if (currentToolInputLength > v.maxMessageLength) {
+                      throw new Error(
+                        `Provider returned tool input longer than ${v.maxMessageLength} characters.`,
+                      );
+                    }
                     writeSSE(reply.raw, 'content_block_delta', {
                       type: 'content_block_delta',
                       index: blockIndex,
                       delta: { type: 'input_json_delta', partial_json: event.input },
                     });
-                    currentBlockType = 'tool_use';
+                    streamFinishReason = 'tool_use';
                   }
 
                   if (event.type === 'usage') {
@@ -477,7 +752,11 @@ export function registerMessagesRoute(
                     break;
                   }
 
-                  if (event.type === 'done') break;
+                  if (event.type === 'done') {
+                    if (event.finishReason === 'length') streamFinishReason = 'max_tokens';
+                    if (event.finishReason === 'tool_use') streamFinishReason = 'tool_use';
+                    break;
+                  }
                 }
               } catch (streamErr) {
 
@@ -504,16 +783,20 @@ export function registerMessagesRoute(
                 return;
               }
 
-
-              writeSSE(reply.raw, 'content_block_stop', {
-                type: 'content_block_stop',
-                index: 0,
-              });
+              if (currentBlockType === null) {
+                writeSSE(reply.raw, 'content_block_start', {
+                  type: 'content_block_start',
+                  index: blockIndex,
+                  content_block: { type: 'text', text: '' },
+                });
+                currentBlockType = 'text';
+              }
+              closeCurrentBlock();
 
 
               if (!writeSSE(reply.raw, 'message_delta', {
                 type: 'message_delta',
-                delta: { stop_reason: 'end_turn', stop_sequence: null },
+                delta: { stop_reason: streamFinishReason, stop_sequence: null },
                 usage: { output_tokens: streamUsage?.completionTokens ?? Math.ceil(totalContent.length / 4) },
               })) {
                 reply.raw.end();
@@ -573,6 +856,10 @@ export function registerMessagesRoute(
               clientKey,
               reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
               providerOverrides: route.providerOverrides,
+              extraBody: route.extraBody,
+              tools: normalized.data.tools,
+              toolChoice: normalized.data.toolChoice,
+              parallelToolCalls: normalized.data.parallelToolCalls,
             }),
           );
 
@@ -583,13 +870,79 @@ export function registerMessagesRoute(
           }
 
 
+          const responseContent: Array<Record<string, unknown>> = [];
+          if (content || !result.toolCalls?.length) {
+            responseContent.push({ type: 'text', text: content });
+          }
+          const rejectToolOutput = (message: string) => {
+            const latencyMs = Date.now() - startTime;
+            logRequest({
+              requestId,
+              apiKeyId,
+              modelAlias: body.model,
+              provider: route.provider,
+              actualModel: route.actualModel,
+              reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
+              status: 'error',
+              statusCode: 502,
+              latencyMs,
+              isStream: false,
+              errorMessage: message,
+            });
+            if (debugLogId) {
+              deps.debug.logComplete(debugLogId, {
+                requestId,
+                cliArgs: debugCapture?.cliArgs,
+                rawStdout: debugCapture?.stdout,
+                rawStderr: debugCapture?.stderr,
+                rawResponseText: debugCapture?.rawResponseText,
+                status: 'error',
+                latencyMs,
+                errorMessage: message,
+              });
+            }
+            deps.activeRequests.finish(requestId);
+            return reply.status(502).send(makeAnthropicError('api_error', message));
+          };
+          for (const toolCall of result.toolCalls ?? []) {
+            let input: unknown;
+            const argumentsJson = toolCall.function.arguments;
+            if (
+              typeof argumentsJson !== 'string'
+              || argumentsJson.length > v.maxMessageLength
+            ) {
+              return rejectToolOutput(
+                typeof argumentsJson === 'string'
+                  ? `Provider returned tool input longer than ${v.maxMessageLength} characters.`
+                  : `Provider returned invalid JSON arguments for tool "${toolCall.function.name}".`,
+              );
+            }
+            try {
+              input = JSON.parse(argumentsJson || '{}');
+            } catch {
+              return rejectToolOutput(
+                `Provider returned invalid JSON arguments for tool "${toolCall.function.name}".`,
+              );
+            }
+            responseContent.push({
+              type: 'tool_use',
+              id: toolCall.id,
+              name: toolCall.function.name,
+              input,
+            });
+          }
+
           const response = {
             id: messageId,
             type: 'message' as const,
             role: 'assistant' as const,
-            content: [{ type: 'text', text: content }],
+            content: responseContent,
             model: body.model,
-            stop_reason: toAnthropicStopReason(result.finishReason === 'error' ? 'stop' : result.finishReason),
+            stop_reason: result.finishReason === 'length'
+              ? 'max_tokens'
+              : result.toolCalls?.length
+              ? 'tool_use'
+              : toAnthropicStopReason(result.finishReason === 'error' ? 'stop' : result.finishReason),
             stop_sequence: null,
             usage: {
               input_tokens: result.usage.promptTokens,
@@ -657,6 +1010,7 @@ export function registerMessagesRoute(
           return reply.status(200).send(response);
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
+          lastErrorProvider = route.provider;
           const isTimeout = lastError.message.includes('timed out');
 
           const errLatency = Date.now() - startTime;
@@ -671,7 +1025,7 @@ export function registerMessagesRoute(
             statusCode: isTimeout ? 504 : 502,
             latencyMs: errLatency,
             isStream: body.stream ?? false,
-            errorMessage: lastError.message,
+            errorMessage: sanitizeProviderError(lastError.message),
           });
 
           if (debugLogId) {
@@ -684,7 +1038,7 @@ export function registerMessagesRoute(
               rawResponseText: debugCapture?.rawResponseText,
               status: isTimeout ? 'timeout' : 'error',
               latencyMs: errLatency,
-              errorMessage: lastError.message,
+              errorMessage: sanitizeProviderError(lastError.message),
             });
           }
 
@@ -701,11 +1055,19 @@ export function registerMessagesRoute(
       }
 
 
-      const isTimeout = lastError?.message.includes('timed out') ?? false;
-      const statusCode = isTimeout ? 504 : 502;
-      const errorType = isTimeout ? 'timeout_error' : 'api_error';
+      const failure = classifyProviderError(
+        lastError ?? 'Provider request failed.',
+        lastErrorProvider,
+      );
+      const errorType = failure.kind === 'timeout'
+        ? 'timeout_error'
+        : failure.kind === 'login_required' || failure.kind === 'login_expired'
+          ? 'authentication_error'
+          : 'api_error';
 
-      return reply.status(statusCode).send(makeAnthropicError(errorType, `All providers failed for model "${body.model}". Last error: ${sanitizeProviderError(lastError?.message ?? 'unknown')}`));
+      return reply.status(failure.statusCode).send(
+        makeAnthropicError(errorType, failure.message),
+      );
     },
   );
 }
