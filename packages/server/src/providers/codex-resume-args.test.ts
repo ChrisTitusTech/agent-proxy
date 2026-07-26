@@ -65,6 +65,57 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     expect(args).not.toContain('resume');
   });
 
+  it('disables the complete native tool surface for external tool selection', () => {
+    provider = new CodexProvider(baseConfig({
+      extra_args: ['--disable', 'shell_tool'],
+    }));
+    const args: string[] = (provider as any).buildArgs(baseOptions({
+      extraBody: { __agentProxyExternalToolSelection: true },
+    }));
+
+    const disabled = args.flatMap((arg, index) => (
+      arg === '--disable' ? [args[index + 1]] : []
+    ));
+    expect(disabled.filter((feature) => feature === 'shell_tool')).toHaveLength(1);
+    expect(disabled).toEqual(expect.arrayContaining([
+      'apply_patch_freeform',
+      'apply_patch_streaming_events',
+      'apps',
+      'browser_use',
+      'code_mode',
+      'code_mode_host',
+      'computer_use',
+      'image_generation',
+      'multi_agent',
+      'shell_tool',
+      'unified_exec',
+    ]));
+  });
+
+  it('rejects external tool selection in app-server mode', async () => {
+    provider = new CodexProvider(baseConfig());
+    (provider as unknown as { config: ProviderConfigYaml }).config.mode = 'app-server';
+    const options = baseOptions({
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'lookup',
+          parameters: { type: 'object' },
+        },
+      }],
+      toolChoice: 'required',
+    });
+
+    await expect(provider.execute(options)).rejects.toThrow(
+      'External tool selection is not supported in Codex app-server mode; use cli mode.',
+    );
+    await expect(
+      provider.executeStream(options)[Symbol.asyncIterator]().next(),
+    ).rejects.toThrow(
+      'External tool selection is not supported in Codex app-server mode; use cli mode.',
+    );
+  });
+
   it('builds Codex resume arguments', () => {
     provider = new CodexProvider(baseConfig());
     const args = (provider as any).buildArgs(baseOptions({

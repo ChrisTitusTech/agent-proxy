@@ -6,12 +6,16 @@ import { ClaudeSdkSessionManager } from './claude-sdk-session-manager.js';
 const mockMessages: Record<string, unknown>[] = [];
 let waitForAbort = false;
 let lastSdkAbortSignal: AbortSignal | undefined;
+let lastSdkOptions: Record<string, unknown> | undefined;
 let queryCount = 0;
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: async function* (params: { options?: { abortController?: AbortController } }) {
+  query: async function* (params: {
+    options?: { abortController?: AbortController } & Record<string, unknown>;
+  }) {
     queryCount += 1;
     lastSdkAbortSignal = params.options?.abortController?.signal;
+    lastSdkOptions = params.options;
     if (waitForAbort && lastSdkAbortSignal) {
       if (lastSdkAbortSignal.aborted) {
         throw new Error('aborted');
@@ -59,6 +63,7 @@ describe('claude-sdk-executor', () => {
     mockMessages.length = 0;
     waitForAbort = false;
     lastSdkAbortSignal = undefined;
+    lastSdkOptions = undefined;
     queryCount = 0;
   });
 
@@ -108,6 +113,25 @@ describe('claude-sdk-executor', () => {
         shutdownSignal: shutdownController.signal,
       })).rejects.toThrow('aborted');
       expect(lastSdkAbortSignal?.aborted).toBe(true);
+    });
+
+    it('disables all native SDK tools during external tool selection', async () => {
+      mockMessages.push({
+        type: 'result',
+        subtype: 'success',
+        session_id: 'external-tool-session',
+        is_error: false,
+        result: '{"content":"","tool_calls":[]}',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+
+      await executeSdk(createOptions({
+        extraBody: { __agentProxyExternalToolSelection: true },
+      }), createConfig({
+        allowed_tools: ['Bash', 'Write'],
+      }));
+
+      expect(lastSdkOptions?.tools).toEqual([]);
     });
 
     it('executes Claude SDK requests', async () => {

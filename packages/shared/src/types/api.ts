@@ -63,6 +63,7 @@ export interface ChatCompletionRequest {
 
   tools?: ChatCompletionTool[];
   tool_choice?: ToolChoice;
+  parallel_tool_calls?: boolean;
 
   reasoning_effort?: string;
 

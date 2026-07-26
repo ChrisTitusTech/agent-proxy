@@ -59,10 +59,22 @@ export function convertMessages(messages: ChatMessage[]): ConvertedPrompt {
     } else if (msg.role === 'user') {
       conversationParts.push(`<|user|> ${sanitizeDelimiters(content)}`);
     } else if (msg.role === 'assistant') {
-      conversationParts.push(`<|assistant|> ${sanitizeDelimiters(content)}`);
+      const toolCalls = (msg.tool_calls ?? []).map((call) => {
+        const name = typeof call?.function?.name === 'string' ? call.function.name : 'tool';
+        const id = typeof call?.id === 'string' ? call.id : '';
+        const args = typeof call?.function?.arguments === 'string'
+          ? call.function.arguments
+          : '';
+        return `[Tool call ${sanitizeDelimiters(name)} `
+          + `id=${sanitizeDelimiters(id)}] `
+          + sanitizeDelimiters(args);
+      });
+      conversationParts.push(
+        `<|assistant|> ${[sanitizeDelimiters(content), ...toolCalls].filter(Boolean).join('\n')}`,
+      );
     } else if (msg.role === 'tool') {
 
-      const toolName = msg.name ?? 'tool';
+      const toolName = msg.name ?? msg.tool_call_id ?? 'tool';
       conversationParts.push(`<|user|> [Tool result ${sanitizeDelimiters(toolName)}] ${sanitizeDelimiters(content)}`);
     } else if (msg.role === 'developer') {
 

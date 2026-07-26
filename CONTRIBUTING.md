@@ -19,11 +19,12 @@ npm ci
 npm run typecheck
 npm test
 npm run build
-for script in start.sh scripts/*.sh; do
-  bash -n "$script"
-done
-shellcheck start.sh scripts/*.sh
-shfmt -d start.sh scripts/*.sh
+bash -n start.sh
+find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+shellcheck start.sh
+find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+shfmt -d start.sh scripts/*.sh scripts/client-compat/runners/*.sh
+scripts/test-client-compat-self-test.sh
 scripts/test-linux-install.sh
 scripts/test-linux-service.sh
 scripts/test-release.sh

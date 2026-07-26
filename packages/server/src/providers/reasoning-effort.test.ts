@@ -58,6 +58,24 @@ describe('ClaudeProvider buildArgs — reasoning_effort', () => {
     const occurrences = args.filter((a) => a === '--effort').length;
     expect(occurrences).toBe(1);
   });
+
+  it('rejects configured native tools during external tool selection', () => {
+    const p = new ClaudeProvider(baseConfig({ extra_args: ['--tools', 'Write'] }));
+    expect(() => callBuildArgs(p, baseOptions({
+      extraBody: { __agentProxyExternalToolSelection: true },
+    }))).toThrow(/native tools to be disabled/);
+  });
+
+  it.each([
+    ['separate empty value', ['--tools', '']],
+    ['empty equals value', ['--tools=']],
+  ])('preserves one disabled native-tools flag for %s', (_label, extraArgs) => {
+    const p = new ClaudeProvider(baseConfig({ extra_args: extraArgs }));
+    const args = callBuildArgs(p, baseOptions({
+      extraBody: { __agentProxyExternalToolSelection: true },
+    }));
+    expect(args.filter((arg) => arg === '--tools' || arg === '--tools=')).toHaveLength(1);
+  });
 });
 
 describe('CodexProvider buildArgs — reasoning_effort', () => {

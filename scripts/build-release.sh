@@ -41,9 +41,62 @@ command -v tar >/dev/null || {
 	exit 1
 }
 
-VERSION=$(node -p "require('$PROJECT_DIR/package.json').version")
+VERSION=$(node -e '
+const { join } = require("node:path");
+process.stdout.write(require(join(process.argv[1], "package.json")).version);
+' "$PROJECT_DIR")
 GIT_REVISION=$(git -C "$PROJECT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf 'source')
 RELEASE_ID="${VERSION}-${GIT_REVISION}"
+if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain=v1 2>/dev/null)" ]]; then
+	WORKTREE_REVISION=$(
+		cd "$PROJECT_DIR"
+		{
+			printf 'status\0'
+			git status --porcelain=v1 -z --untracked-files=all
+			printf 'entries\0'
+			git ls-files --cached --others --exclude-standard -z |
+				LC_ALL=C sort -z |
+				while IFS= read -r -d '' path; do
+					printf 'path\0%s\0' "$path"
+					printf 'index\0'
+					git ls-files --stage -z -- "$path"
+					printf 'worktree\0'
+					if [[ -L "$path" ]]; then
+						mode=$(stat -c '%f' -- "$path") || {
+							printf 'Cannot read symlink mode for release fingerprint: %s\n' "$path" >&2
+							exit 1
+						}
+						printf 'symlink\0mode\0%s\0target\0' "$mode"
+						readlink -z -- "$path"
+					elif [[ -f "$path" ]]; then
+						mode=$(stat -c '%f' -- "$path") || {
+							printf 'Cannot read file mode for release fingerprint: %s\n' "$path" >&2
+							exit 1
+						}
+						printf 'file\0mode\0%s\0sha256\0' "$mode"
+						sha256sum -- "$path" | cut -d ' ' -f 1
+					elif [[ -d "$path" ]] &&
+						git ls-files --stage -- "$path" | grep -q '^160000 '; then
+						printf 'gitlink\0head\0'
+						git -C "$path" rev-parse HEAD 2>/dev/null || printf 'MISSING\n'
+						printf 'status\0'
+						git -C "$path" status --porcelain=v1 -z 2>/dev/null || true
+					elif [[ -e "$path" ]]; then
+						mode=$(stat -c '%f' -- "$path") || {
+							printf 'Cannot read special-file mode for release fingerprint: %s\n' "$path" >&2
+							exit 1
+						}
+						printf 'other\0mode\0%s\n' "$mode"
+					else
+						printf 'DELETED\n'
+					fi
+				done
+		} |
+			sha256sum |
+			cut -c1-12
+	)
+	RELEASE_ID="${RELEASE_ID}-dirty-${WORKTREE_REVISION}"
+fi
 ARCHIVE="$OUTPUT_DIR/agent-proxy-${RELEASE_ID}-linux-$(uname -m).tar.gz"
 STAGE_DIR=$(mktemp -d)
 trap 'rm -rf "$STAGE_DIR"' EXIT

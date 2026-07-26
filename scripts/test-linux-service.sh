@@ -121,6 +121,23 @@ stop_server() {
 }
 
 start_server
+curl --silent --show-error --fail --connect-timeout 5 --max-time 10 \
+	"http://127.0.0.1:$PORT/health" \
+	>"$TEST_DIR/health.json"
+HEALTH_FILE="$TEST_DIR/health.json" \
+	PROJECT_DIR="$PROJECT_DIR" \
+	node -e '
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const packageVersion = require(join(process.env.PROJECT_DIR, "package.json")).version;
+const health = JSON.parse(readFileSync(process.env.HEALTH_FILE, "utf8"));
+if (
+  health.status !== "ok"
+  || health.version !== packageVersion
+) {
+  throw new Error("Health response did not identify the running server version");
+}
+'
 node "$PROJECT_DIR/packages/server/dist/index.js" \
 	>"$TEST_DIR/conflicting-server.log" 2>&1 &
 CONFLICT_PID=$!

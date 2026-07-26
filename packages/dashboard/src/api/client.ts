@@ -396,6 +396,52 @@ export function testProvider(name: string) {
   });
 }
 
+export type ProviderLoginState =
+  | 'checking'
+  | 'authenticated'
+  | 'unauthenticated'
+  | 'waiting'
+  | 'failed'
+  | 'unavailable';
+
+export interface ProviderLoginStatus {
+  provider: 'claude' | 'codex' | 'grok';
+  state: ProviderLoginState;
+  authenticated: boolean;
+  verificationUri?: string;
+  userCode?: string;
+  requiresCodeInput?: boolean;
+  expiresAt?: string;
+  message: string;
+  lastCheckedAt: string;
+}
+
+export function fetchProviderLogins(force = false) {
+  return request<ProviderLoginStatus[]>(`/provider-logins${force ? '?refresh=1' : ''}`);
+}
+
+export function startProviderLogin(provider: ProviderLoginStatus['provider']) {
+  return request<ProviderLoginStatus>(`/provider-logins/${provider}/start`, {
+    method: 'POST',
+  });
+}
+
+export function submitProviderLoginCode(
+  provider: ProviderLoginStatus['provider'],
+  code: string,
+) {
+  return request<ProviderLoginStatus>(`/provider-logins/${provider}/code`, {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export function cancelProviderLogin(provider: ProviderLoginStatus['provider']) {
+  return request<ProviderLoginStatus>(`/provider-logins/${provider}`, {
+    method: 'DELETE',
+  });
+}
+
 
 export interface ChannelBridgeStatus {
   running: boolean;

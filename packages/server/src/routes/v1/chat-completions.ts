@@ -11,6 +11,10 @@ import { extractTextFromContent, isImagePart } from '../../utils/message-convert
 import { createRequestId, formatAsSSE } from '../../utils/stream-transformer.js';
 import { splitReasoning, ReasoningSplitter } from '../../utils/reasoning-splitter.js';
 import { extractClientKey } from '../../utils/client-key.js';
+import {
+  classifyProviderError,
+  sanitizeProviderError,
+} from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { ModelRouter } from '../../services/router.js';
 import type { QueueManager } from '../../services/queue.js';
@@ -22,7 +26,7 @@ import type { ResponseCache } from '../../services/cache.js';
 import type { DebugService } from '../../services/debug.js';
 import type { DebugCaptureInfo } from '@agent-proxy/shared';
 
-interface ChatCompletionDeps {
+export interface ChatCompletionDeps {
   router: ModelRouter;
   queue: QueueManager;
   rateLimiter: RateLimiter;
@@ -32,6 +36,84 @@ interface ChatCompletionDeps {
   activeRequests: ActiveRequestTracker;
   cache: ResponseCache;
   debug: DebugService;
+}
+
+function validateToolSelection(body: ChatCompletionRequest): {
+  message: string;
+  param: string;
+} | undefined {
+  if (body.tools !== undefined && !Array.isArray(body.tools)) {
+    return { message: 'tools must be an array.', param: 'tools' };
+  }
+  for (let index = 0; index < (body.tools?.length ?? 0); index++) {
+    const tool = body.tools![index];
+    if (
+      !tool
+      || tool.type !== 'function'
+      || !tool.function
+      || typeof tool.function.name !== 'string'
+      || !tool.function.name
+      || (
+        tool.function.description !== undefined
+        && typeof tool.function.description !== 'string'
+      )
+      || (
+        tool.function.parameters !== undefined
+        && (
+          typeof tool.function.parameters !== 'object'
+          || tool.function.parameters === null
+          || Array.isArray(tool.function.parameters)
+        )
+      )
+      || (
+        tool.function.strict !== undefined
+        && typeof tool.function.strict !== 'boolean'
+      )
+    ) {
+      return {
+        message: `Invalid tool definition at tools[${index}].`,
+        param: `tools[${index}]`,
+      };
+    }
+  }
+  if (
+    body.parallel_tool_calls !== undefined
+    && typeof body.parallel_tool_calls !== 'boolean'
+  ) {
+    return {
+      message: 'parallel_tool_calls must be a boolean.',
+      param: 'parallel_tool_calls',
+    };
+  }
+
+  const choice = body.tool_choice;
+  if (choice === undefined || choice === 'none' || choice === 'auto') {
+    return undefined;
+  }
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  if (choice === 'required') {
+    return tools.length > 0
+      ? undefined
+      : {
+        message: 'tool_choice requires at least one declared tool.',
+        param: 'tool_choice',
+      };
+  }
+  if (
+    !choice
+    || typeof choice !== 'object'
+    || choice.type !== 'function'
+    || typeof choice.function?.name !== 'string'
+    || !choice.function.name
+  ) {
+    return { message: 'tool_choice is invalid.', param: 'tool_choice' };
+  }
+  return tools.some((tool) => tool?.function?.name === choice.function.name)
+    ? undefined
+    : {
+      message: `tool_choice references undeclared tool "${choice.function.name}".`,
+      param: 'tool_choice',
+    };
 }
 
 
@@ -158,14 +240,6 @@ export function isToolsUnsupportedError(message: string): boolean {
 
 
 
-function sanitizeProviderError(message: string): string {
-  return message
-    .replace(/\/[\w/.@-]+/g, '[path]')
-    .replace(/at\s+\S+\s*\(.*?\)/g, '')
-    .trim()
-    .substring(0, 200);
-}
-
 function safeWrite(raw: NodeJS.WritableStream, data: string): boolean {
   try {
     if ((raw as unknown as Record<string, unknown>).destroyed || (raw as unknown as Record<string, unknown>).writableEnded) return false;
@@ -237,12 +311,45 @@ export function registerChatCompletionsRoute(
         msg.content = normalizedContent;
 
 
-        const textLength = extractTextFromContent(normalizedContent).length;
-        if (textLength > v.maxMessageLength) {
-          return reply.status(400).send(makeValidationError(`messages[${i}].content too long: ${textLength} chars. Maximum is ${v.maxMessageLength}.`, 'messages'));
+        let messageLength = extractTextFromContent(normalizedContent).length;
+        if (msg.tool_calls !== undefined && !Array.isArray(msg.tool_calls)) {
+          return reply.status(400).send(
+            makeValidationError(`messages[${i}].tool_calls must be an array.`, 'messages'),
+          );
+        }
+        for (let toolIndex = 0; toolIndex < (msg.tool_calls?.length ?? 0); toolIndex++) {
+          const call = msg.tool_calls![toolIndex];
+          if (
+            !call
+            || typeof call.id !== 'string'
+            || !call.id
+            || call.type !== 'function'
+            || !call.function
+            || typeof call.function.name !== 'string'
+            || !call.function.name
+            || typeof call.function.arguments !== 'string'
+          ) {
+            return reply.status(400).send(makeValidationError(
+              `Invalid tool call at messages[${i}].tool_calls[${toolIndex}].`,
+              'messages',
+            ));
+          }
+          if (call.function.arguments.length > v.maxMessageLength) {
+            return reply.status(400).send(makeValidationError(
+              `messages[${i}].tool_calls[${toolIndex}].function.arguments too long: `
+              + `${call.function.arguments.length} chars. Maximum is ${v.maxMessageLength}.`,
+              'messages',
+            ));
+          }
+          messageLength += call.id.length
+            + call.function.name.length
+            + call.function.arguments.length;
+        }
+        if (messageLength > v.maxMessageLength) {
+          return reply.status(400).send(makeValidationError(`messages[${i}] too long: ${messageLength} chars. Maximum is ${v.maxMessageLength}.`, 'messages'));
         }
 
-        totalPromptLength += textLength;
+        totalPromptLength += messageLength;
       }
 
 
@@ -253,6 +360,12 @@ export function registerChatCompletionsRoute(
 
       body.model = sanitizeString(body.model);
 
+      const toolSelectionError = validateToolSelection(body);
+      if (toolSelectionError) {
+        return reply.status(400).send(
+          makeValidationError(toolSelectionError.message, toolSelectionError.param),
+        );
+      }
 
       const unsupportedParams: string[] = [];
       if (body.temperature != null) unsupportedParams.push('temperature');
@@ -304,7 +417,7 @@ export function registerChatCompletionsRoute(
       const clientKey = extractClientKey(request, apiKeyId);
 
 
-      const requestHash = !body.stream
+      const requestHash = !body.stream && !body.tools?.length
         ? deps.cache.generateHash(body.model, body.messages)
         : undefined;
 
@@ -355,6 +468,7 @@ export function registerChatCompletionsRoute(
 
 
       let lastError: Error | null = null;
+      let lastErrorProvider: string | undefined;
 
       let rateLimitRetryAfter: number | null = null;
 
@@ -362,6 +476,7 @@ export function registerChatCompletionsRoute(
         const healthy = await deps.healthChecker.isHealthy(route.provider);
         if (!healthy) {
           lastError = new Error(`Provider ${route.provider} is unhealthy`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
@@ -370,12 +485,14 @@ export function registerChatCompletionsRoute(
         if (!provRate.allowed) {
           rateLimitRetryAfter = provRate.retryAfterSeconds ?? 30;
           lastError = new Error(`Provider ${route.provider} rate limit exceeded`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
         const provider = deps.registry.get(route.provider);
         if (!provider) {
           lastError = new Error(`Provider ${route.provider} not available`);
+          lastErrorProvider = route.provider;
           continue;
         }
 
@@ -476,6 +593,7 @@ export function registerChatCompletionsRoute(
               extraBody: route.extraBody,
               tools: body.tools,
               toolChoice: body.tool_choice,
+              parallelToolCalls: body.parallel_tool_calls,
             });
 
 
@@ -630,6 +748,7 @@ export function registerChatCompletionsRoute(
               extraBody: route.extraBody,
               tools: body.tools,
               toolChoice: body.tool_choice,
+              parallelToolCalls: body.parallel_tool_calls,
             }),
           );
 
@@ -743,6 +862,7 @@ export function registerChatCompletionsRoute(
           return reply.status(200).send(response);
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
+          lastErrorProvider = route.provider;
           const isTimeout = lastError.message.includes('timed out');
 
           const errLatency = Date.now() - startTime;
@@ -757,7 +877,7 @@ export function registerChatCompletionsRoute(
             statusCode: isTimeout ? 504 : 502,
             latencyMs: errLatency,
             isStream: body.stream ?? false,
-            errorMessage: lastError.message,
+            errorMessage: sanitizeProviderError(lastError.message),
           });
 
           if (debugLogId) {
@@ -773,7 +893,7 @@ export function registerChatCompletionsRoute(
               rawResponseText: debugCapture?.rawResponseText,
               status: isTimeout ? 'timeout' : 'error',
               latencyMs: errLatency,
-              errorMessage: lastError.message,
+              errorMessage: sanitizeProviderError(lastError.message),
             });
           }
 
@@ -811,15 +931,17 @@ export function registerChatCompletionsRoute(
       }
 
 
-      const isTimeout = lastError?.message.includes('timed out') ?? false;
-      const statusCode = isTimeout ? 504 : 502;
+      const failure = classifyProviderError(
+        lastError ?? 'Provider request failed.',
+        lastErrorProvider,
+      );
 
-      return reply.status(statusCode).send({
+      return reply.status(failure.statusCode).send({
         error: {
-          message: `All providers failed for model "${body.model}". Last error: ${sanitizeProviderError(lastError?.message ?? 'unknown')}`,
-          type: isTimeout ? 'timeout_error' : 'provider_error',
+          message: failure.message,
+          type: failure.kind === 'timeout' ? 'timeout_error' : 'provider_error',
           param: null,
-          code: isTimeout ? 'timeout' : 'provider_error',
+          code: failure.code,
         },
       });
     },

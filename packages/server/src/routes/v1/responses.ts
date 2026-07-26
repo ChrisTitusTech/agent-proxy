@@ -10,6 +10,10 @@ import type {
   ValidationConfig,
 } from '@agent-proxy/shared';
 import { extractClientKey } from '../../utils/client-key.js';
+import {
+  classifyProviderError,
+  sanitizeProviderError,
+} from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { LogEntry } from '../../middleware/request-logger.js';
 import type { ModelRouter, ResolvedRoute } from '../../services/router.js';
@@ -50,6 +54,15 @@ interface ResponseFunctionCallOutput {
   arguments: string;
 }
 
+interface ResponseCustomToolCallOutput {
+  id: string;
+  type: 'custom_tool_call';
+  status: 'in_progress' | 'completed' | 'incomplete';
+  call_id: string;
+  name: string;
+  input: string;
+}
+
 interface ResponseReasoningOutput {
   id: string;
   type: 'reasoning';
@@ -59,6 +72,7 @@ interface ResponseReasoningOutput {
 type ResponseOutputItem =
   | ResponseMessageOutput
   | ResponseFunctionCallOutput
+  | ResponseCustomToolCallOutput
   | ResponseReasoningOutput;
 
 interface ResponsesResult {
@@ -143,16 +157,8 @@ function createResponseId(): string {
   return `resp_${nanoid(24)}`;
 }
 
-function createItemId(prefix: 'msg' | 'fc' | 'rs'): string {
+function createItemId(prefix: 'msg' | 'fc' | 'ctc' | 'rs'): string {
   return `${prefix}_${nanoid(24)}`;
-}
-
-function safeProviderError(message: string): string {
-  return message
-    .replace(/\/[\w/.@-]+/g, '[path]')
-    .replace(/at\s+\S+\s*\(.*?\)/g, '')
-    .trim()
-    .slice(0, 200);
 }
 
 function isTimeoutError(error: Error): boolean {
@@ -222,6 +228,7 @@ function outputItemsFromResult(
   incomplete: boolean,
   maxResponseLength: number,
   includeReasoning: boolean,
+  customToolNames: Set<string>,
 ): ResponseOutputItem[] {
   const status = incomplete ? 'incomplete' : 'completed';
   const output: ResponseOutputItem[] = [];
@@ -253,14 +260,25 @@ function outputItemsFromResult(
   }
 
   for (const toolCall of result.toolCalls ?? []) {
-    output.push({
-      id: createItemId('fc'),
-      type: 'function_call',
-      status,
-      call_id: toolCall.id,
-      name: toolCall.function.name,
-      arguments: toolCall.function.arguments,
-    });
+    if (customToolNames.has(toolCall.function.name)) {
+      output.push({
+        id: createItemId('ctc'),
+        type: 'custom_tool_call',
+        status,
+        call_id: toolCall.id,
+        name: toolCall.function.name,
+        input: customToolInput(toolCall.function.arguments),
+      });
+    } else {
+      output.push({
+        id: createItemId('fc'),
+        type: 'function_call',
+        status,
+        call_id: toolCall.id,
+        name: toolCall.function.name,
+        arguments: toolCall.function.arguments,
+      });
+    }
   }
 
   return output;
@@ -273,15 +291,18 @@ function outputMessages(
     (item): item is ResponseMessageOutput => item.type === 'message',
   );
   const toolCalls = output
-    .filter((item): item is ResponseFunctionCallOutput => (
-      item.type === 'function_call' && item.status === 'completed'
+    .filter((item): item is ResponseFunctionCallOutput | ResponseCustomToolCallOutput => (
+      (item.type === 'function_call' || item.type === 'custom_tool_call')
+      && item.status === 'completed'
     ))
     .map<ChatMessageToolCall>((item) => ({
       id: item.call_id,
       type: 'function',
       function: {
         name: item.name,
-        arguments: item.arguments,
+        arguments: item.type === 'custom_tool_call'
+          ? JSON.stringify({ input: item.input })
+          : item.arguments,
       },
     }));
 
@@ -291,6 +312,15 @@ function outputMessages(
     content: message?.content.map((part) => part.text).join('') ?? '',
     ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
   }];
+}
+
+function customToolInput(argumentsText: string): string {
+  try {
+    const parsed = JSON.parse(argumentsText) as { input?: unknown };
+    return typeof parsed.input === 'string' ? parsed.input : argumentsText;
+  } catch {
+    return argumentsText;
+  }
 }
 
 function writeSSE(reply: FastifyReply, event: string, data: unknown): boolean {
@@ -413,6 +443,8 @@ function prepareContinuation(
       if (
         outstandingCallIds.size > 0
         && item.type !== 'function_call_output'
+        && item.type !== 'custom_tool_call_output'
+        && item.type !== 'additional_tools'
       ) {
         return {
           success: false,
@@ -422,7 +454,7 @@ function prepareContinuation(
           param: `input[${index}]`,
         };
       }
-      if (item.type === 'function_call') {
+      if (item.type === 'function_call' || item.type === 'custom_tool_call') {
         if (outstandingCallIds.has(item.call_id)) {
           return {
             success: false,
@@ -436,7 +468,7 @@ function prepareContinuation(
         continue;
       }
       if (
-        item.type === 'function_call_output'
+        (item.type === 'function_call_output' || item.type === 'custom_tool_call_output')
         && !outstandingCallIds.delete(item.call_id)
       ) {
         return {
@@ -509,11 +541,12 @@ function prepareContinuation(
 function validateTools(
   body: ResponsesRequest,
 ): { message: string; param: string; code: string } | null {
+  const declaredNames = declaredToolNames(body);
   if (
     body.tool_choice
     && body.tool_choice !== 'none'
     && body.tool_choice !== 'auto'
-    && !body.tools?.length
+    && declaredNames.size === 0
   ) {
     return {
       message: 'tool_choice requires at least one function tool.',
@@ -523,8 +556,7 @@ function validateTools(
   }
   if (typeof body.tool_choice === 'object') {
     const selectedToolName = body.tool_choice.name;
-    const exists = body.tools?.some((tool) => tool.name === selectedToolName);
-    if (!exists) {
+    if (!declaredNames.has(selectedToolName)) {
       return {
         message: `Tool '${selectedToolName}' was not found in tools.`,
         param: 'tool_choice.name',
@@ -533,6 +565,30 @@ function validateTools(
     }
   }
   return null;
+}
+
+function declaredToolNames(body: ResponsesRequest): Set<string> {
+  const names = new Set(body.tools?.map((tool) => tool.name) ?? []);
+  if (typeof body.input === 'string') return names;
+  for (const item of body.input) {
+    if (item.type !== 'additional_tools') continue;
+    for (const tool of item.tools) {
+      if (tool.type !== 'namespace') names.add(tool.name);
+    }
+  }
+  return names;
+}
+
+function declaredCustomToolNames(body: ResponsesRequest): Set<string> {
+  const names = new Set<string>();
+  if (typeof body.input === 'string') return names;
+  for (const item of body.input) {
+    if (item.type !== 'additional_tools') continue;
+    for (const tool of item.tools) {
+      if (tool.type === 'custom') names.add(tool.name);
+    }
+  }
+  return names;
 }
 
 async function resolveAvailableRoute(
@@ -598,7 +654,7 @@ function validateReturnedToolCalls(
     throw new Error('Provider did not return a required function call.');
   }
 
-  const declaredNames = new Set(body.tools?.map((tool) => tool.name) ?? []);
+  const declaredNames = declaredToolNames(body);
   if (
     toolCalls.some(
       (call) => !call.function.name || !declaredNames.has(call.function.name),
@@ -657,8 +713,9 @@ function saveResponseContext(
     ...context.messages.slice(inputStart),
   ];
   const newCallIds = output
-    .filter((item): item is ResponseFunctionCallOutput => (
-      item.type === 'function_call' && item.status === 'completed'
+    .filter((item): item is ResponseFunctionCallOutput | ResponseCustomToolCallOutput => (
+      (item.type === 'function_call' || item.type === 'custom_tool_call')
+      && item.status === 'completed'
     ))
     .map((item) => item.call_id);
   store.set({
@@ -712,6 +769,7 @@ async function executeNonStreaming(
   signal: AbortSignal,
 ) {
   let lastError: Error | null = null;
+  let lastErrorProvider: string | undefined;
   let retryAfter: number | null = null;
 
   for (const route of routes) {
@@ -769,6 +827,7 @@ async function executeNonStreaming(
         incomplete,
         deps.validation.maxResponseLength,
         includeReasoning,
+        declaredCustomToolNames(context.body),
       );
       response.usage = usageToResponses(
         result.usage,
@@ -788,8 +847,16 @@ async function executeNonStreaming(
       return reply.status(200).send(response);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      lastErrorProvider = route.provider;
       const timeout = isTimeoutError(lastError);
-      logExecution(deps, context, route, timeout ? 'timeout' : 'error', undefined, lastError.message);
+      logExecution(
+        deps,
+        context,
+        route,
+        timeout ? 'timeout' : 'error',
+        undefined,
+        sanitizeProviderError(lastError.message),
+      );
       await deps.healthChecker.onRequestFailure(route.provider);
       if (isCancellationError(lastError)) break;
     } finally {
@@ -808,16 +875,16 @@ async function executeNonStreaming(
     );
   }
 
-  const timeout = lastError ? isTimeoutError(lastError) : false;
-  const cancelled = lastError ? isCancellationError(lastError) : false;
+  const failure = classifyProviderError(
+    lastError ?? 'Provider request failed.',
+    lastErrorProvider,
+  );
   return responseError(
     reply,
-    timeout ? 504 : cancelled ? 499 : 502,
-    cancelled
-      ? 'Request was cancelled.'
-      : `All providers failed for model '${context.body.model}'. Last error: ${safeProviderError(lastError?.message ?? 'unknown')}`,
+    failure.statusCode,
+    failure.message,
     null,
-    timeout ? 'timeout' : cancelled ? 'request_cancelled' : 'provider_error',
+    failure.code,
   );
 }
 
@@ -825,7 +892,8 @@ interface StreamState {
   output: ResponseOutputItem[];
   message?: ResponseMessageOutput;
   reasoning?: ResponseReasoningOutput;
-  functionCalls: Map<string, ResponseFunctionCallOutput>;
+  functionCalls: Map<string, ResponseFunctionCallOutput | ResponseCustomToolCallOutput>;
+  rawCustomToolInputs: Map<string, string>;
   emittedFunctionCalls: Set<string>;
   usage: TokenUsage;
   finishReason: 'stop' | 'length' | 'tool_use' | 'error';
@@ -837,12 +905,30 @@ function initialStreamState(): StreamState {
   return {
     output: [],
     functionCalls: new Map(),
+    rawCustomToolInputs: new Map(),
     emittedFunctionCalls: new Set(),
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     finishReason: 'stop',
     responseLengthExceeded: false,
     terminal: false,
   };
+}
+
+function streamedToolInput(
+  call: ResponseFunctionCallOutput | ResponseCustomToolCallOutput,
+): string {
+  return call.type === 'custom_tool_call' ? call.input : call.arguments;
+}
+
+function appendStreamedToolInput(
+  call: ResponseFunctionCallOutput | ResponseCustomToolCallOutput,
+  delta: string,
+): void {
+  if (call.type === 'custom_tool_call') {
+    call.input += delta;
+  } else {
+    call.arguments += delta;
+  }
 }
 
 function ensureMessage(
@@ -977,14 +1063,23 @@ function consumeStreamEvent(
           `Provider returned function arguments longer than ${maxMessageLength} characters.`,
         );
       }
-      call = {
-        id: createItemId('fc'),
-        type: 'function_call',
-        status: 'in_progress',
-        call_id: event.toolCallId,
-        name: event.toolName,
-        arguments: '',
-      };
+      call = declaredCustomToolNames(body).has(event.toolName)
+        ? {
+          id: createItemId('ctc'),
+          type: 'custom_tool_call',
+          status: 'in_progress',
+          call_id: event.toolCallId,
+          name: event.toolName,
+          input: '',
+        }
+        : {
+          id: createItemId('fc'),
+          type: 'function_call',
+          status: 'in_progress',
+          call_id: event.toolCallId,
+          name: event.toolName,
+          arguments: '',
+        };
       state.functionCalls.set(key, call);
     } else {
       if (
@@ -1000,12 +1095,23 @@ function consumeStreamEvent(
       if (event.toolCallId) call.call_id = event.toolCallId;
       if (event.toolName) call.name = event.toolName;
     }
-    if (call.arguments.length + event.input.length > maxMessageLength) {
+    const existingInputLength = call.type === 'custom_tool_call'
+      ? (state.rawCustomToolInputs.get(key)?.length ?? 0)
+      : streamedToolInput(call).length;
+    if (existingInputLength + event.input.length > maxMessageLength) {
       throw new Error(
         `Provider returned function arguments longer than ${maxMessageLength} characters.`,
       );
     }
-    call.arguments += event.input;
+    const normalizedInput = call.type === 'custom_tool_call' ? '' : event.input;
+    if (call.type === 'custom_tool_call') {
+      state.rawCustomToolInputs.set(
+        key,
+        `${state.rawCustomToolInputs.get(key) ?? ''}${event.input}`,
+      );
+    } else {
+      appendStreamedToolInput(call, normalizedInput);
+    }
 
     if (call.call_id && !call.call_id.trim()) {
       throw new Error('Provider returned a function call without an ID.');
@@ -1013,7 +1119,7 @@ function consumeStreamEvent(
     const ready = Boolean(call.call_id.trim() && call.name);
     if (!ready) return;
 
-    const declaredNames = new Set(body.tools?.map((tool) => tool.name) ?? []);
+    const declaredNames = declaredToolNames(body);
     if (!declaredNames.has(call.name)) {
       throw new Error('Provider returned a function call for an undeclared tool.');
     }
@@ -1043,17 +1149,21 @@ function consumeStreamEvent(
       writeSSE(reply, 'response.output_item.added', {
         type: 'response.output_item.added',
         output_index: state.output.length - 1,
-        item: { ...call, arguments: '' },
+        item: call.type === 'custom_tool_call'
+          ? { ...call, input: '' }
+          : { ...call, arguments: '' },
       });
-      if (!call.arguments) return;
+      if (!streamedToolInput(call)) return;
     } else if (!event.input) {
       return;
     }
-    writeSSE(reply, 'response.function_call_arguments.delta', {
-      type: 'response.function_call_arguments.delta',
+    if (call.type === 'custom_tool_call') return;
+    const deltaEvent = 'response.function_call_arguments.delta';
+    writeSSE(reply, deltaEvent, {
+      type: deltaEvent,
       item_id: call.id,
       output_index: state.output.indexOf(call),
-      delta: wasEmitted ? event.input : call.arguments,
+      delta: wasEmitted ? normalizedInput : streamedToolInput(call),
     });
     return;
   }
@@ -1121,14 +1231,32 @@ function finishStreamItems(reply: FastifyReply, state: StreamState): void {
     });
   }
 
-  for (const call of state.functionCalls.values()) {
+  for (const [key, call] of state.functionCalls) {
     const outputIndex = state.output.indexOf(call);
-    writeSSE(reply, 'response.function_call_arguments.done', {
-      type: 'response.function_call_arguments.done',
-      item_id: call.id,
-      output_index: outputIndex,
-      arguments: call.arguments,
-    });
+    if (call.type === 'custom_tool_call') {
+      call.input = customToolInput(state.rawCustomToolInputs.get(key) ?? '');
+      if (call.input) {
+        writeSSE(reply, 'response.custom_tool_call_input.delta', {
+          type: 'response.custom_tool_call_input.delta',
+          item_id: call.id,
+          output_index: outputIndex,
+          delta: call.input,
+        });
+      }
+      writeSSE(reply, 'response.custom_tool_call_input.done', {
+        type: 'response.custom_tool_call_input.done',
+        item_id: call.id,
+        output_index: outputIndex,
+        input: call.input,
+      });
+    } else {
+      writeSSE(reply, 'response.function_call_arguments.done', {
+        type: 'response.function_call_arguments.done',
+        item_id: call.id,
+        output_index: outputIndex,
+        arguments: call.arguments,
+      });
+    }
     call.status = state.finishReason === 'length' ? 'incomplete' : 'completed';
     writeSSE(reply, 'response.output_item.done', {
       type: 'response.output_item.done',
@@ -1228,7 +1356,12 @@ async function executeStreaming(
       context.body,
       [...state.functionCalls.values()].map((call) => ({
         id: call.call_id,
-        function: { name: call.name, arguments: call.arguments },
+        function: {
+          name: call.name,
+          arguments: call.type === 'custom_tool_call'
+            ? JSON.stringify({ input: call.input })
+            : call.arguments,
+        },
       })),
       deps.validation.maxMessageLength,
     );
@@ -1268,13 +1401,10 @@ async function executeStreaming(
         createdAt,
       );
       failed.output = state.output;
+      const classified = classifyProviderError(failure, route.provider);
       failed.error = {
-        code: isTimeoutError(failure)
-          ? 'timeout'
-          : isCancellationError(failure)
-            ? 'request_cancelled'
-            : 'provider_error',
-        message: safeProviderError(failure.message),
+        code: classified.code,
+        message: classified.message,
       };
       writeSSE(reply, 'response.failed', {
         type: 'response.failed',
@@ -1288,7 +1418,7 @@ async function executeStreaming(
       route,
       isTimeoutError(failure) ? 'timeout' : 'error',
       undefined,
-      failure.message,
+      sanitizeProviderError(failure.message),
     );
     await deps.healthChecker.onRequestFailure(route.provider);
   } finally {

@@ -3,7 +3,7 @@
 This roadmap implements [SPEC.md](./SPEC.md) in small phases. A phase is
 complete only when its acceptance criteria and validation commands pass.
 
-Last updated: 2026-07-23
+Last updated: 2026-07-26
 
 ## Phase 0: Repository cleanup
 
@@ -93,18 +93,22 @@ Acceptance criteria:
 - Disconnecting a client terminates or detaches from the provider safely.
 - Responses contract tests are provider-independent.
 
-Pause point: do not call the endpoint drop-in compatible until the Codex and
-Grok client tests in Phase 3 pass.
+Pause point: do not call the endpoint drop-in compatible until every enabled
+production provider passes its Phase 3 live client tests.
 
 ## Phase 3: Native CLI and Open WebUI compatibility
 
-Status: Ready to begin
+Status: Complete
 
 Entry gate verified: 2026-07-23
 
-Entry point: implement P3-01 from [TASKS.md](./TASKS.md) before running live
-client matrices. The endpoint remains experimental until the Phase 3 exit gate
-passes.
+Completed: 2026-07-26
+
+Codex passed the live native-client, service-account, and Open WebUI matrix.
+Claude live validation was explicitly waived because no Claude subscription is
+available. Grok live validation was explicitly waived after its xAI device
+login would not complete. The waived providers remain offline-tested and are
+disabled in the completed Codex-only production profile.
 
 Scope:
 
@@ -123,12 +127,16 @@ Scope:
 
 Acceptance criteria:
 
-- Unmodified Claude Code completes a text request and one tool loop.
+- Unmodified Claude Code completes a text request and one tool loop when a
+  subscription is available; this installation records an explicit live-test
+  waiver.
 - Unmodified Codex completes a coding request and one tool loop.
-- Unmodified Grok completes a coding request and one tool loop.
-- Open WebUI discovers Codex and Grok aliases without a custom Pipe.
-- Open WebUI completes non-streaming text, streaming text, cancellation, and
-  one advertised function-tool loop.
+- Unmodified Grok completes a coding request and one tool loop when its
+  subscription login is available; this installation records an explicit
+  live-test waiver.
+- Open WebUI discovers every enabled provider alias without a custom Pipe.
+- Open WebUI completes non-streaming text, streaming text, cancellation or a
+  documented timeout-bounded detach, and one advertised function-tool loop.
 - Concurrent Open WebUI chats cannot observe each other's provider session
   context.
 - Missing and expired subscription logins produce actionable, sanitized

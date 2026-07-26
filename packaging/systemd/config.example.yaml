@@ -22,11 +22,27 @@ providers:
     enabled: false
     cli_path: "claude"
     default_model: "claude-sonnet-5"
+    max_concurrent: 1
+    timeout_ms: 300000
+    extra_args:
+      - "--no-session-persistence"
+      - "--setting-sources"
+      - ""
+      - "--tools"
+      - ""
   codex:
     enabled: false
     cli_path: "codex"
     default_model: "gpt-5.6-sol"
     max_concurrent: 1
+    timeout_ms: 300000
+    extra_args:
+      - "--skip-git-repo-check"
+      - "--sandbox"
+      - "read-only"
+    cli_options:
+      ephemeral: true
+      enable_session_reuse: false
   agy:
     enabled: false
     cli_path: "agy"
@@ -36,6 +52,13 @@ providers:
     cli_path: "grok"
     default_model: "grok-4.5"
     max_concurrent: 1
+    timeout_ms: 300000
+    extra_args:
+      - "--no-memory"
+      - "--no-subagents"
+      - "--disable-web-search"
+      - "--tools"
+      - ""
 
 responses:
   retention_ttl_ms: 1800000

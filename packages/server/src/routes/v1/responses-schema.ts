@@ -47,10 +47,55 @@ const responseFunctionCallOutputSchema = z.object({
   status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
 }).strict();
 
+const responseCustomToolCallSchema = z.object({
+  type: z.literal('custom_tool_call'),
+  id: z.string().min(1).optional(),
+  call_id: z.string().min(1),
+  name: z.string().min(1),
+  input: z.string(),
+  status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
+}).strict();
+
+const responseCustomToolCallOutputSchema = z.object({
+  type: z.literal('custom_tool_call_output'),
+  id: z.string().min(1).optional(),
+  call_id: z.string().min(1),
+  output: z.unknown(),
+  status: z.enum(['in_progress', 'completed', 'incomplete']).optional(),
+}).strict();
+
+const responseAdditionalFunctionToolSchema = z.object({
+  type: z.literal('function'),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  strict: z.boolean().optional(),
+}).passthrough();
+
+const responseAdditionalToolsSchema = z.object({
+  type: z.literal('additional_tools'),
+  role: z.literal('developer'),
+  tools: z.array(z.union([
+    responseAdditionalFunctionToolSchema,
+    z.object({
+      type: z.literal('custom'),
+      name: z.string().min(1),
+      description: z.string().optional(),
+    }).passthrough(),
+    z.object({
+      type: z.literal('namespace'),
+      name: z.string().min(1),
+    }).passthrough(),
+  ])),
+}).strict();
+
 const responseInputItemSchema = z.union([
   responseMessageSchema,
   responseFunctionCallSchema,
   responseFunctionCallOutputSchema,
+  responseCustomToolCallSchema,
+  responseCustomToolCallOutputSchema,
+  responseAdditionalToolsSchema,
 ]);
 
 const responseFunctionToolSchema = z.object({
@@ -72,6 +117,7 @@ const responseToolChoiceSchema = z.union([
 const responseReasoningSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   summary: z.enum(['auto', 'concise', 'detailed']).optional(),
+  context: z.enum(['all_turns', 'this_turn']).optional(),
 }).strict();
 
 const responsesRequestSchema = z.object({
@@ -91,6 +137,12 @@ const responsesRequestSchema = z.object({
   metadata: z.record(z.string(), z.string()).optional(),
   parallel_tool_calls: z.boolean().optional(),
   temperature: z.number().min(0).max(2).optional(),
+  include: z.array(z.string()).optional(),
+  prompt_cache_key: z.string().min(1).optional(),
+  text: z.object({
+    verbosity: z.enum(['low', 'medium', 'high']).optional(),
+  }).strict().optional(),
+  client_metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
 export type ResponsesRequest = z.infer<typeof responsesRequestSchema>;
@@ -270,9 +322,16 @@ export function normalizeResponsesInput(
 
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
-    if (item.type === 'function_call') {
+    if (item.type === 'additional_tools') {
+      continue;
+    }
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
       const name = item.name.replace(/\x00/g, '');
-      const argumentsText = item.arguments.replace(/\x00/g, '');
+      const argumentsText = (
+        item.type === 'custom_tool_call'
+          ? JSON.stringify({ input: item.input })
+          : item.arguments
+      ).replace(/\x00/g, '');
       if (argumentsText.length > validation.maxMessageLength) {
         return {
           success: false,
@@ -299,7 +358,10 @@ export function normalizeResponsesInput(
       continue;
     }
 
-    if (item.type === 'function_call_output') {
+    if (
+      item.type === 'function_call_output'
+      || item.type === 'custom_tool_call_output'
+    ) {
       const output = stringifyOutput(item.output).replace(/\x00/g, '');
       if (output.length > validation.maxMessageLength) {
         return {
@@ -350,7 +412,7 @@ export function normalizeResponsesInput(
     };
   }
 
-  const tools = request.tools?.map<ChatCompletionTool>((tool) => ({
+  const requestTools = request.tools?.map<ChatCompletionTool>((tool) => ({
     type: 'function',
     function: {
       name: tool.name,
@@ -359,6 +421,37 @@ export function normalizeResponsesInput(
       ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
     },
   }));
+  const additionalTools = typeof request.input === 'string'
+    ? []
+    : request.input.flatMap((item): ChatCompletionTool[] => {
+        if (item.type !== 'additional_tools') return [];
+        return item.tools.flatMap((tool): ChatCompletionTool[] => {
+          if (tool.type === 'namespace') return [];
+          const parameters = tool.type === 'custom'
+            ? {
+              type: 'object',
+              properties: { input: { type: 'string' } },
+              required: ['input'],
+              additionalProperties: false,
+              ...(tool.format !== undefined
+                ? { 'x-agent-proxy-custom-tool-format': tool.format }
+                : {}),
+            }
+            : tool.parameters;
+          return [{
+            type: 'function',
+            function: {
+              name: tool.name,
+              ...(tool.description !== undefined ? { description: tool.description } : {}),
+              ...(parameters !== undefined ? { parameters } : {}),
+              ...(tool.type === 'function' && tool.strict !== undefined
+                ? { strict: tool.strict }
+                : {}),
+            },
+          }];
+        });
+      });
+  const tools = [...(requestTools ?? []), ...additionalTools];
 
   const toolChoice: ToolChoice | undefined = typeof request.tool_choice === 'object'
     ? {
@@ -372,7 +465,7 @@ export function normalizeResponsesInput(
     data: {
       instructionMessages,
       inputMessages,
-      tools,
+      ...(tools.length > 0 ? { tools } : {}),
       toolChoice,
       promptLength,
     },
