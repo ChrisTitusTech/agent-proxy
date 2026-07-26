@@ -52,8 +52,9 @@ parameters. Protocol fixtures must be UTF-8 text; binary artifacts are
 rejected.
 
 Do not place account credentials in client arguments, filenames, fixture
-filenames, or the base URL. `AGENT_PROXY_BASE_URL` must not contain credentials,
-a query, or a fragment.
+filenames, or the base URL. `AGENT_PROXY_BASE_URL` must be a bare HTTP(S)
+origin: no credentials, no path other than `/` (`/v1` is rejected), no query,
+and no fragment. The runners append the required API paths themselves.
 
 ## Runner contract
 

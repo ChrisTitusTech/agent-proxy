@@ -87,6 +87,10 @@ fi
 export AGENT_PROXY_BASE_URL
 if [[ ",$CASES," == *,cancel,* || ",$CASES," == *,accounting,* ]] &&
 	[[ -z ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+	[[ "$REQUIRE_LIVE" == false ]] && {
+		printf 'SKIP AGENT_PROXY_ADMIN_TOKEN is required for cancel and accounting cases.\n'
+		exit 0
+	}
 	printf 'FAIL AGENT_PROXY_ADMIN_TOKEN is required for cancel and accounting cases.\n' >&2
 	exit 1
 fi

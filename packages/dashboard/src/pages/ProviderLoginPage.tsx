@@ -27,7 +27,9 @@ export default function ProviderLoginPage() {
   const { t } = useTranslation();
   const [statuses, setStatuses] = useState<ProviderLoginStatus[]>([]);
   const [loading, setLoading] = useState(true);
-  const [action, setAction] = useState<string | null>(null);
+  const [pendingProviders, setPendingProviders] = useState<
+    Set<ProviderLoginStatus['provider']>
+  >(new Set());
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [authorizationCodes, setAuthorizationCodes] = useState<Record<string, string>>({});
@@ -51,8 +53,20 @@ export default function ProviderLoginPage() {
     return () => window.clearInterval(timer);
   }, [load]);
 
+  const setProviderPending = (
+    provider: ProviderLoginStatus['provider'],
+    pending: boolean,
+  ) => {
+    setPendingProviders((current) => {
+      const next = new Set(current);
+      if (pending) next.add(provider);
+      else next.delete(provider);
+      return next;
+    });
+  };
+
   const beginLogin = async (provider: ProviderLoginStatus['provider']) => {
-    setAction(provider);
+    setProviderPending(provider, true);
     setError(null);
     try {
       const next = await startProviderLogin(provider);
@@ -63,12 +77,12 @@ export default function ProviderLoginPage() {
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : String(startError));
     } finally {
-      setAction(null);
+      setProviderPending(provider, false);
     }
   };
 
   const cancelLogin = async (provider: ProviderLoginStatus['provider']) => {
-    setAction(provider);
+    setProviderPending(provider, true);
     try {
       const next = await cancelProviderLogin(provider);
       setStatuses((current) => current.map((item) => (
@@ -77,12 +91,12 @@ export default function ProviderLoginPage() {
     } catch (cancelError) {
       setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
     } finally {
-      setAction(null);
+      setProviderPending(provider, false);
     }
   };
 
   const submitCode = async (provider: ProviderLoginStatus['provider']) => {
-    setAction(provider);
+    setProviderPending(provider, true);
     setError(null);
     try {
       const next = await submitProviderLoginCode(
@@ -96,7 +110,7 @@ export default function ProviderLoginPage() {
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
-      setAction(null);
+      setProviderPending(provider, false);
     }
   };
 
@@ -145,7 +159,7 @@ export default function ProviderLoginPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         {statuses.map((item) => {
-          const busy = action === item.provider || item.state === 'checking';
+          const busy = pendingProviders.has(item.provider) || item.state === 'checking';
           return (
             <section
               key={item.provider}
@@ -213,7 +227,8 @@ export default function ProviderLoginPage() {
                         />
                         <button
                           onClick={() => void submitCode(item.provider)}
-                          disabled={action === item.provider || !(authorizationCodes[item.provider] ?? '').trim()}
+                          disabled={pendingProviders.has(item.provider)
+                            || !(authorizationCodes[item.provider] ?? '').trim()}
                           className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium"
                         >
                           {t('providerLogin.submitCode')}
@@ -242,7 +257,7 @@ export default function ProviderLoginPage() {
                 {item.state === 'waiting' && (
                   <button
                     onClick={() => void cancelLogin(item.provider)}
-                    disabled={action === item.provider}
+                    disabled={pendingProviders.has(item.provider)}
                     className="px-4 py-2 rounded-lg text-sm border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
                   >
                     {t('common.cancel')}
