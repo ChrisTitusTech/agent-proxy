@@ -9,6 +9,15 @@ function isLoginProvider(value: string): value is LoginProvider {
   return (LOGIN_PROVIDERS as readonly string[]).includes(value);
 }
 
+const loginMutationRateLimit = {
+  config: {
+    rateLimit: {
+      max: 10,
+      timeWindow: 60_000,
+    },
+  },
+};
+
 export function registerProviderLoginRoutes(
   app: FastifyInstance,
   manager: ProviderLoginManager,
@@ -22,6 +31,7 @@ export function registerProviderLoginRoutes(
 
   app.post<{ Params: { provider: string } }>(
     '/admin/provider-logins/:provider/start',
+    loginMutationRateLimit,
     async (request, reply) => {
       const { provider } = request.params;
       if (!isLoginProvider(provider)) {
@@ -35,6 +45,7 @@ export function registerProviderLoginRoutes(
 
   app.post<{ Params: { provider: string }; Body: { code?: unknown } }>(
     '/admin/provider-logins/:provider/code',
+    loginMutationRateLimit,
     async (request, reply) => {
       const { provider } = request.params;
       if (!isLoginProvider(provider)) {
@@ -63,6 +74,7 @@ export function registerProviderLoginRoutes(
 
   app.delete<{ Params: { provider: string } }>(
     '/admin/provider-logins/:provider',
+    loginMutationRateLimit,
     async (request, reply) => {
       const { provider } = request.params;
       if (!isLoginProvider(provider)) {

@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import fastifyRateLimit from '@fastify/rate-limit';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   LoginProvider,
@@ -22,9 +23,10 @@ function loginStatus(
   };
 }
 
-function setup() {
+async function setup() {
   const app = Fastify();
   apps.push(app);
+  await app.register(fastifyRateLimit, { global: false });
   const manager = {
     getAll: vi.fn(async () => [
       loginStatus('codex', true),
@@ -55,7 +57,7 @@ afterEach(async () => {
 
 describe('provider login admin routes', () => {
   it('returns service-account status and supports a forced refresh', async () => {
-    const { app, manager } = setup();
+    const { app, manager } = await setup();
 
     const response = await app.inject({
       method: 'GET',
@@ -68,7 +70,7 @@ describe('provider login admin routes', () => {
   });
 
   it('starts and cancels a supported provider login', async () => {
-    const { app, manager } = setup();
+    const { app, manager } = await setup();
 
     const started = await app.inject({
       method: 'POST',
@@ -87,7 +89,7 @@ describe('provider login admin routes', () => {
   });
 
   it('submits a Claude authorization code without returning it', async () => {
-    const { app, manager } = setup();
+    const { app, manager } = await setup();
 
     const response = await app.inject({
       method: 'POST',
@@ -101,7 +103,7 @@ describe('provider login admin routes', () => {
   });
 
   it('rejects unsupported providers without invoking a command', async () => {
-    const { app, manager } = setup();
+    const { app, manager } = await setup();
 
     const response = await app.inject({
       method: 'POST',
@@ -111,5 +113,26 @@ describe('provider login admin routes', () => {
     expect(response.statusCode).toBe(404);
     expect(response.json().error.message).toContain('not supported');
     expect(manager.start).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits provider login mutations by client address', async () => {
+    const { app, manager } = await setup();
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/provider-logins/codex/start',
+      });
+      expect(response.statusCode).toBe(202);
+    }
+
+    const limited = await app.inject({
+      method: 'POST',
+      url: '/admin/provider-logins/codex/start',
+    });
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBeDefined();
+    expect(manager.start).toHaveBeenCalledTimes(10);
   });
 });

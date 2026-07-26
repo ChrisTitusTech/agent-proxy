@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import fastifyRateLimit from '@fastify/rate-limit';
 import serverPackage from '../package.json' with { type: 'json' };
 import type { AppConfig } from '@agent-proxy/shared';
 import { initDatabase } from './db/client.js';
@@ -135,6 +136,7 @@ export async function createApp(
 
 
   });
+  await app.register(fastifyRateLimit, { global: false });
 
 
   app.get('/health', async (_request, reply) => {
