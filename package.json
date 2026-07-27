@@ -23,7 +23,7 @@
     "shell-quote": "^1.8.4"
   },
   "devDependencies": {
-    "concurrently": "^10.0.3",
+    "concurrently": "^10.0.4",
     "openai": "^6.49.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
