@@ -28,7 +28,9 @@ specification defines the narrower contract for the `agent-proxy` refactor.
 
 1. Run entirely as the logged-in desktop user.
 2. Start the Herdr server and `agent-proxy` in that user's login session.
-3. Accept authenticated API requests only on a loopback listener by default.
+3. Require authentication for inference, model, and administration requests on
+   a loopback listener by default; allow only a minimal unauthenticated
+   liveness response.
 4. Launch or reuse every selected CLI backend as a Herdr-managed agent.
 5. Make API-originated agents visible and controllable in Herdr regardless of
    which local application submitted the request.
@@ -149,7 +151,7 @@ without printing credentials.
 | `POST /v1/chat/completions` | OpenAI Chat Completions subset | Copilot CLI, Open WebUI |
 | `POST /v1/messages` | Anthropic Messages subset | Claude Code, Anthropic SDKs |
 | `GET /v1/models` | OpenAI model list | Discovery and client validation |
-| `GET /health` | API and Herdr readiness | Probes and operators |
+| `GET /health` | Minimal liveness; authenticated API and Herdr readiness | Probes and operators |
 | `/admin/*` | Authenticated management API | Dashboard and automation |
 
 Unsupported embedding, retrieval, speech, image-generation, and reranking
@@ -162,7 +164,12 @@ An endpoint is compatible with a target client only when:
 1. The unmodified client can use the documented base URL and proxy credential.
 2. Non-streaming and streaming text pass end-to-end.
 3. One complete function-tool loop passes when tools are advertised.
-4. Cancellation terminates the Herdr-managed provider process.
+4. A direct client disconnect terminates the Herdr-managed provider process.
+   If an intermediary accepts cancellation without closing its upstream
+   request, the proxy may use a configured bounded detach: provider work
+   remains tracked until exit or timeout, its pane remains working until that
+   terminal state, and the logical request is accounted exactly once with the
+   detach outcome recorded.
 5. Errors use the expected status, content type, and protocol shape.
 6. Concurrent sessions remain isolated.
 7. The agent appears in Herdr for the full provider execution.
@@ -181,9 +188,9 @@ An endpoint is compatible with a target client only when:
 - `max_output_tokens`
 - `previous_response_id` or the documented session mechanism
 
-Streaming must use valid Server-Sent Events with one terminal completed or
-failed event. Tool calls and results must round-trip without changing IDs or
-arguments.
+Streaming must use valid Server-Sent Events with exactly one terminal
+`response.completed`, `response.incomplete`, or `response.failed` event. Tool
+calls and results must round-trip without changing IDs or arguments.
 
 ### 5.4 Chat Completions
 
@@ -255,6 +262,9 @@ must not bypass the Herdr launcher.
 Running providers as the desktop user is an explicit trust decision.
 
 - The listener defaults to `127.0.0.1`.
+- An unauthenticated `GET /health` response is limited to generic liveness.
+  Provider names, Herdr readiness, versions, paths, and configuration require
+  authentication.
 - Data-plane and admin tokens remain independent.
 - API keys are stored as one-way hashes.
 - Empty, weak, or placeholder production credentials fail startup.
@@ -264,7 +274,10 @@ Running providers as the desktop user is an explicit trust decision.
 - Job control files and sockets use owner-only permissions under
   `XDG_RUNTIME_DIR`.
 - Provider environments use allowlists.
-- Prompts and raw output are not retained by default.
+- Prompts and raw output are not durably retained by default. Bounded in-memory
+  normalized input and output retained for Responses
+  `previous_response_id` continuation is the explicit exception; `store:
+  false` disables retention of the new response.
 - Logs and Herdr metadata never contain provider tokens, proxy keys, prompt
   bodies, account identifiers, or unsanitized home paths.
 - Chat-only and tool-enabled profiles are separate and explicit.

@@ -54,7 +54,7 @@ configured provider.
 | `POST /v1/responses` | Codex, Grok, and Responses API clients |
 | `POST /v1/messages` | Claude Code and Anthropic SDK clients |
 | `GET /v1/models` | Model discovery |
-| `GET /health` | Unauthenticated service health |
+| `GET /health` | Minimal unauthenticated liveness; authenticated readiness |
 | `/admin/*` | Authenticated configuration and observability |
 
 The server also retains optional generic CLI and OpenAI-compatible HTTP

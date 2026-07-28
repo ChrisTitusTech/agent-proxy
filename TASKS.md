@@ -73,15 +73,19 @@ Status: Ready to begin
   - Validation: fake Herdr socket and fake provider contract tests.
 - [ ] P4-04: Route every built-in provider attempt through Herdr.
   - Acceptance: Claude, Codex, Antigravity, and Grok non-streaming and
-    streaming executions cannot bypass the launcher; health and admin probes
-    do not create panes.
-  - Validation: provider matrix with a direct-spawn canary that fails if a
-    route launches outside Herdr.
+    streaming executions cannot bypass the launcher; health, model discovery,
+    and admin-only requests neither spawn agents nor create panes.
+  - Validation: provider matrix covering inference, health, model discovery,
+    and admin-only requests, with a direct-spawn canary that fails if inference
+    launches outside Herdr or a non-inference request spawns an agent.
 - [ ] P4-05: Correlate API clients, sessions, and Herdr panes.
   - Acceptance: explicit client session IDs reuse only compatible panes;
     requests without an explicit ID remain isolated; model, provider,
-    directory, and permission changes invalidate reuse.
-  - Validation: session reuse, expiration, collision, and cross-client tests.
+    directory, and permission changes invalidate reuse. Overlapping turns that
+    target one reusable pane are serialized or isolated so provider input and
+    output cannot interleave.
+  - Validation: session reuse, expiration, collision, cross-client, and
+    overlapping shared-pane turn tests.
 - [ ] P4-06: Preserve structured streaming and tool calls through the worker.
   - Acceptance: the proxy consumes raw structured output over IPC, not rendered
     terminal content; text deltas and tool events retain order, IDs, arguments,
@@ -96,9 +100,10 @@ Status: Ready to begin
 - [ ] P4-08: Fail closed when Herdr is unavailable.
   - Acceptance: incompatible or unavailable Herdr returns a sanitized `503`;
     no hidden headless provider process starts; health distinguishes API and
-    Herdr readiness.
+    Herdr readiness. Unauthenticated health exposes only generic liveness;
+    detailed readiness requires authentication.
   - Validation: unavailable, stale-socket, protocol-mismatch, and reconnect
-    tests.
+    tests plus authenticated and unauthenticated health-response fixtures.
 - [ ] P4-09: Prevent provider recursion through the localhost proxy.
   - Acceptance: Codex, Copilot, Grok, and other supported client
     configurations that point the child provider back at the same listener are

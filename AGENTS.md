@@ -15,7 +15,9 @@ Treat these requirements as hard boundaries:
 - Do not launch built-in provider processes invisibly outside Herdr.
 - Do not add a silent headless fallback when Herdr is unavailable.
 - Health, model discovery, and admin-only requests must not spawn agents.
-- Keep the localhost API authenticated even though it binds to loopback.
+- Keep the localhost API authenticated even though it binds to loopback. The
+  only exception is a minimal unauthenticated `/health` liveness response that
+  exposes no provider, Herdr, version, path, or configuration details.
 - Prevent child provider configurations from recursively calling this proxy.
 
 ## Planning sources
