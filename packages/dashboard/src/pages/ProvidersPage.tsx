@@ -1291,6 +1291,7 @@ function ClaudeSdkSettings({ draft, setDraft, setMessage, t }: {
                 <option value="bypassPermissions">bypassPermissions</option>
                 <option value="plan">plan</option>
                 <option value="dontAsk">dontAsk</option>
+                <option value="auto">auto</option>
               </select>
             </div>
             <div>

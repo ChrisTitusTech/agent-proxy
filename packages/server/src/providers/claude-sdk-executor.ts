@@ -7,6 +7,7 @@ import type {
   ExecuteResult,
   ProviderEvent,
   TokenUsage,
+  ClaudePermissionMode,
   ClaudeSdkOptions,
 } from '@agent-proxy/shared';
 import { convertMessages } from '../utils/message-converter.js';
@@ -20,7 +21,7 @@ interface SdkQueryOptions {
   env?: Record<string, string | undefined>;
   maxTurns?: number;
   maxBudgetUsd?: number;
-  permissionMode?: string;
+  permissionMode?: ClaudePermissionMode;
   allowDangerouslySkipPermissions?: boolean;
   allowedTools?: string[];
   disallowedTools?: string[];

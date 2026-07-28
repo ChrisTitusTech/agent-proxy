@@ -26,10 +26,25 @@ export interface AuthConfig {
   }>;
 }
 
+export const CLAUDE_PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+  'auto',
+] as const;
+
+export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number];
+
+export function isClaudePermissionMode(value: unknown): value is ClaudePermissionMode {
+  return typeof value === 'string'
+    && (CLAUDE_PERMISSION_MODES as readonly string[]).includes(value);
+}
 
 export interface ClaudeSdkOptions {
   max_turns?: number;
-  permission_mode?: string;        // 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk'
+  permission_mode?: ClaudePermissionMode;
   allowed_tools?: string[];
   disallowed_tools?: string[];
   max_budget_usd?: number;

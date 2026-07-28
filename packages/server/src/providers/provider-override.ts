@@ -1,5 +1,9 @@
 import type { ProviderConfigYaml, ProviderOverrides } from '@agent-proxy/shared';
-import { CLAUDE_OVERRIDE_ALLOWED_KEYS, CODEX_OVERRIDE_ALLOWED_KEYS } from '@agent-proxy/shared';
+import {
+  CLAUDE_OVERRIDE_ALLOWED_KEYS,
+  CODEX_OVERRIDE_ALLOWED_KEYS,
+  isClaudePermissionMode,
+} from '@agent-proxy/shared';
 
 
 const CODEX_ALLOWED_SET = new Set<string>(CODEX_OVERRIDE_ALLOWED_KEYS);
@@ -21,6 +25,12 @@ function warnUnallowed(provider: string, key: string): void {
   console.warn(`[provider-override] '${key}' is not in the whitelist for provider '${provider}' — ignored.`);
 }
 
+function warnInvalid(provider: string, key: string): void {
+  const dedupeKey = `${provider}:${key}:invalid`;
+  if (warnedKeys.has(dedupeKey)) return;
+  warnedKeys.add(dedupeKey);
+  console.warn(`[provider-override] '${key}' has an unsupported value for provider '${provider}' - ignored.`);
+}
 
 
 
@@ -87,8 +97,13 @@ export function mergeProviderConfig(
       else warnUnallowed(provider, 'sdk_options.max_turns');
     }
     if (overrides.sdk_options.permission_mode !== undefined) {
-      if (allowed.has('sdk_options.permission_mode')) sdk.permission_mode = overrides.sdk_options.permission_mode;
-      else warnUnallowed(provider, 'sdk_options.permission_mode');
+      if (!allowed.has('sdk_options.permission_mode')) {
+        warnUnallowed(provider, 'sdk_options.permission_mode');
+      } else if (isClaudePermissionMode(overrides.sdk_options.permission_mode)) {
+        sdk.permission_mode = overrides.sdk_options.permission_mode;
+      } else {
+        warnInvalid(provider, 'sdk_options.permission_mode');
+      }
     }
     if (overrides.sdk_options.allowed_tools !== undefined) {
       if (allowed.has('sdk_options.allowed_tools')) sdk.allowed_tools = [...overrides.sdk_options.allowed_tools];

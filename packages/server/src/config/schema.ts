@@ -9,6 +9,7 @@
 
 
 import { z } from 'zod';
+import { CLAUDE_PERMISSION_MODES } from '@agent-proxy/shared';
 
 
 const opt = <T extends z.ZodType>(schema: T) =>
@@ -52,7 +53,7 @@ const authSchema = z.object({
 
 const sdkOptionsSchema = z.object({
   max_turns: opt(positiveInt),
-  permission_mode: opt(z.string()),
+  permission_mode: opt(z.enum(CLAUDE_PERMISSION_MODES)),
   allowed_tools: opt(z.array(z.string())),
   disallowed_tools: opt(z.array(z.string())),
   max_budget_usd: opt(positiveNumber),

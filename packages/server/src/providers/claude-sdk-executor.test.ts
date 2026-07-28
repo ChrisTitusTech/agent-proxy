@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ExecuteOptions, ClaudeSdkOptions } from '@agent-proxy/shared';
+import type { SdkExecutorConfig } from './claude-sdk-executor.js';
 import { ClaudeSdkSessionManager } from './claude-sdk-session-manager.js';
 
 
@@ -43,7 +44,7 @@ function createOptions(overrides?: Partial<ExecuteOptions>): ExecuteOptions {
   };
 }
 
-function createConfig(sdkOptions?: Partial<ClaudeSdkOptions>) {
+function createConfig(sdkOptions?: Partial<ClaudeSdkOptions>): SdkExecutorConfig {
   return {
     model: 'claude-sonnet-5',
     sdkOptions: {

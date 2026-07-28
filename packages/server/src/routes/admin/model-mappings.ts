@@ -1,7 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
-import { isReasoningEffort, type ProviderOverrides, type ReasoningEffort } from '@agent-proxy/shared';
+import {
+  CLAUDE_PERMISSION_MODES,
+  isClaudePermissionMode,
+  isReasoningEffort,
+  type ProviderOverrides,
+  type ReasoningEffort,
+} from '@agent-proxy/shared';
 import { getDatabase } from '../../db/client.js';
 import { modelMappings } from '../../db/schema.js';
 
@@ -67,7 +73,7 @@ function parseIncludeReasoningInput(value: unknown): { ok: true; value: boolean 
 
 
 
-function parseProviderOverridesInput(value: unknown): { ok: true; value: ProviderOverrides | null | undefined } | { ok: false; reason: string } {
+export function parseProviderOverridesInput(value: unknown): { ok: true; value: ProviderOverrides | null | undefined } | { ok: false; reason: string } {
   if (value === undefined) return { ok: true, value: undefined };
   if (value === null) return { ok: true, value: null };
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -132,7 +138,12 @@ function parseProviderOverridesInput(value: unknown): { ok: true; value: Provide
       sdk.max_turns = rawSdk.max_turns;
     }
     if (rawSdk.permission_mode !== undefined) {
-      if (typeof rawSdk.permission_mode !== 'string') return { ok: false, reason: 'sdk_options.permission_mode must be string.' };
+      if (!isClaudePermissionMode(rawSdk.permission_mode)) {
+        return {
+          ok: false,
+          reason: `sdk_options.permission_mode must be one of: ${CLAUDE_PERMISSION_MODES.join(', ')}.`,
+        };
+      }
       sdk.permission_mode = rawSdk.permission_mode;
     }
     if (rawSdk.allowed_tools !== undefined) {
