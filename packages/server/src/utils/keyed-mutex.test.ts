@@ -81,10 +81,18 @@ describe('KeyedMutex', () => {
     const releaseFirst = await mutex.acquire('k');
     const controller = new AbortController();
     const cancelled = mutex.acquire('k', { signal: controller.signal });
-    const later = mutex.acquire('k');
 
     controller.abort();
     await expect(cancelled).rejects.toThrow(/cancelled/);
+
+    let acquiredLater = false;
+    const later = mutex.acquire('k').then((release) => {
+      acquiredLater = true;
+      return release;
+    });
+    await delay(10);
+    expect(acquiredLater).toBe(false);
+
     releaseFirst();
     const releaseLater = await later;
     releaseLater();

@@ -45,7 +45,12 @@ export class KeyedMutex {
       await Promise.race([prev, interrupted]);
     } catch (error) {
       releaseGate();
-      if (this.tails.get(key) === tail) this.tails.delete(key);
+      if (this.tails.get(key) === tail) {
+        this.tails.set(key, prev);
+        void prev.then(() => {
+          if (this.tails.get(key) === prev) this.tails.delete(key);
+        });
+      }
       throw error;
     } finally {
       if (waitTimer) clearTimeout(waitTimer);

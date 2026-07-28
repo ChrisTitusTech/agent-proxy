@@ -704,6 +704,36 @@ export function registerMessagesRoute(
           isStream: body.stream ?? false,
           startedAt: startTime,
         });
+        let attemptFinalized = false;
+        const finishActiveRequest = (): boolean => {
+          if (attemptFinalized) return false;
+          attemptFinalized = true;
+          deps.activeRequests.finish(requestId);
+          return true;
+        };
+        const finalizeCancellation = async (
+          message = 'Request cancelled',
+        ): Promise<void> => {
+          if (!finishActiveRequest()) return;
+          const latencyMs = Date.now() - startTime;
+          try {
+            await logRequest({
+              requestId,
+              apiKeyId,
+              modelAlias: body.model,
+              provider: route.provider,
+              actualModel: route.actualModel,
+              reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
+              status: 'cancelled',
+              statusCode: 499,
+              latencyMs,
+              isStream: body.stream ?? false,
+              errorMessage: sanitizeProviderError(message),
+            });
+          } catch {
+            // Request cleanup must not depend on optional persistence.
+          }
+        };
 
 
         const debugEnabled = deps.debug.isEnabled(body.model);
@@ -729,13 +759,28 @@ export function registerMessagesRoute(
           if (body.stream) {
 
             const abortController = new AbortController();
-            request.raw.on('close', () => abortController.abort());
+            let providerStarted = false;
+            const onClientClose = () => {
+              abortController.abort();
+              if (!providerStarted) void finalizeCancellation();
+            };
+            request.raw.once('aborted', onClientClose);
+            reply.raw.once('close', onClientClose);
 
-            await deps.queue.enqueue(route.provider, async () => {
+            try {
+              await deps.queue.enqueue(route.provider, async () => {
 
-              if (abortController.signal.aborted) return;
+              if (abortController.signal.aborted) {
+                await finalizeCancellation();
+                return;
+              }
 
               await deps.registry.assertExecutionReady(provider);
+              if (abortController.signal.aborted) {
+                await finalizeCancellation();
+                return;
+              }
+              providerStarted = true;
 
 
               const origin = request.headers.origin;
@@ -917,10 +962,10 @@ export function registerMessagesRoute(
                   errorMessage: errMsg,
                 });
 
-                deps.activeRequests.finish(requestId);
+                finishActiveRequest();
                 const failure = classifyProviderError(errMsg, route.provider);
                 if (shouldDegradeProviderHealth(failure)) {
-                  deps.healthChecker.onRequestFailure(route.provider);
+                  await deps.healthChecker.onRequestFailure(route.provider);
                 }
                 return;
               }
@@ -950,7 +995,7 @@ export function registerMessagesRoute(
                   isStream: true,
                   errorMessage: toolSelectionError,
                 });
-                deps.activeRequests.finish(requestId);
+                finishActiveRequest();
                 return;
               }
 
@@ -1008,8 +1053,13 @@ export function registerMessagesRoute(
                 });
               }
 
-              deps.activeRequests.finish(requestId);
-            });
+              finishActiveRequest();
+              });
+            } finally {
+              request.raw.removeListener('aborted', onClientClose);
+              reply.raw.removeListener('close', onClientClose);
+              finishActiveRequest();
+            }
 
             return;
           }
@@ -1084,7 +1134,7 @@ export function registerMessagesRoute(
                 errorMessage: message,
               });
             }
-            deps.activeRequests.finish(requestId);
+            finishActiveRequest();
             return reply.status(502).send(makeAnthropicError('api_error', message));
           };
           const toolSelectionError = validateToolSelectionResult(
@@ -1197,7 +1247,7 @@ export function registerMessagesRoute(
             });
           }
 
-          deps.activeRequests.finish(requestId);
+          finishActiveRequest();
           return reply.status(200).send(response);
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
@@ -1233,13 +1283,13 @@ export function registerMessagesRoute(
             });
           }
 
-          deps.activeRequests.finish(requestId);
+          finishActiveRequest();
           const failure = classifyProviderError(
             lastError,
             route.provider,
           );
           if (shouldDegradeProviderHealth(failure)) {
-            deps.healthChecker.onRequestFailure(route.provider);
+            await deps.healthChecker.onRequestFailure(route.provider);
           }
           if (!failure.fallbackEligible) break;
           continue;

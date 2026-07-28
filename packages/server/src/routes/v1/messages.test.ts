@@ -173,6 +173,59 @@ describe('Anthropic Messages normalization', () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it('finalizes a disconnect while the provider is still queued', async () => {
+    let runQueued!: () => Promise<void>;
+    let resolveQueue!: () => void;
+    const queueReleased = new Promise<void>((resolve) => {
+      resolveQueue = resolve;
+    });
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    deps.queue.enqueue = vi.fn(async (
+      _provider: string,
+      run: () => Promise<void>,
+    ) => {
+      runQueued = async () => {
+        await run();
+        resolveQueue();
+      };
+      await queueReleased;
+    }) as unknown as MessagesDeps['queue']['enqueue'];
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.start).toHaveBeenCalledOnce();
+      expect(runQueued).toBeTypeOf('function');
+    });
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+    });
+    await runQueued();
+
+    expect(executeStream).not.toHaveBeenCalled();
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
   it('preserves tool definitions, calls, results, and choice', () => {
     const result = normalizeAnthropicMessages({
       model: 'claude-test',
