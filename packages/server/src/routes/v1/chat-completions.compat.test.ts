@@ -445,6 +445,55 @@ describe('Chat Completions tool compatibility', () => {
     expect(deps.cache.set).not.toHaveBeenCalled();
   });
 
+  it('keeps observing disconnects while a non-streaming cache write is pending', async () => {
+    let cacheStarted!: () => void;
+    const cachePending = new Promise<void>((resolve) => {
+      cacheStarted = resolve;
+    });
+    let releaseCache!: () => void;
+    const cacheReleased = new Promise<void>((resolve) => {
+      releaseCache = resolve;
+    });
+    const deps = createDeps({
+      name: 'fixture',
+      execute: vi.fn(async () => result),
+    } as unknown as BaseProvider);
+    deps.cache.set = vi.fn(async () => {
+      cacheStarted();
+      await cacheReleased;
+    });
+    app = await createApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await cachePending;
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    releaseCache();
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+  });
+
   it('finalizes a disconnect while the provider is still queued', async () => {
     let runQueued!: () => Promise<void>;
     let resolveQueue!: () => void;

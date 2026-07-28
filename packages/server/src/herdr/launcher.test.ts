@@ -126,6 +126,7 @@ interface LauncherInternals {
     request: ProviderExecutionRequest,
   ) => Promise<ProviderExecutionHandle>;
   containCancelledPane: (paneId: string) => Promise<void>;
+  closeTrackedPane: (paneId: string) => Promise<boolean>;
   quarantinedSessionKeys: Set<string>;
 }
 
@@ -337,6 +338,22 @@ describe('Herdr pane lifecycle', () => {
     await internals.prunePanes('');
 
     expect(internals.panes.has('session-a')).toBe(true);
+  });
+
+  it('preserves the session key when a tracked pane closes', async () => {
+    const { internals } = launcherWithCommandFixture();
+    const originalKey = internals.sessionKey(request('shared-client'));
+    internals.releaseStartingSessionKey(originalKey);
+    internals.panes.set(originalKey, {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now(),
+    });
+
+    await expect(internals.closeTrackedPane('pane-1')).resolves.toBe(true);
+    const nextKey = internals.sessionKey(request('shared-client'));
+
+    expect(nextKey).toBe(originalKey);
   });
 
   it('quarantines a session when forced cancellation cannot close its pane', async () => {

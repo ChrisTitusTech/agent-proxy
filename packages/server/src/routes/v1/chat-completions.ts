@@ -837,11 +837,6 @@ export function registerChatCompletionsRoute(
               }),
               { signal: abortController.signal },
             );
-          } finally {
-            request.raw.removeListener('aborted', onClientClose);
-            reply.raw.removeListener('close', onClientClose);
-          }
-
           if (abortController.signal.aborted) {
             await finalizeCancellation();
             return;
@@ -917,6 +912,15 @@ export function registerChatCompletionsRoute(
               result.usage.totalTokens,
             );
           }
+          if (
+            abortController.signal.aborted
+            || request.raw.aborted
+            || request.raw.destroyed
+            || reply.raw.destroyed
+          ) {
+            await finalizeCancellation();
+            return;
+          }
 
           const nonStreamLatency = Date.now() - startTime;
           logRequest({
@@ -955,6 +959,10 @@ export function registerChatCompletionsRoute(
 
           finishActiveRequest();
           return reply.status(200).send(response);
+          } finally {
+            request.raw.removeListener('aborted', onClientClose);
+            reply.raw.removeListener('close', onClientClose);
+          }
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           lastErrorProvider = route.provider;

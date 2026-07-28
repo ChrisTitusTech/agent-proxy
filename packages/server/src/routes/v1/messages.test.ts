@@ -222,6 +222,53 @@ describe('Anthropic Messages normalization', () => {
     expect(deps.cache.set).not.toHaveBeenCalled();
   });
 
+  it('keeps observing disconnects while a non-streaming cache write is pending', async () => {
+    let cacheStarted!: () => void;
+    const cachePending = new Promise<void>((resolve) => {
+      cacheStarted = resolve;
+    });
+    let releaseCache!: () => void;
+    const cacheReleased = new Promise<void>((resolve) => {
+      releaseCache = resolve;
+    });
+    const deps = createDeps(fakeProvider());
+    deps.cache.set = vi.fn(async () => {
+      cacheStarted();
+      await cacheReleased;
+    });
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await cachePending;
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    releaseCache();
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+  });
+
   it('records a streaming provider cancellation as cancelled', async () => {
     let releaseProvider!: () => void;
     const providerReleased = new Promise<void>((resolve) => {

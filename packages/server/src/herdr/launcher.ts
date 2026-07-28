@@ -442,9 +442,6 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       }
       this.panes.delete(key);
       this.quarantinedSessionKeys.delete(key);
-      for (const [identity, record] of this.sessionKeys) {
-        if (record.key === key) this.sessionKeys.delete(identity);
-      }
     }
   }
 
@@ -800,9 +797,6 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       this.panes.delete(sessionKey);
       this.quarantinedSessionKeys.delete(sessionKey);
       this.reservedPaneIds.delete(paneId);
-      for (const [identity, record] of this.sessionKeys) {
-        if (record.key === sessionKey) this.sessionKeys.delete(identity);
-      }
       return true;
     } finally {
       release();
@@ -825,9 +819,6 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       this.panes.delete(sessionKey);
       this.quarantinedSessionKeys.delete(sessionKey);
       this.reservedPaneIds.delete(paneId);
-      for (const [identity, record] of this.sessionKeys) {
-        if (record.key === sessionKey) this.sessionKeys.delete(identity);
-      }
     } finally {
       release();
     }
