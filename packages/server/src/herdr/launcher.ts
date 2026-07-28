@@ -361,7 +361,11 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       const expired = now - pane.lastUsedAt > this.config.paneTtlMs;
       const overLimit = this.panes.size > this.config.maxPanes;
       if (!expired && !overLimit) continue;
-      await this.command(['tab', 'close', pane.tabId]).catch(() => undefined);
+      try {
+        await this.command(['tab', 'close', pane.tabId]);
+      } catch {
+        continue;
+      }
       this.panes.delete(key);
       for (const [identity, record] of this.sessionKeys) {
         if (record.key === key) this.sessionKeys.delete(identity);

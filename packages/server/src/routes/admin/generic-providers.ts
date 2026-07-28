@@ -176,6 +176,8 @@ export function registerGenericProviderRoutes(
         cli_path: configData.cli_path,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 2,
+        max_queue_size: configData.max_queue_size ?? 32,
+        max_queue_wait_ms: configData.max_queue_wait_ms ?? 30_000,
         timeout_ms: configData.timeout_ms ?? 120000,
         extra_args: configData.extra_args ?? [],
         prompt_mode: configData.prompt_mode ?? 'stdin',
@@ -204,7 +206,12 @@ export function registerGenericProviderRoutes(
         deps.registry.proxyPort,
       );
       deps.registry.register(provider);
-      deps.queueManager.addQueue(name, config.max_concurrent);
+      deps.queueManager.addQueue(
+        name,
+        config.max_concurrent,
+        config.max_queue_size,
+        config.max_queue_wait_ms,
+      );
 
 
       deps.healthChecker.checkProvider(name).catch(() => {});
@@ -279,6 +286,16 @@ export function registerGenericProviderRoutes(
       if (partial.max_concurrent !== undefined) {
         deps.queueManager.updateConcurrency(name, partial.max_concurrent);
       }
+      if (
+        partial.max_queue_size !== undefined
+        || partial.max_queue_wait_ms !== undefined
+      ) {
+        deps.queueManager.updateLimits(
+          name,
+          updated.max_queue_size ?? 32,
+          updated.max_queue_wait_ms ?? 30_000,
+        );
+      }
 
       return reply.send({ name, config: updated });
     },
@@ -352,6 +369,8 @@ export function registerGenericProviderRoutes(
         cli_path: configData.cli_path,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 10,
+        max_queue_size: configData.max_queue_size ?? 32,
+        max_queue_wait_ms: configData.max_queue_wait_ms ?? 30_000,
         timeout_ms: configData.timeout_ms ?? 300000,
         extra_args: configData.extra_args ?? [],
         prompt_mode: configData.prompt_mode ?? 'stdin',

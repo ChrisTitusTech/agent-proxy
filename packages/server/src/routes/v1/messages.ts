@@ -12,7 +12,7 @@ import type {
 import { isReasoningEffort } from '@agent-proxy/shared';
 import { nanoid } from 'nanoid';
 import { createRequestId } from '../../utils/stream-transformer.js';
-import { extractClientKey } from '../../utils/client-key.js';
+import { extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
@@ -620,7 +620,7 @@ export function registerMessagesRoute(
       const apiKeyId = (request as unknown as { apiKeyId?: string }).apiKeyId;
       const keyLimits = (request as unknown as { apiKeyRateLimits?: { rpm?: number | null; rpd?: number | null } }).apiKeyRateLimits;
 
-      const clientKey = extractClientKey(request, apiKeyId);
+      const clientKey = extractProviderClientKey(request, apiKeyId);
 
 
       const requestHash = !body.stream && !normalized.data.tools?.length
@@ -1011,9 +1011,15 @@ export function registerMessagesRoute(
           }
 
 
-          const result = await deps.queue.enqueue(
-            route.provider,
-            () => provider.execute({
+          const abortController = new AbortController();
+          const onClientClose = () => abortController.abort();
+          request.raw.once('aborted', onClientClose);
+          reply.raw.once('close', onClientClose);
+          let result;
+          try {
+            result = await deps.queue.enqueue(
+              route.provider,
+              () => provider.execute({
               messages: internalMessages,
               model: route.actualModel,
               stream: false,
@@ -1028,8 +1034,13 @@ export function registerMessagesRoute(
               tools: normalized.data.tools,
               toolChoice: normalized.data.toolChoice,
               parallelToolCalls: normalized.data.parallelToolCalls,
-            }),
-          );
+              signal: abortController.signal,
+              }),
+            );
+          } finally {
+            request.raw.removeListener('aborted', onClientClose);
+            reply.raw.removeListener('close', onClientClose);
+          }
 
 
           let content = result.content;

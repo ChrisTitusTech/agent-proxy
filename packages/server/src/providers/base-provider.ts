@@ -256,13 +256,16 @@ export abstract class BaseProvider {
       this.name,
       environment,
       this.proxyPort,
-      args,
+      this.getRecursionCheckArgs(options, args),
     );
     return recursionCheck.then(() => this.executionBackend.start({
       provider: this.name,
       model: options.model || config.default_model,
       ...(options.requestId ? { requestId: options.requestId } : {}),
-      clientKey: options.clientKey?.includes('|session:')
+      clientKey: options.clientKey && (
+        options.clientKey.includes('|session:')
+        || options.clientKey.includes('|request:')
+      )
         ? options.clientKey
         : `request:${randomUUID()}`,
       command: config.cli_path,
@@ -277,6 +280,10 @@ export abstract class BaseProvider {
 
   protected getExecutionConfig(_options: ExecuteOptions): ProviderConfigYaml {
     return this.config;
+  }
+
+  protected getRecursionCheckArgs(_options: ExecuteOptions, args: string[]): string[] {
+    return args;
   }
 
 
@@ -349,6 +356,16 @@ async function assertNoProxyRecursion(
   proxyPort: number,
   args: string[],
 ): Promise<void> {
+  for (const argument of args) {
+    for (const candidate of argument.match(/https?:\/\/[^\s"'<>]+/gi) ?? []) {
+      if (isProxyLoopbackUrl(candidate, proxyPort)) {
+        throw new ProviderRecursionError(
+          `${provider} arguments route provider traffic back to agent-proxy on loopback port ${proxyPort}.`,
+        );
+      }
+    }
+  }
+
   const home = environment.HOME;
   if (!home) return;
   const configPath = provider === 'codex'
@@ -373,17 +390,7 @@ async function assertNoProxyRecursion(
     : activeGrokBaseUrls(activeConfig, args);
   for (const baseUrl of baseUrls) {
     try {
-      const url = new URL(baseUrl);
-      const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-      const isLoopback = hostname === 'localhost'
-        || hostname === 'localhost.localdomain'
-        || hostname === 'ip6-localhost'
-        || hostname === '::1'
-        || hostname === '0.0.0.0'
-        || hostname === '::'
-        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
-      const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
-      if (isLoopback && effectivePort === port) {
+      if (isProxyLoopbackUrl(baseUrl, proxyPort)) {
         throw new ProviderRecursionError(
           `${provider} configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
         );
@@ -392,6 +399,24 @@ async function assertNoProxyRecursion(
       if (error instanceof ProviderRecursionError) throw error;
       // Ignore unrelated malformed provider URLs; the provider reports those.
     }
+  }
+}
+
+function isProxyLoopbackUrl(value: string, proxyPort: number): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const isLoopback = hostname === 'localhost'
+      || hostname === 'localhost.localdomain'
+      || hostname === 'ip6-localhost'
+      || hostname === '::1'
+      || hostname === '0.0.0.0'
+      || hostname === '::'
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
+    return isLoopback && effectivePort === String(proxyPort);
+  } catch {
+    return false;
   }
 }
 

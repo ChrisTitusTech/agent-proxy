@@ -106,6 +106,7 @@ interface LauncherInternals {
   command: (args: string[]) => Promise<unknown>;
   panes: Map<string, { paneId: string; tabId: string; lastUsedAt: number }>;
   reservedPaneIds: Set<string>;
+  prunePanes: (currentKey: string) => Promise<void>;
 }
 
 function request(clientKey = 'client'): ProviderExecutionRequest {
@@ -239,5 +240,24 @@ describe('Herdr pane lifecycle', () => {
     )).toHaveLength(3);
     expect(commands).toContainEqual(['tab', 'close', 'tab-1']);
     expect(internals.panes.has('session-a')).toBe(false);
+  });
+
+  it('retains pane tracking when a prune close fails', async () => {
+    const { internals } = launcherWithCommandFixture();
+    internals.panes.set('session-a', {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now() - 1_000,
+    });
+    internals.command = async (args: string[]) => {
+      if (args[0] === 'tab' && args[1] === 'close') {
+        throw new Error('temporary close failure');
+      }
+      return { type: 'ok' };
+    };
+
+    await internals.prunePanes('');
+
+    expect(internals.panes.has('session-a')).toBe(true);
   });
 });

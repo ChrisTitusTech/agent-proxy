@@ -77,7 +77,12 @@ export async function loadGenericProviders(
       registry.register(provider);
 
 
-      queueManager.addQueue(name, config.max_concurrent);
+      queueManager.addQueue(
+        name,
+        config.max_concurrent,
+        config.max_queue_size,
+        config.max_queue_wait_ms,
+      );
 
       logger?.info(`[generic-provider-loader] Loaded "${name}" (cli_path: ${config.cli_path})`);
       result.loaded.push(name);

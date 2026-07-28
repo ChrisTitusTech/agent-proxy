@@ -10,7 +10,7 @@ import { ALLOWED_ROLES, isReasoningEffort, type ReasoningEffort } from '@agent-p
 import { extractTextFromContent, isImagePart } from '../../utils/message-converter.js';
 import { createRequestId, formatAsSSE } from '../../utils/stream-transformer.js';
 import { splitReasoning, ReasoningSplitter } from '../../utils/reasoning-splitter.js';
-import { extractClientKey } from '../../utils/client-key.js';
+import { extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
@@ -414,7 +414,7 @@ export function registerChatCompletionsRoute(
 
       const apiKeyId = (request as unknown as { apiKeyId?: string }).apiKeyId;
       const keyLimits = (request as unknown as { apiKeyRateLimits?: { rpm?: number | null; rpd?: number | null } }).apiKeyRateLimits;
-      const clientKey = extractClientKey(request, apiKeyId);
+      const clientKey = extractProviderClientKey(request, apiKeyId);
 
 
       const requestHash = !body.stream && !body.tools?.length
@@ -804,9 +804,15 @@ export function registerChatCompletionsRoute(
           }
 
 
-          const result = await deps.queue.enqueue(
-            route.provider,
-            () => provider.execute({
+          const abortController = new AbortController();
+          const onClientClose = () => abortController.abort();
+          request.raw.once('aborted', onClientClose);
+          reply.raw.once('close', onClientClose);
+          let result;
+          try {
+            result = await deps.queue.enqueue(
+              route.provider,
+              () => provider.execute({
               messages: body.messages,
               model: route.actualModel,
               stream: false,
@@ -821,8 +827,13 @@ export function registerChatCompletionsRoute(
               tools: body.tools,
               toolChoice: body.tool_choice,
               parallelToolCalls: body.parallel_tool_calls,
-            }),
-          );
+              signal: abortController.signal,
+              }),
+            );
+          } finally {
+            request.raw.removeListener('aborted', onClientClose);
+            reply.raw.removeListener('close', onClientClose);
+          }
 
 
           let content = result.content;

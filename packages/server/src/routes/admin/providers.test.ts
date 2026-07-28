@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
 import type { ProviderConfigYaml } from '@agent-proxy/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseProvider } from '../../providers/base-provider.js';
 import { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { HealthChecker } from '../../services/health-checker.js';
@@ -106,6 +106,45 @@ describe('loadEffectiveProviderConfigs', () => {
       maxQueueSize: 7,
       maxQueueWaitMs: 250,
     });
+    await app.close();
+  });
+
+  it('tests built-in readiness without starting provider execution', async () => {
+    const app = Fastify();
+    const execute = vi.fn();
+    const provider = {
+      name: 'codex',
+      getConfig: () => ({
+        enabled: true,
+        cli_path: process.execPath,
+        default_model: 'gpt-test',
+        max_concurrent: 1,
+        timeout_ms: 30_000,
+        extra_args: [],
+      }),
+      checkHealth: vi.fn().mockResolvedValue('healthy'),
+      execute,
+    } as unknown as BaseProvider;
+    const registry = new ProviderRegistry();
+    registry.register(provider);
+    registerProvidersRoutes(app, {
+      registry,
+      queueManager: new QueueManager(),
+      healthChecker: {} as HealthChecker,
+      defaultConfigs: {},
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/admin/providers/codex/test',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      response: 'Executable is available for the logged-in user.',
+    });
+    expect(execute).not.toHaveBeenCalled();
     await app.close();
   });
 

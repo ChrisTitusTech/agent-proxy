@@ -358,6 +358,14 @@ rollback)
 		printf 'Current or previous release link is invalid; cannot roll back.\n' >&2
 		exit 1
 	}
+	for release in "$current" "$previous"; do
+		[[ -d "$release" &&
+			-f "$release/packaging/systemd/agent-proxy.service" &&
+			-f "$release/packaging/systemd/herdr.service" ]] || {
+			printf 'Rollback release is missing or incomplete: %s\n' "$release" >&2
+			exit 1
+		}
+	done
 	service_stop_all
 	ln -sfn "$previous" "$DATA_DIR/current"
 	ln -sfn "$current" "$DATA_DIR/previous"

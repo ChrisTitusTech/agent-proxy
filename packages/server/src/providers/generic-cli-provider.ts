@@ -97,6 +97,17 @@ export class GenericCliProvider extends BaseProvider {
     return args;
   }
 
+  protected override getRecursionCheckArgs(options: ExecuteOptions): string[] {
+    const template = options.stream && this.genericConfig.stream_args_template
+      ? this.genericConfig.stream_args_template
+      : this.genericConfig.args_template;
+    const model = options.model || this.config.default_model;
+    return [
+      ...template.map((argument) => argument.replace(/\{model\}/g, model)),
+      ...this.config.extra_args,
+    ];
+  }
+
 
 
   protected override getStdinData(options: ExecuteOptions): string | undefined {

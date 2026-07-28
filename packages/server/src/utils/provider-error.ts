@@ -83,7 +83,9 @@ export function classifyProviderError(
       fallbackEligible: true,
     };
   }
-  if (/herdr.*(?:unavailable|not running|incompatible|failed)|no herdr execution backend/.test(normalized)) {
+  if (
+    /herdr.*(?:unavailable|not running|incompatible|failed|protocol mismatch|worker.*(?:connect|startup))|no herdr execution backend/.test(normalized)
+  ) {
     return {
       kind: 'herdr_unavailable',
       code: 'herdr_unavailable',

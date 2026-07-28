@@ -17,6 +17,8 @@ describe('provider error classification', () => {
     ['invalid request payload', 'provider_validation_error'],
     ['Herdr is unavailable', 'herdr_unavailable'],
     ['Herdr worker failed to spawn before startup', 'herdr_unavailable'],
+    ['Herdr worker protocol mismatch', 'herdr_unavailable'],
+    ['Herdr worker did not connect before startup timeout', 'herdr_unavailable'],
     ['codex queue is full', 'provider_queue_overloaded'],
   ])('classifies %s', (message, code) => {
     expect(classifyProviderError(message, 'codex').code).toBe(code);

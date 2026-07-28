@@ -32,6 +32,12 @@ if grep -q 'network-online.target' "$PROXY_UNIT"; then
 	printf 'User service must not depend on the system network-online target.\n' >&2
 	exit 1
 fi
+if grep -q '^ProtectSystem=strict$' "$PROXY_UNIT" "$HERDR_UNIT"; then
+	printf 'User services must preserve writable current-user provider state.\n' >&2
+	exit 1
+fi
+grep -q '^ProtectSystem=full$' "$PROXY_UNIT"
+grep -q '^ProtectSystem=full$' "$HERDR_UNIT"
 grep -q '^Documentation=https://herdr.dev$' "$HERDR_UNIT"
 grep -q '^EnvironmentFile="@CONFIG_DIR@/agent-proxy.env"$' "$HERDR_UNIT"
 grep -q '^ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/herdr/server.js"$' \

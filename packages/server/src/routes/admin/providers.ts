@@ -277,27 +277,17 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
     const startTime = Date.now();
 
 
-    const endpointTypes = (provider as unknown as { endpointTypes?: string[] }).endpointTypes;
-    const isNonChat = endpointTypes && !endpointTypes.includes('chat');
-
-    const testPrompt = isNonChat && endpointTypes?.includes('images')
-      ? 'A simple test image: blue circle on white background'
-      : 'Say "OK" and nothing else.';
-
     try {
-      const result = await provider.execute({
-        messages: [{ role: 'user', content: testPrompt }],
-        model,
-        stream: false,
-      });
+      const status = await provider.checkHealth();
 
       const latencyMs = Date.now() - startTime;
 
       return reply.send({
-        success: true,
-        response: result.content.substring(0, 200),
+        success: status === 'healthy',
+        ...(status === 'healthy'
+          ? { response: 'Executable is available for the logged-in user.' }
+          : { error: 'Executable is unavailable for the logged-in user.' }),
         latencyMs,
-        usage: result.usage,
       });
     } catch (err) {
       const latencyMs = Date.now() - startTime;

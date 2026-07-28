@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ExecuteOptions,
@@ -105,6 +106,46 @@ afterEach(async () => {
 });
 
 describe('Anthropic Messages normalization', () => {
+  it('propagates a non-streaming client disconnect to the provider signal', async () => {
+    let observedSignal: AbortSignal | undefined;
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const execute = vi.fn(async (providerOptions: ExecuteOptions) => {
+      observedSignal = providerOptions.signal;
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      throw new Error('Request cancelled');
+    });
+    const deps = createDeps(fakeProvider({ execute }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
   it('preserves tool definitions, calls, results, and choice', () => {
     const result = normalizeAnthropicMessages({
       model: 'claude-test',

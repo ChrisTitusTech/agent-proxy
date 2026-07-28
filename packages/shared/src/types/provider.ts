@@ -17,6 +17,8 @@ export interface CliProviderConfig {
   cli_path: string;
   default_model: string;
   max_concurrent: number;
+  max_queue_size?: number;
+  max_queue_wait_ms?: number;
   timeout_ms: number;
   extra_args: string[];
   [key: string]: unknown;

@@ -12,6 +12,7 @@ import type {
 import { resolveProxyPort } from './base-provider.js';
 import { CodexProvider } from './codex-provider.js';
 import { GrokProvider } from './grok-provider.js';
+import { GenericCliProvider } from './generic-cli-provider.js';
 
 const temporaryDirectories: string[] = [];
 const originalCodexHome = process.env.CODEX_HOME;
@@ -57,6 +58,53 @@ function config(overrides: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml
 }
 
 describe('built-in provider recursion prevention', () => {
+  it('rejects generic CLI loopback arguments before creating a pane', async () => {
+    const backend = new RecordingBackend();
+    const provider = new GenericCliProvider('curl-provider', {
+      ...config({
+        cli_path: 'curl',
+        extra_args: [],
+      }),
+      args_template: ['--url=http://127.0.0.1:18300/v1/chat/completions'],
+      prompt_mode: 'stdin',
+      output_mode: 'plain_text',
+      streaming_enabled: false,
+      display_name: 'Curl provider',
+    }, backend, 18300);
+
+    await expect(provider.execute({
+      messages: [{ role: 'user', content: 'test' }],
+      model: 'generic',
+      stream: false,
+    })).rejects.toThrow(/arguments route provider traffic back/);
+    expect(backend.starts).toHaveLength(0);
+  });
+
+  it('does not treat a loopback URL inside the user prompt as CLI recursion', async () => {
+    const backend = new RecordingBackend();
+    const provider = new GenericCliProvider('prompt-provider', {
+      ...config({
+        cli_path: 'fixture',
+        extra_args: [],
+      }),
+      args_template: ['--prompt', '{prompt}'],
+      prompt_mode: 'arg',
+      output_mode: 'plain_text',
+      streaming_enabled: false,
+      display_name: 'Prompt provider',
+    }, backend, 18300);
+
+    await expect(provider.execute({
+      messages: [{
+        role: 'user',
+        content: 'Explain http://127.0.0.1:18300 without calling it.',
+      }],
+      model: 'generic',
+      stream: false,
+    })).rejects.toThrow('backend should not start');
+    expect(backend.starts).toHaveLength(1);
+  });
+
   it.each([
     'http://localhost:18300/v1',
     'http://localhost.localdomain:18300',

@@ -417,7 +417,12 @@ export function registerExportImportRoutes(
             deps.registry.proxyPort,
           );
           deps.registry.register(provider);
-          deps.queueManager.addQueue(name, genericConfig.max_concurrent);
+          deps.queueManager.addQueue(
+            name,
+            genericConfig.max_concurrent,
+            genericConfig.max_queue_size,
+            genericConfig.max_queue_wait_ms,
+          );
           deps.healthChecker.checkProvider(name).catch(() => {});
         }
 

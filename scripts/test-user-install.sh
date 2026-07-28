@@ -127,6 +127,16 @@ grep -q '# release 1.0.0-test2' "$XDG_CONFIG_HOME/systemd/user/agent-proxy.servi
 [[ $(<"$SYSTEMCTL_STATE") == active ]]
 [[ ! -e "$XDG_DATA_HOME/agent-proxy/releases/1.0.0-test3" ]]
 
+previous_target=$(readlink "$XDG_DATA_HOME/agent-proxy/previous")
+ln -sfn "$XDG_DATA_HOME/agent-proxy/releases/missing" "$XDG_DATA_HOME/agent-proxy/previous"
+if run_installer rollback; then
+	printf 'Rollback unexpectedly accepted an incomplete previous release.\n' >&2
+	exit 1
+fi
+[[ $(<"$SYSTEMCTL_STATE") == active ]]
+[[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test2 ]]
+ln -sfn "$previous_target" "$XDG_DATA_HOME/agent-proxy/previous"
+
 current_target=$(readlink "$XDG_DATA_HOME/agent-proxy/current")
 rm -f "$XDG_DATA_HOME/agent-proxy/current"
 if run_installer rollback; then

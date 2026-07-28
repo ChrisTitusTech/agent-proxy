@@ -9,7 +9,7 @@ import type {
   TokenUsage,
   ValidationConfig,
 } from '@agent-proxy/shared';
-import { extractClientKey } from '../../utils/client-key.js';
+import { extractClientKey, extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
@@ -142,6 +142,7 @@ interface ExecutionContext {
   normalized: NormalizedResponsesInput;
   messages: ChatMessage[];
   clientKey: string;
+  providerClientKey: string;
   apiKeyId?: string;
   keyLimits?: RequestAuthContext['apiKeyRateLimits'];
   responseId: string;
@@ -623,7 +624,7 @@ function providerOptions(
     signal,
     clientKey: context.body.previous_response_id
       ? undefined
-      : context.clientKey,
+      : context.providerClientKey,
     requestId: context.responseId,
     reasoningEffort: context.body.reasoning?.effort as ReasoningEffort | undefined
       ?? route.reasoningEffort,
@@ -1462,6 +1463,7 @@ export function registerResponsesRoute(
 
     const authContext = request as FastifyRequest & RequestAuthContext;
     const clientKey = extractClientKey(request, authContext.apiKeyId);
+    const providerClientKey = extractProviderClientKey(request, authContext.apiKeyId);
     const continuation = prepareContinuation(
       body,
       normalized.data,
@@ -1513,6 +1515,7 @@ export function registerResponsesRoute(
       normalized: normalized.data,
       messages: continuation.data.messages,
       clientKey,
+      providerClientKey,
       apiKeyId: authContext.apiKeyId,
       keyLimits: authContext.apiKeyRateLimits,
       responseId,

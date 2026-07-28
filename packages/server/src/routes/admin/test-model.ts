@@ -64,6 +64,12 @@ export function registerTestModelRoute(
       } else if (provider instanceof HttpProvider && httpEndpointType === 'tts') {
         const r = await provider.executeTts({ model: actual_model, input: 'ping', voice: 'alloy' });
         response = `✓ tts: ${r.audio.length} bytes (${r.contentType})`;
+      } else if (!(provider instanceof HttpProvider)) {
+        const status = await provider.checkHealth();
+        if (status !== 'healthy') {
+          throw new Error('Executable is unavailable for the logged-in user.');
+        }
+        response = 'Executable is available for the logged-in user.';
       } else {
         const result = await provider.execute({
           messages: [{ role: 'user', content: testPrompt }],

@@ -297,6 +297,48 @@ describe('Chat Completions tool compatibility', () => {
     expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
   });
 
+  it('propagates a non-streaming client disconnect to the provider signal', async () => {
+    let observedSignal: AbortSignal | undefined;
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const execute = vi.fn(async (providerOptions: ExecuteOptions) => {
+      observedSignal = providerOptions.signal;
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      throw new Error('Request cancelled');
+    });
+    const deps = createDeps({
+      name: 'fixture',
+      execute,
+    } as unknown as BaseProvider);
+    app = await createApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
   it('finalizes a disconnect while the provider is still queued', async () => {
     let runQueued!: () => Promise<void>;
     let resolveQueue!: () => void;
