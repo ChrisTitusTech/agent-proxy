@@ -111,6 +111,8 @@ describe('built-in provider recursion prevention', () => {
     'http://127.0.0.1:18300/v1',
     'http://127.42.0.9:18300',
     'http://[::1]:18300/v1',
+    'http://[::ffff:7f00:1]:18300/v1',
+    'http://[::ffff:127.0.0.1]:18300/v1',
     'http://0.0.0.0:18300/v1',
     'http://[::]:18300/v1',
   ])('rejects loopback provider URL %s before creating a pane', async (baseUrl) => {

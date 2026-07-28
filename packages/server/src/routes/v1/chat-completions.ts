@@ -601,6 +601,10 @@ export function registerChatCompletionsRoute(
               return;
             }
             await deps.registry.assertExecutionReady(provider);
+            if (abortController.signal.aborted) {
+              await finalizeCancellation();
+              return;
+            }
             providerStarted = true;
 
 
@@ -796,7 +800,7 @@ export function registerChatCompletionsRoute(
             }
 
             finishActiveRequest();
-            });
+            }, { signal: abortController.signal });
 
             return;
             } finally {
@@ -831,6 +835,7 @@ export function registerChatCompletionsRoute(
               parallelToolCalls: body.parallel_tool_calls,
               signal: abortController.signal,
               }),
+              { signal: abortController.signal },
             );
           } finally {
             request.raw.removeListener('aborted', onClientClose);

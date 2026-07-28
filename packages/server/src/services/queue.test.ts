@@ -32,4 +32,32 @@ describe('QueueManager', () => {
     release();
     await blocker;
   });
+
+  it('removes queued work immediately when its request is cancelled', async () => {
+    const manager = new QueueManager();
+    manager.addQueue('codex', 1, 2, 30_000);
+    let release!: () => void;
+    const blocker = manager.enqueue(
+      'codex',
+      () => new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const queued = manager.enqueue(
+      'codex',
+      async () => 'late',
+      { signal: controller.signal },
+    );
+
+    expect(manager.getStatus('codex')?.size).toBe(1);
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({
+      code: 'request_cancelled',
+    });
+    expect(manager.getStatus('codex')?.size).toBe(0);
+
+    release();
+    await blocker;
+  });
 });

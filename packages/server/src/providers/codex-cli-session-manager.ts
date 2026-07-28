@@ -8,6 +8,7 @@ const CLEANUP_INTERVAL_MS = 60 * 1000;
 export interface CliSession {
   threadId: string;
   model: string;
+  executionIdentity: string;
   lastUsedAt: number;
   ttlMs: number;
 }
@@ -26,7 +27,11 @@ export class CodexCliSessionManager {
   }
 
 
-  get(clientKey: string, model: string): CliSession | null {
+  get(
+    clientKey: string,
+    model: string,
+    executionIdentity = '',
+  ): CliSession | null {
     const session = this.sessions.get(clientKey);
     if (!session) return null;
 
@@ -35,7 +40,10 @@ export class CodexCliSessionManager {
       return null;
     }
 
-    if (session.model !== model) {
+    if (
+      session.model !== model
+      || session.executionIdentity !== executionIdentity
+    ) {
       this.sessions.delete(clientKey);
       return null;
     }
@@ -45,10 +53,16 @@ export class CodexCliSessionManager {
   }
 
 
-  set(clientKey: string, threadId: string, model: string): void {
+  set(
+    clientKey: string,
+    threadId: string,
+    model: string,
+    executionIdentity = '',
+  ): void {
     this.sessions.set(clientKey, {
       threadId,
       model,
+      executionIdentity,
       lastUsedAt: Date.now(),
       ttlMs: this.defaultTtlMs,
     });

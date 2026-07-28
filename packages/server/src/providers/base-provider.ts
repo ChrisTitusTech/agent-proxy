@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, readFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
@@ -55,6 +55,17 @@ export function resolveProxyPort(
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65_535
     ? parsed
     : 8300;
+}
+
+export function providerExecutionIdentity(config: ProviderConfigYaml): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      cliPath: config.cli_path,
+      workingDirectory: config.working_dir ?? null,
+      extraArgs: config.extra_args,
+      cliOptions: config.cli_options ?? null,
+    }))
+    .digest('hex');
 }
 
 export abstract class BaseProvider {
@@ -263,6 +274,7 @@ export abstract class BaseProvider {
     return recursionCheck.then(() => this.executionBackend.start({
       provider: this.name,
       model: options.model || config.default_model,
+      executionIdentity: providerExecutionIdentity(config),
       ...(options.requestId ? { requestId: options.requestId } : {}),
       clientKey: options.clientKey && (
         options.clientKey.includes('|session:')
@@ -405,12 +417,20 @@ function isProxyLoopbackUrl(value: string, proxyPort: number): boolean {
       || hostname === '::1'
       || hostname === '0.0.0.0'
       || hostname === '::'
-      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+      || isMappedIpv4Loopback(hostname);
     const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
     return isLoopback && effectivePort === String(proxyPort);
   } catch {
     return false;
   }
+}
+
+function isMappedIpv4Loopback(hostname: string): boolean {
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(hostname);
+  if (!mapped) return false;
+  const high = Number.parseInt(mapped[1], 16);
+  return (high >> 8) === 127;
 }
 
 function activeCodexBaseUrls(config: string, args: string[]): string[] {

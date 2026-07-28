@@ -1,5 +1,5 @@
 import type { ExecuteOptions, ExecuteResult, ProviderEvent, ProviderConfigYaml } from '@agent-proxy/shared';
-import { BaseProvider } from './base-provider.js';
+import { BaseProvider, providerExecutionIdentity } from './base-provider.js';
 import { convertMessagesToSinglePrompt } from '../utils/message-converter.js';
 import { prepareCodexPrompt } from '../utils/image-extractor.js';
 import { CodexCliSessionManager } from './codex-cli-session-manager.js';
@@ -161,7 +161,11 @@ export class CodexProvider extends BaseProvider {
     let resumeThreadId: string | null = null;
     if (effective.cli_options?.enable_session_reuse === true && options.clientKey && !ctx?.imageFiles?.length) {
       const sm = this.ensureCliSessionManager(effective.cli_options.session_ttl_ms);
-      const existing = sm.get(options.clientKey, model);
+      const existing = sm.get(
+        options.clientKey,
+        model,
+        providerExecutionIdentity(effective),
+      );
       if (existing) {
         resumeThreadId = existing.threadId;
       }
@@ -283,8 +287,13 @@ export class CodexProvider extends BaseProvider {
     const effective = this.getEffectiveConfig(options);
     const sessionReuseEnabled = effective.cli_options?.enable_session_reuse === true && !!options.clientKey;
     const model = options.model || effective.default_model;
+    const executionIdentity = providerExecutionIdentity(effective);
     const wasResume = sessionReuseEnabled
-      ? !!this.cliSessionManager?.get(options.clientKey!, model)
+      ? !!this.cliSessionManager?.get(
+        options.clientKey!,
+        model,
+        executionIdentity,
+      )
       : false;
 
     try {
@@ -292,7 +301,12 @@ export class CodexProvider extends BaseProvider {
 
       if (sessionReuseEnabled && result.meta?.threadId) {
         const sm = this.ensureCliSessionManager(effective.cli_options?.session_ttl_ms);
-        sm.set(options.clientKey!, result.meta.threadId, model);
+        sm.set(
+          options.clientKey!,
+          result.meta.threadId,
+          model,
+          executionIdentity,
+        );
         return { ...result, meta: { ...result.meta, threadReused: wasResume } };
       }
       return result;
@@ -334,13 +348,19 @@ export class CodexProvider extends BaseProvider {
     const effective = this.getEffectiveConfig(options);
     const sessionReuseEnabled = effective.cli_options?.enable_session_reuse === true && !!options.clientKey;
     const model = options.model || effective.default_model;
+    const executionIdentity = providerExecutionIdentity(effective);
 
     try {
       for await (const event of super.executeStream(ext)) {
         if (event.type === 'thread_started') {
           if (sessionReuseEnabled) {
             const sm = this.ensureCliSessionManager(effective.cli_options?.session_ttl_ms);
-            sm.set(options.clientKey!, event.threadId, model);
+            sm.set(
+              options.clientKey!,
+              event.threadId,
+              model,
+              executionIdentity,
+            );
           }
 
           continue;

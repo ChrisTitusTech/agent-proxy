@@ -1,11 +1,14 @@
+import { spawn } from 'node:child_process';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   HerdrLauncher,
+  type ProviderExecutionHandle,
   type ProviderExecutionRequest,
 } from './launcher.js';
+import { HERDR_WORKER_PROTOCOL } from './protocol.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -52,6 +55,7 @@ describe('Herdr launcher readiness', () => {
     await expect(launcher.start({
       provider: 'codex',
       model: 'test',
+      executionIdentity: 'sandbox-read-only',
       clientKey: 'request:test',
       command: 'codex',
       args: [],
@@ -107,12 +111,20 @@ interface LauncherInternals {
   panes: Map<string, { paneId: string; tabId: string; lastUsedAt: number }>;
   reservedPaneIds: Set<string>;
   prunePanes: (currentKey: string) => Promise<void>;
+  pruneStaleTabs: (workspaceId: string) => Promise<void>;
+  sessionKey: (request: ProviderExecutionRequest) => string;
+  startWorker: (
+    paneId: string,
+    sessionKey: string,
+    request: ProviderExecutionRequest,
+  ) => Promise<ProviderExecutionHandle>;
 }
 
 function request(clientKey = 'client'): ProviderExecutionRequest {
   return {
     provider: 'codex',
     model: 'gpt-test',
+    executionIdentity: 'sandbox-read-only',
     requestId: 'request-test',
     clientKey,
     command: 'codex',
@@ -171,6 +183,31 @@ function launcherWithCommandFixture(maxPanes = 1) {
 }
 
 describe('Herdr pane lifecycle', () => {
+  it('uses execution identity when selecting a reusable pane', () => {
+    const { internals } = launcherWithCommandFixture();
+    const permissive = internals.sessionKey({
+      ...request('shared-client'),
+      executionIdentity: 'sandbox-workspace-write',
+    });
+    const restricted = internals.sessionKey({
+      ...request('shared-client'),
+      executionIdentity: 'sandbox-read-only',
+    });
+
+    expect(restricted).not.toBe(permissive);
+  });
+
+  it('does not prune session keys while requests using them are starting', () => {
+    const { internals } = launcherWithCommandFixture(1);
+    const firstRequest = request('first');
+    const firstKey = internals.sessionKey(firstRequest);
+
+    internals.sessionKey(request('second'));
+    internals.sessionKey(request('third'));
+
+    expect(internals.sessionKey(firstRequest)).toBe(firstKey);
+  });
+
   it('does not prune another request pane while its worker is still starting', async () => {
     const { internals, commands } = launcherWithCommandFixture(1);
 
@@ -259,5 +296,123 @@ describe('Herdr pane lifecycle', () => {
     await internals.prunePanes('');
 
     expect(internals.panes.has('session-a')).toBe(true);
+  });
+
+  it('continues stale-tab cleanup when one tab cannot be closed', async () => {
+    const { internals, commands, tabs } = launcherWithCommandFixture();
+    tabs.push({
+      tab_id: 'stale-tab',
+      workspace_id: 'workspace',
+      label: 'api-codex-a1b2c3d4e5f60708',
+    });
+    tabs.push({
+      tab_id: 'stale-tab-2',
+      workspace_id: 'workspace',
+      label: 'api-codex-a1b2c3d4e5f60709',
+    });
+    const fixtureCommand = internals.command;
+    internals.command = async (args: string[]) => {
+      if (
+        args[0] === 'tab'
+        && args[1] === 'close'
+        && args[2] === 'stale-tab'
+      ) {
+        commands.push(args);
+        throw new Error('stale tab is unreachable');
+      }
+      return fixtureCommand(args);
+    };
+
+    await expect(internals.pruneStaleTabs('workspace')).resolves.toBeUndefined();
+    expect(commands).toContainEqual(['tab', 'close', 'stale-tab']);
+    expect(commands).toContainEqual(['tab', 'close', 'stale-tab-2']);
+  });
+
+  it('does not launch a worker after startup consumes its request deadline', async () => {
+    const { internals, commands } = launcherWithCommandFixture();
+    internals.panes.set('session-a', {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now(),
+    });
+    internals.reportPane = async (
+      _paneId,
+      _sessionKey,
+      _request,
+      state,
+    ) => {
+      if (state === 'working') {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      }
+    };
+
+    await expect(internals.startWorker(
+      'pane-1',
+      'session-a',
+      { ...request(), timeoutMs: 5 },
+    )).rejects.toThrow(/timed out/);
+    expect(commands.some(
+      (args) => args[0] === 'pane' && args[1] === 'run',
+    )).toBe(false);
+  });
+
+  it('returns a handle when the worker exits before pane run resolves', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'agent-proxy-worker-exit-'));
+    temporaryDirectories.push(directory);
+    const workerPath = resolve(directory, 'early-exit-worker.mjs');
+    await writeFile(workerPath, `
+import { createConnection } from 'node:net';
+const socket = createConnection(process.argv[2]);
+let buffered = '';
+socket.setEncoding('utf8');
+socket.once('connect', () => {
+  socket.write(JSON.stringify({
+    type: 'ready',
+    protocol: ${HERDR_WORKER_PROTOCOL},
+    pid: process.pid,
+  }) + '\\n');
+});
+socket.on('data', (chunk) => {
+  buffered += chunk;
+  if (!buffered.includes('\\n')) return;
+  socket.write(JSON.stringify({ type: 'exit', code: 0 }) + '\\n');
+  socket.end();
+});
+`, 'utf8');
+    const { internals } = launcherWithCommandFixture();
+    internals.panes.set('session-a', {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now(),
+    });
+    internals.reportPane = async () => undefined;
+    const fixtureCommand = internals.command;
+    internals.command = async (args: string[]) => {
+      if (args[0] !== 'pane' || args[1] !== 'run') {
+        return fixtureCommand(args);
+      }
+      await new Promise<void>((resolveExit, rejectExit) => {
+        const worker = spawn(args[3], [workerPath, args[5]], {
+          stdio: 'ignore',
+        });
+        worker.once('error', rejectExit);
+        worker.once('exit', (code) => {
+          if (code === 0) resolveExit();
+          else rejectExit(new Error(`fixture worker exited ${code}`));
+        });
+      });
+      return { type: 'ok' };
+    };
+
+    const handle = await internals.startWorker(
+      'pane-1',
+      'session-a',
+      { ...request(), timeoutMs: 1_000 },
+    );
+
+    await expect(handle.completion).resolves.toMatchObject({
+      exitCode: 0,
+      terminalState: 'completed',
+    });
   });
 });

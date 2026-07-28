@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import type { ExecuteOptions, ProviderConfigYaml } from '@agent-proxy/shared';
+import { providerExecutionIdentity } from './base-provider.js';
 import { CodexProvider, filterResumeUnsupportedArgs } from './codex-provider.js';
 
 function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml {
@@ -114,7 +115,12 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     (provider as any).buildArgs(options);
     const sm = provider.getCliSessionManager();
     expect(sm).not.toBeNull();
-    sm!.set('client-a', 'tid-XYZ', 'gpt-5.6-sol');
+    sm!.set(
+      'client-a',
+      'tid-XYZ',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(options)),
+    );
 
 
     const args2: string[] = (provider as any).buildArgs(options);
@@ -170,7 +176,12 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     });
     (provider as any).buildArgs(opt('a'));
     const sm = provider.getCliSessionManager()!;
-    sm.set('a', 'tid-A', 'gpt-5.6-sol');
+    sm.set(
+      'a',
+      'tid-A',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(opt('a'))),
+    );
 
     const argsB: string[] = (provider as any).buildArgs(opt('b'));
     expect(argsB).not.toContain('resume');
@@ -178,5 +189,34 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     const argsA: string[] = (provider as any).buildArgs(opt('a'));
     expect(argsA[1]).toBe('resume');
     expect(argsA[2]).toBe('tid-A');
+  });
+
+  it('does not resume a thread across different permission arguments', () => {
+    provider = new CodexProvider(baseConfig());
+    const permissive = baseOptions({
+      clientKey: 'client-a',
+      providerOverrides: {
+        extra_args: ['--sandbox', 'workspace-write'],
+        cli_options: { enable_session_reuse: true },
+      },
+    });
+    (provider as any).buildArgs(permissive);
+    provider.getCliSessionManager()!.set(
+      'client-a',
+      'tid-permissive',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(permissive)),
+    );
+
+    const restrictedArgs: string[] = (provider as any).buildArgs(baseOptions({
+      clientKey: 'client-a',
+      providerOverrides: {
+        extra_args: ['--sandbox', 'read-only'],
+        cli_options: { enable_session_reuse: true },
+      },
+    }));
+
+    expect(restrictedArgs).not.toContain('resume');
+    expect(restrictedArgs).toContain('read-only');
   });
 });

@@ -9,6 +9,7 @@ import type {
 } from '@agent-proxy/shared';
 import type { BaseProvider } from '../../providers/base-provider.js';
 import type { ResolvedRoute } from '../../services/router.js';
+import { logRequest } from '../../middleware/request-logger.js';
 import {
   normalizeAnthropicMessages,
   registerMessagesRoute,
@@ -104,6 +105,7 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   await app?.close();
   app = undefined;
+  vi.mocked(logRequest).mockClear();
 });
 
 describe('Anthropic Messages normalization', () => {
@@ -173,26 +175,72 @@ describe('Anthropic Messages normalization', () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
-  it('finalizes a disconnect while the provider is still queued', async () => {
-    let runQueued!: () => Promise<void>;
-    let resolveQueue!: () => void;
-    const queueReleased = new Promise<void>((resolve) => {
-      resolveQueue = resolve;
+  it('records a streaming provider cancellation as cancelled', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
     });
+    const executeStream = vi.fn(async function* (
+      providerOptions: ExecuteOptions,
+    ): AsyncIterable<ProviderEvent> {
+      yield { type: 'text_delta', text: 'started' };
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      throw new Error('Request cancelled');
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+      expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'error',
+    )).toBe(false);
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
+  it('finalizes a disconnect while the provider is still queued', async () => {
     const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
       yield { type: 'done' };
     });
     const deps = createDeps(fakeProvider({ executeStream }));
-    deps.queue.enqueue = vi.fn(async (
+    deps.queue.enqueue = vi.fn((
       _provider: string,
-      run: () => Promise<void>,
-    ) => {
-      runQueued = async () => {
-        await run();
-        resolveQueue();
-      };
-      await queueReleased;
-    }) as unknown as MessagesDeps['queue']['enqueue'];
+      _run: () => Promise<void>,
+      options: { signal?: AbortSignal } = {},
+    ) => new Promise<void>((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => {
+        reject(new Error('fixture queue wait cancelled with request'));
+      }, { once: true });
+    })) as unknown as MessagesDeps['queue']['enqueue'];
     app = await createTestApp(deps);
     await app.listen({ host: '127.0.0.1', port: 0 });
     const address = app.server.address() as AddressInfo;
@@ -213,16 +261,22 @@ describe('Anthropic Messages normalization', () => {
     );
     await vi.waitFor(() => {
       expect(deps.activeRequests.start).toHaveBeenCalledOnce();
-      expect(runQueued).toBeTypeOf('function');
+      expect(deps.queue.enqueue).toHaveBeenCalledOnce();
     });
     controller.abort();
     await expect(request).rejects.toThrow();
     await vi.waitFor(() => {
       expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
     });
-    await runQueued();
 
     expect(executeStream).not.toHaveBeenCalled();
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'error',
+    )).toBe(false);
     expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
   });
 

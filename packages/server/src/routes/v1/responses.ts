@@ -802,6 +802,7 @@ async function executeNonStreaming(
       const result = await deps.queue.enqueue(
         route.provider,
         () => provider.execute(providerOptions(context, route, signal)),
+        { signal },
       );
       if (result.finishReason === 'error') {
         throw new Error('Provider reported an unsuccessful completion.');
@@ -1363,7 +1364,7 @@ async function executeStreaming(
           throw error;
         }
       }
-    });
+    }, { signal });
 
     if (signal.aborted && !state.responseLengthExceeded) {
       throw new Error('Request cancelled');

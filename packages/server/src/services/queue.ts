@@ -17,10 +17,19 @@ class ProviderQueueWaitError extends Error {
   readonly code = 'provider_queue_wait_timeout';
 }
 
+class ProviderQueueCancelledError extends Error {
+  readonly code = 'request_cancelled';
+}
+
 interface ManagedQueue {
   queue: PQueue;
   maxQueueSize: number;
   maxQueueWaitMs: number;
+}
+
+interface EnqueueOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export class QueueManager {
@@ -42,7 +51,7 @@ export class QueueManager {
   async enqueue<T>(
     provider: string,
     fn: () => Promise<T>,
-    timeoutMs?: number,
+    options: EnqueueOptions = {},
   ): Promise<T> {
     const managed = this.queues.get(provider);
     if (!managed) {
@@ -56,9 +65,20 @@ export class QueueManager {
         `${provider} queue is full (${maxQueueSize} waiting requests).`,
       );
     }
-    const waitLimit = Math.min(maxQueueWaitMs, timeoutMs ?? maxQueueWaitMs);
+    const waitLimit = Math.min(
+      maxQueueWaitMs,
+      options.timeoutMs ?? maxQueueWaitMs,
+    );
     const controller = new AbortController();
     let started = false;
+    let requestCancelled = false;
+    const onRequestAbort = () => {
+      if (started) return;
+      requestCancelled = true;
+      controller.abort();
+    };
+    options.signal?.addEventListener('abort', onRequestAbort, { once: true });
+    if (options.signal?.aborted) onRequestAbort();
     const waitTimer = setTimeout(() => {
       if (!started) controller.abort();
     }, waitLimit);
@@ -70,6 +90,11 @@ export class QueueManager {
       }, { signal: controller.signal }) as T;
     } catch (error) {
       if (controller.signal.aborted && !started) {
+        if (requestCancelled) {
+          throw new ProviderQueueCancelledError(
+            `${provider} queue wait cancelled with the request.`,
+          );
+        }
         throw new ProviderQueueWaitError(
           `${provider} queue wait timed out after ${waitLimit}ms.`,
         );
@@ -77,6 +102,7 @@ export class QueueManager {
       throw error;
     } finally {
       clearTimeout(waitTimer);
+      options.signal?.removeEventListener('abort', onRequestAbort);
     }
   }
 

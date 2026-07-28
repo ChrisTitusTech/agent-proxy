@@ -945,6 +945,15 @@ export function registerMessagesRoute(
               } catch (streamErr) {
 
                 const errMsg = streamErr instanceof Error ? streamErr.message : 'Stream interrupted';
+                const failure = classifyProviderError(errMsg, route.provider);
+                if (
+                  abortController.signal.aborted
+                  || failure.kind === 'cancelled'
+                ) {
+                  reply.raw.end();
+                  await finalizeCancellation(errMsg);
+                  return;
+                }
                 writeSSE(reply.raw, 'error', makeAnthropicError('api_error', errMsg));
                 reply.raw.end();
 
@@ -963,7 +972,6 @@ export function registerMessagesRoute(
                 });
 
                 finishActiveRequest();
-                const failure = classifyProviderError(errMsg, route.provider);
                 if (shouldDegradeProviderHealth(failure)) {
                   await deps.healthChecker.onRequestFailure(route.provider);
                 }
@@ -1054,7 +1062,7 @@ export function registerMessagesRoute(
               }
 
               finishActiveRequest();
-              });
+              }, { signal: abortController.signal });
             } finally {
               request.raw.removeListener('aborted', onClientClose);
               reply.raw.removeListener('close', onClientClose);
@@ -1090,6 +1098,7 @@ export function registerMessagesRoute(
               parallelToolCalls: normalized.data.parallelToolCalls,
               signal: abortController.signal,
               }),
+              { signal: abortController.signal },
             );
           } finally {
             request.raw.removeListener('aborted', onClientClose);
@@ -1252,6 +1261,12 @@ export function registerMessagesRoute(
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           lastErrorProvider = route.provider;
+          const failure = classifyProviderError(lastError, route.provider);
+          if (failure.kind === 'cancelled') {
+            await finalizeCancellation(lastError.message);
+            lastError = new Error('Request cancelled');
+            break;
+          }
           const isTimeout = lastError.message.includes('timed out');
 
           const errLatency = Date.now() - startTime;
@@ -1284,10 +1299,6 @@ export function registerMessagesRoute(
           }
 
           finishActiveRequest();
-          const failure = classifyProviderError(
-            lastError,
-            route.provider,
-          );
           if (shouldDegradeProviderHealth(failure)) {
             await deps.healthChecker.onRequestFailure(route.provider);
           }

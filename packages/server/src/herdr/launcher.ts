@@ -25,6 +25,7 @@ export interface HerdrLauncherConfig {
 export interface ProviderExecutionRequest {
   provider: string;
   model: string;
+  executionIdentity: string;
   requestId?: string;
   clientKey: string;
   command: string;
@@ -109,6 +110,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private readonly panes = new Map<string, PaneRecord>();
   private readonly active = new Set<ProviderExecutionHandle>();
   private readonly starting = new Set<Promise<ProviderExecutionHandle>>();
+  private readonly startingSessionKeys = new Map<string, number>();
   private readonly reservedPaneIds = new Set<string>();
   private readonly sessionKeys = new Map<string, SessionKeyRecord>();
   private workspaceId: string | null = null;
@@ -181,17 +183,21 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     }
 
     const sessionKey = this.sessionKey(request);
-    const release = await this.mutex.acquire(sessionKey, {
-      ...(request.signal ? { signal: request.signal } : {}),
-      timeoutMs: Math.max(0, deadline - Date.now()),
-    });
+    let startingKeyReserved = true;
+    let release: (() => void) | undefined;
     let pane: PaneRecord | undefined;
     try {
+      release = await this.mutex.acquire(sessionKey, {
+        ...(request.signal ? { signal: request.signal } : {}),
+        timeoutMs: Math.max(0, deadline - Date.now()),
+      });
       this.assertRequestCanStart(request, deadline);
       if (this.shuttingDown) {
         throw new HerdrUnavailableError('Herdr launcher is shutting down.');
       }
       pane = await this.ensurePane(sessionKey, request);
+      this.releaseStartingSessionKey(sessionKey);
+      startingKeyReserved = false;
       this.assertRequestCanStart(request, deadline);
       if (this.shuttingDown) {
         throw new HerdrUnavailableError('Herdr launcher is shutting down.');
@@ -206,18 +212,19 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       void handle.completion.then(() => {
         this.active.delete(handle);
         pane!.lastUsedAt = Date.now();
-        release();
+        release!();
         void this.prunePanesWithLock().catch(() => undefined);
       }, () => {
         this.active.delete(handle);
         pane!.lastUsedAt = Date.now();
-        release();
+        release!();
         void this.prunePanesWithLock().catch(() => undefined);
       });
       return handle;
     } catch (error) {
       if (pane) this.reservedPaneIds.delete(pane.paneId);
-      release();
+      if (startingKeyReserved) this.releaseStartingSessionKey(sessionKey);
+      release?.();
       throw error;
     }
   }
@@ -246,10 +253,17 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   }
 
   private sessionKey(request: ProviderExecutionRequest): string {
-    const identity = `${request.clientKey}\0${request.provider}\0${request.model}\0${request.cwd}`;
+    const identity = [
+      request.clientKey,
+      request.provider,
+      request.model,
+      request.cwd,
+      request.executionIdentity,
+    ].join('\0');
     const existing = this.sessionKeys.get(identity);
     if (existing) {
       existing.lastUsedAt = Date.now();
+      this.reserveStartingSessionKey(existing.key);
       return existing.key;
     }
     const record = {
@@ -257,15 +271,33 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       lastUsedAt: Date.now(),
     };
     this.sessionKeys.set(identity, record);
+    this.reserveStartingSessionKey(record.key);
     this.pruneSessionKeys();
     return record.key;
+  }
+
+  private reserveStartingSessionKey(key: string): void {
+    this.startingSessionKeys.set(
+      key,
+      (this.startingSessionKeys.get(key) ?? 0) + 1,
+    );
+  }
+
+  private releaseStartingSessionKey(key: string): void {
+    const count = this.startingSessionKeys.get(key);
+    if (count === undefined) return;
+    if (count <= 1) this.startingSessionKeys.delete(key);
+    else this.startingSessionKeys.set(key, count - 1);
   }
 
   private pruneSessionKeys(): void {
     const maximum = Math.max(this.config.maxPanes * 2, 2);
     if (this.sessionKeys.size <= maximum) return;
     const candidates = Array.from(this.sessionKeys.entries())
-      .filter(([, record]) => !this.panes.has(record.key))
+      .filter(([, record]) => (
+        !this.panes.has(record.key)
+        && !this.startingSessionKeys.has(record.key)
+      ))
       .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
     for (const [identity] of candidates) {
       if (this.sessionKeys.size <= maximum) break;
@@ -378,7 +410,11 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       (tab) => /^api-.+-[a-f0-9]{16}$/i.test(tab.label),
     );
     for (const tab of staleTabs) {
-      await this.command(['tab', 'close', tab.tab_id]);
+      try {
+        await this.command(['tab', 'close', tab.tab_id]);
+      } catch {
+        // One unreachable stale tab must not block workspace initialization.
+      }
     }
   }
 
@@ -422,6 +458,10 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     sessionKey: string,
     request: ProviderExecutionRequest,
   ): Promise<ProviderExecutionHandle> {
+    const workerDeadline = Date.now() + request.timeoutMs;
+    const timeoutError = new Error(
+      `${request.provider} CLI timed out after ${request.timeoutMs}ms`,
+    );
     const jobId = randomUUID();
     const jobDirectory = resolve(this.config.runtimeDirectory, 'jobs', jobId);
     const socketPath = resolve(jobDirectory, 'worker.sock');
@@ -438,6 +478,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     let startupTimeout: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
     let cancellationError: Error | undefined;
+    let startupInProgress = true;
 
     const cleanup = async (): Promise<void> => {
       if (timeout) clearTimeout(timeout);
@@ -495,12 +536,15 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       if (settled || cancellationError) return;
       cancellationError = error;
       if (!workerSocket || workerSocket.destroyed) {
+        if (startupInProgress) return;
         finish(undefined, cancellationError);
         return;
       }
       workerSocket.write(`${JSON.stringify({ type: 'cancel' })}\n`);
       forceCancelTimeout = setTimeout(() => {
-        finish(undefined, cancellationError);
+        void this.closeTrackedPane(paneId).then((closed) => {
+          if (closed) finish(undefined, cancellationError);
+        }).catch(() => undefined);
       }, 4_000);
     };
 
@@ -593,20 +637,9 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     startupTimeout = setTimeout(() => {
       cancel(new HerdrUnavailableError('Herdr worker did not connect before the startup deadline.'));
     }, this.config.commandTimeoutMs);
-    try {
-      await this.reportPane(paneId, sessionKey, request, 'working');
-      await this.command([
-        'pane', 'run', paneId, process.execPath, workerPath, socketPath,
-      ]);
-    } catch (error) {
-      finish(undefined, error instanceof Error ? error : new Error(String(error)));
-      await completion.catch(() => undefined);
-      throw error;
-    }
-
     timeout = setTimeout(() => {
-      cancel(new Error(`${request.provider} CLI timed out after ${request.timeoutMs}ms`));
-    }, request.timeoutMs);
+      cancel(timeoutError);
+    }, Math.max(0, workerDeadline - Date.now()));
     if (request.signal) {
       abortListener = () => {
         cancel();
@@ -614,7 +647,28 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       request.signal.addEventListener('abort', abortListener, { once: true });
       if (request.signal.aborted) abortListener();
     }
+    const assertStartupCanContinue = (): void => {
+      if (cancellationError) throw cancellationError;
+      if (Date.now() >= workerDeadline) {
+        cancel(timeoutError);
+        throw timeoutError;
+      }
+    };
+    try {
+      assertStartupCanContinue();
+      await this.reportPane(paneId, sessionKey, request, 'working');
+      assertStartupCanContinue();
+      await this.command([
+        'pane', 'run', paneId, process.execPath, workerPath, socketPath,
+      ]);
+      assertStartupCanContinue();
+    } catch (error) {
+      finish(undefined, error instanceof Error ? error : new Error(String(error)));
+      await completion.catch(() => undefined);
+      throw error;
+    }
 
+    startupInProgress = false;
     const handle = { stdout, stderr, paneId, completion, cancel: () => cancel() };
     return handle;
   }
@@ -626,6 +680,12 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     state: 'working' | 'idle',
     terminalState?: 'completed' | 'failed' | 'timed_out' | 'cancelled',
   ): Promise<void> {
+    if (
+      state === 'idle'
+      && !Array.from(this.panes.values()).some((pane) => pane.paneId === paneId)
+    ) {
+      return;
+    }
     const message = state === 'working'
       ? `${request.model}`
       : `${request.model} complete`;
@@ -651,7 +711,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       }
     }
     if (!stateReported) {
-      if (state === 'idle' && await this.closePaneAfterReportFailure(paneId)) return;
+      if (state === 'idle' && await this.closeTrackedPane(paneId)) return;
       throw reportError instanceof Error
         ? reportError
         : new HerdrUnavailableError('Herdr pane state could not be reported.');
@@ -669,7 +729,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     ]).catch(() => undefined);
   }
 
-  private async closePaneAfterReportFailure(paneId: string): Promise<boolean> {
+  private async closeTrackedPane(paneId: string): Promise<boolean> {
     const release = await this.mutex.acquire('__pane_capacity__');
     try {
       const entry = Array.from(this.panes.entries())
