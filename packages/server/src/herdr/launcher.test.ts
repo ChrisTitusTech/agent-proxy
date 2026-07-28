@@ -434,11 +434,8 @@ describe('Herdr pane lifecycle', () => {
       lastUsedAt: Date.now(),
     });
     internals.reportPane = async () => undefined;
-    internals.command = async (_args, options) => new Promise((_resolve, reject) => {
-      setTimeout(
-        () => reject(new Error('command deadline reached')),
-        options?.timeoutMs ?? 2_000,
-      );
+    internals.command = async () => new Promise((_resolve, reject) => {
+      setTimeout(() => reject(new Error('command deadline reached')), 200);
     });
     const startedAt = Date.now();
 

@@ -175,6 +175,53 @@ describe('Anthropic Messages normalization', () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it('records cancellation when non-streaming execution returns after disconnect', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const execute = vi.fn(async (providerOptions: ExecuteOptions) => {
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      return defaultResult;
+    });
+    const deps = createDeps(fakeProvider({ execute }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(deps.cache.set).not.toHaveBeenCalled();
+  });
+
   it('records a streaming provider cancellation as cancelled', async () => {
     let releaseProvider!: () => void;
     const providerReleased = new Promise<void>((resolve) => {
@@ -225,6 +272,56 @@ describe('Anthropic Messages normalization', () => {
       ([entry]) => entry.status === 'error',
     )).toBe(false);
     expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
+  it('records cancellation when streaming execution returns after disconnect', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const executeStream = vi.fn(async function* (
+      providerOptions: ExecuteOptions,
+    ): AsyncIterable<ProviderEvent> {
+      yield { type: 'text_delta', text: 'started' };
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(deps.cache.set).not.toHaveBeenCalled();
   });
 
   it('finalizes a disconnect while the provider is still queued', async () => {

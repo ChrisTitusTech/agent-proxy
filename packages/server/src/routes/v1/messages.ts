@@ -978,6 +978,12 @@ export function registerMessagesRoute(
                 return;
               }
 
+              if (abortController.signal.aborted) {
+                reply.raw.end();
+                await finalizeCancellation();
+                return;
+              }
+
               const toolSelectionError = validateToolSelectionResult(
                 normalized.data.toolChoice,
                 normalized.data.parallelToolCalls,
@@ -1103,6 +1109,11 @@ export function registerMessagesRoute(
           } finally {
             request.raw.removeListener('aborted', onClientClose);
             reply.raw.removeListener('close', onClientClose);
+          }
+
+          if (abortController.signal.aborted) {
+            await finalizeCancellation();
+            return;
           }
 
 
