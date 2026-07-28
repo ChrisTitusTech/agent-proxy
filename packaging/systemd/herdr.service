@@ -1,6 +1,6 @@
 [Unit]
 Description=Current-user Herdr server
-Documentation=https://github.com/Valkyrie00/herdr
+Documentation=https://herdr.dev
 After=graphical-session-pre.target
 
 [Service]

@@ -330,14 +330,23 @@ if (health.status !== "ok" || Object.keys(health).length !== 1) process.exit(1);
 	fi
 	server_version=unavailable
 	if [[ -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+		local admin_header_file="$state_dir/.admin-header"
+		install -m 0600 /dev/null "$admin_header_file" || return 1
+		printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" \
+			>"$admin_header_file" || {
+			rm -f -- "$admin_header_file"
+			return 1
+		}
 		if ! curl --silent --show-error --fail \
 			--connect-timeout 5 \
 			--max-time 10 \
-			-H "x-admin-token: $AGENT_PROXY_ADMIN_TOKEN" \
+			-H "@$admin_header_file" \
 			"$base_url/admin/health" >"$raw_dir/server-readiness.json"; then
+			rm -f -- "$admin_header_file"
 			report_unavailable "$client" 'authenticated server readiness failed'
 			return
 		fi
+		rm -f -- "$admin_header_file"
 		if ! server_version=$(
 			node -e '
 const { readFileSync } = require("node:fs");

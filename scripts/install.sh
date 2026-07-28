@@ -294,6 +294,7 @@ install_release() (
 			"$CONFIG_DIR/config.yaml"
 	fi
 	if [[ ! -f "$CONFIG_DIR/agent-proxy.env" ]]; then
+		install -m 0600 /dev/null "$CONFIG_DIR/agent-proxy.env"
 		{
 			printf 'ADMIN_TOKEN=%s\n' "$(generate_secret '')"
 			printf 'PROXY_API_KEY=%s\n' "$(generate_secret 'sk-proxy-')"
@@ -302,7 +303,6 @@ install_release() (
 			printf 'AGENT_PROXY_HOST=127.0.0.1\nAGENT_PROXY_PORT=8300\n'
 			printf 'SHUTDOWN_TIMEOUT_MS=30000\n'
 		} >"$CONFIG_DIR/agent-proxy.env"
-		chmod 0600 "$CONFIG_DIR/agent-proxy.env"
 	fi
 
 	validate_release_config "$release_dir"
@@ -348,9 +348,17 @@ rollback)
 		printf 'No previous release is available.\n' >&2
 		exit 1
 	}
-	service_stop
+	[[ -L "$DATA_DIR/current" ]] || {
+		printf 'No current release is active; cannot roll back.\n' >&2
+		exit 1
+	}
 	current=$(readlink "$DATA_DIR/current")
 	previous=$(readlink "$DATA_DIR/previous")
+	[[ -n "$current" && -n "$previous" ]] || {
+		printf 'Current or previous release link is invalid; cannot roll back.\n' >&2
+		exit 1
+	}
+	service_stop_all
 	ln -sfn "$previous" "$DATA_DIR/current"
 	ln -sfn "$current" "$DATA_DIR/previous"
 	install_units "$previous"

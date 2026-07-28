@@ -28,6 +28,11 @@ done
 
 grep -Eq '^After=.*herdr\.service' "$PROXY_UNIT"
 grep -Eq '^Wants=.*herdr\.service' "$PROXY_UNIT"
+if grep -q 'network-online.target' "$PROXY_UNIT"; then
+	printf 'User service must not depend on the system network-online target.\n' >&2
+	exit 1
+fi
+grep -q '^Documentation=https://herdr.dev$' "$HERDR_UNIT"
 grep -q '^EnvironmentFile="@CONFIG_DIR@/agent-proxy.env"$' "$HERDR_UNIT"
 grep -q '^ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/herdr/server.js"$' \
 	"$HERDR_UNIT"

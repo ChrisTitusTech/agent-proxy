@@ -127,6 +127,14 @@ grep -q '# release 1.0.0-test2' "$XDG_CONFIG_HOME/systemd/user/agent-proxy.servi
 [[ $(<"$SYSTEMCTL_STATE") == active ]]
 [[ ! -e "$XDG_DATA_HOME/agent-proxy/releases/1.0.0-test3" ]]
 
+current_target=$(readlink "$XDG_DATA_HOME/agent-proxy/current")
+rm -f "$XDG_DATA_HOME/agent-proxy/current"
+if run_installer rollback; then
+	printf 'Rollback unexpectedly succeeded without a current release link.\n' >&2
+	exit 1
+fi
+ln -s "$current_target" "$XDG_DATA_HOME/agent-proxy/current"
+
 run_installer rollback
 [[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
 grep -q '# release 1.0.0-test1' "$XDG_CONFIG_HOME/systemd/user/agent-proxy.service"

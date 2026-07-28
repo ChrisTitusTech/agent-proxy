@@ -1,8 +1,8 @@
 [Unit]
 Description=Current-user agent-proxy AI CLI gateway
 Documentation=https://github.com/ChrisTitusTech/agent-proxy
-After=network-online.target herdr.service
-Wants=network-online.target herdr.service
+After=herdr.service
+Wants=herdr.service
 
 [Service]
 Type=simple
