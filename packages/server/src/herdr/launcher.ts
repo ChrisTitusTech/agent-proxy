@@ -104,8 +104,10 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private readonly mutex = new KeyedMutex();
   private readonly panes = new Map<string, PaneRecord>();
   private readonly active = new Set<ProviderExecutionHandle>();
+  private readonly starting = new Set<Promise<ProviderExecutionHandle>>();
   private readonly sessionKeys = new Map<string, SessionKeyRecord>();
   private workspaceId: string | null = null;
+  private staleTabsPruned = false;
   private shuttingDown = false;
 
   constructor(config: HerdrLauncherConfig) {
@@ -144,8 +146,22 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     }
   }
 
-  async start(request: ProviderExecutionRequest): Promise<ProviderExecutionHandle> {
-    if (this.shuttingDown) throw new HerdrUnavailableError('Herdr launcher is shutting down.');
+  start(request: ProviderExecutionRequest): Promise<ProviderExecutionHandle> {
+    if (this.shuttingDown) {
+      return Promise.reject(new HerdrUnavailableError('Herdr launcher is shutting down.'));
+    }
+    const operation = this.startTracked(request);
+    this.starting.add(operation);
+    void operation.then(
+      () => this.starting.delete(operation),
+      () => this.starting.delete(operation),
+    );
+    return operation;
+  }
+
+  private async startTracked(
+    request: ProviderExecutionRequest,
+  ): Promise<ProviderExecutionHandle> {
     const ready = await this.readiness();
     if (!ready.ready) {
       throw new HerdrUnavailableError(
@@ -156,9 +172,16 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     const sessionKey = this.sessionKey(request);
     const release = await this.mutex.acquire(sessionKey);
     try {
+      if (this.shuttingDown) {
+        throw new HerdrUnavailableError('Herdr launcher is shutting down.');
+      }
       const pane = await this.ensurePane(sessionKey, request);
+      if (this.shuttingDown) {
+        throw new HerdrUnavailableError('Herdr launcher is shutting down.');
+      }
       const handle = await this.startWorker(pane.paneId, request);
       this.active.add(handle);
+      if (this.shuttingDown) handle.cancel();
       void handle.completion.then(() => {
         this.active.delete(handle);
         pane.lastUsedAt = Date.now();
@@ -177,8 +200,13 @@ export class HerdrLauncher implements ProviderExecutionBackend {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    for (const handle of this.active) handle.cancel();
-    await Promise.allSettled(Array.from(this.active, (handle) => handle.completion));
+    while (this.starting.size > 0 || this.active.size > 0) {
+      for (const handle of this.active) handle.cancel();
+      await Promise.allSettled([
+        ...this.starting,
+        ...Array.from(this.active, (handle) => handle.completion),
+      ]);
+    }
   }
 
   private sessionKey(request: ProviderExecutionRequest): string {
@@ -258,36 +286,52 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   }
 
   private async ensureWorkspace(cwd: string): Promise<string> {
-    if (this.workspaceId) return this.workspaceId;
+    if (this.workspaceId && this.staleTabsPruned) return this.workspaceId;
     const release = await this.mutex.acquire('__workspace__');
     try {
-      if (this.workspaceId) return this.workspaceId;
-      const listed = await this.command<{ type: string; workspaces: Workspace[] }>([
-        'workspace', 'list',
-      ]);
-      const existing = listed.workspaces.find(
-        (workspace) => workspace.label === this.config.workspaceLabel,
-      );
-      if (existing) {
-        this.workspaceId = existing.workspace_id;
-        return existing.workspace_id;
+      if (!this.workspaceId) {
+        const listed = await this.command<{ type: string; workspaces: Workspace[] }>([
+          'workspace', 'list',
+        ]);
+        const existing = listed.workspaces.find(
+          (workspace) => workspace.label === this.config.workspaceLabel,
+        );
+        if (existing) {
+          this.workspaceId = existing.workspace_id;
+        } else {
+          const created = await this.command<{
+            type: string;
+            workspace: Workspace;
+            tab: Tab;
+            root_pane: Pane;
+          }>([
+            'workspace', 'create',
+            '--cwd', cwd,
+            '--label', this.config.workspaceLabel,
+            '--no-focus',
+          ]);
+          this.workspaceId = created.workspace.workspace_id;
+        }
       }
-
-      const created = await this.command<{
-        type: string;
-        workspace: Workspace;
-        tab: Tab;
-        root_pane: Pane;
-      }>([
-        'workspace', 'create',
-        '--cwd', cwd,
-        '--label', this.config.workspaceLabel,
-        '--no-focus',
-      ]);
-      this.workspaceId = created.workspace.workspace_id;
-      return created.workspace.workspace_id;
+      if (!this.staleTabsPruned) {
+        await this.pruneStaleTabs(this.workspaceId);
+        this.staleTabsPruned = true;
+      }
+      return this.workspaceId;
     } finally {
       release();
+    }
+  }
+
+  private async pruneStaleTabs(workspaceId: string): Promise<void> {
+    const listed = await this.command<{ type: string; tabs: Tab[] }>([
+      'tab', 'list', '--workspace', workspaceId,
+    ]);
+    const staleTabs = listed.tabs.filter(
+      (tab) => /^api-.+-[a-f0-9]{16}$/i.test(tab.label),
+    );
+    for (const tab of staleTabs) {
+      await this.command(['tab', 'close', tab.tab_id]);
     }
   }
 
@@ -347,12 +391,23 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       await rm(jobDirectory, { recursive: true, force: true });
     };
 
-    let resolveCompletion!: (result: ProviderExecutionResult) => void;
-    let rejectCompletion!: (error: Error) => void;
-    const completion = new Promise<ProviderExecutionResult>((resolveResult, rejectResult) => {
-      resolveCompletion = resolveResult;
-      rejectCompletion = rejectResult;
+    let resolveWorkerCompletion!: (result: ProviderExecutionResult) => void;
+    let rejectWorkerCompletion!: (error: Error) => void;
+    const workerCompletion = new Promise<ProviderExecutionResult>((resolveResult, rejectResult) => {
+      resolveWorkerCompletion = resolveResult;
+      rejectWorkerCompletion = rejectResult;
     });
+    const completion = workerCompletion.then(
+      async (result) => {
+        await this.reportPane(paneId, request, 'idle', result.terminalState);
+        return result;
+      },
+      async (error: Error) => {
+        await this.reportPane(paneId, request, 'idle', terminalStateForError(error));
+        throw error;
+      },
+    );
+    void completion.catch(() => undefined);
 
     const finish = (
       result?: ProviderExecutionResult,
@@ -363,8 +418,8 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       stdout.end();
       stderr.end();
       void cleanup().finally(() => {
-        if (error) rejectCompletion(error);
-        else resolveCompletion(result!);
+        if (error) rejectWorkerCompletion(error);
+        else resolveWorkerCompletion(result!);
       });
     };
 
@@ -469,10 +524,10 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       cancel(new HerdrUnavailableError('Herdr worker did not connect before the startup deadline.'));
     }, this.config.commandTimeoutMs);
     try {
+      await this.reportPane(paneId, request, 'working');
       await this.command([
         'pane', 'run', paneId, process.execPath, workerPath, socketPath,
       ]);
-      await this.reportPane(paneId, request, 'working');
     } catch (error) {
       finish(undefined, error instanceof Error ? error : new Error(String(error)));
       await completion.catch(() => undefined);
@@ -490,10 +545,6 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       if (request.signal.aborted) abortListener();
     }
 
-    void completion.then(
-      (result) => this.reportPane(paneId, request, 'idle', result.terminalState),
-      (error) => this.reportPane(paneId, request, 'idle', terminalStateForError(error)),
-    );
     const handle = { stdout, stderr, paneId, completion, cancel: () => cancel() };
     return handle;
   }

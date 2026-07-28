@@ -137,6 +137,8 @@ export abstract class BaseProvider {
     const debugLines: string[] = [];
     const captureDebug = !!options.onDebug;
     let terminalEventSeen = false;
+    let pendingDoneEvent: ProviderEvent | undefined;
+    let completionObserved = false;
 
     try {
       const rl = createInterface({ input: handle.stdout });
@@ -147,21 +149,38 @@ export abstract class BaseProvider {
         if (this.parser.parseEvents) {
           const events = this.parser.parseEvents(line);
           for (const event of events) {
-            yield event;
-            if (event.type === 'done') terminalEventSeen = true;
+            if (event.type === 'done') {
+              terminalEventSeen = true;
+              pendingDoneEvent = event;
+            } else if (!terminalEventSeen) {
+              yield event;
+            }
           }
         } else {
           const chunk = this.parser.parse(line);
           if (chunk) {
             const events = streamChunkToEvents(chunk);
             for (const event of events) {
-              yield event;
+              if (event.type === 'done') {
+                terminalEventSeen = true;
+                pendingDoneEvent = event;
+              } else if (!terminalEventSeen) {
+                yield event;
+              }
             }
-            if (chunk.type === 'done') terminalEventSeen = true;
           }
         }
       }
-      const result = await handle.completion;
+      const result = await handle.completion.then(
+        (completed) => {
+          completionObserved = true;
+          return completed;
+        },
+        (error: unknown) => {
+          completionObserved = true;
+          throw error;
+        },
+      );
       if (result.exitCode !== 0) {
         throw new Error(
           `${this.name} CLI exited with code ${result.exitCode}: ${
@@ -169,7 +188,12 @@ export abstract class BaseProvider {
           }`,
         );
       }
+      if (pendingDoneEvent) yield pendingDoneEvent;
     } finally {
+      if (!completionObserved) {
+        handle.cancel();
+        await handle.completion.catch(() => undefined);
+      }
       if (captureDebug) {
         options.onDebug!({ cliArgs: this.fullCommand(args), streamLines: debugLines });
       }

@@ -66,7 +66,7 @@ export interface DebugLogCompleteEntry {
   rawResponseText?: string;
   parsedContent?: string;
   tokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
-  status: 'success' | 'error' | 'timeout';
+  status: 'success' | 'error' | 'timeout' | 'cancelled';
   latencyMs: number;
   errorMessage?: string;
 }

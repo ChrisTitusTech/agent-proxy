@@ -16,7 +16,8 @@ run_copilot() {
 	local stream=$1
 	local prompt=$2
 	local workspace=${3:-"$COMPAT_WORKSPACE"}
-	timeout --signal=TERM --kill-after=5s "${TURN_TIMEOUT}s" \
+	local timeout_seconds=${4:-"$TURN_TIMEOUT"}
+	timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
 		"$COMPAT_CLIENT_BINARY" \
 		--prompt "$prompt" \
 		--silent \
@@ -62,4 +63,125 @@ fi
 rg -q 'COPILOT_ISOLATION_BETA' "$COMPAT_FIXTURE_DIR/isolation-b.txt"
 if rg -q 'COPILOT_ISOLATION_ALPHA' "$COMPAT_FIXTURE_DIR/isolation-b.txt"; then
 	exit 1
+fi
+
+if [[ -z ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+	[[ ${AGENT_PROXY_COMPAT_REQUIRE_LIVE:-false} == false ]] || {
+		printf 'AGENT_PROXY_ADMIN_TOKEN is required to verify Copilot cancellation.\n' >&2
+		exit 1
+	}
+	printf 'cancel_verification=skipped_missing_admin_token\n' \
+		>"$COMPAT_FIXTURE_DIR/cancellation-status.txt"
+else
+	: "${AGENT_PROXY_HERDR_RUNTIME_DIR:?Host Herdr runtime directory is required}"
+	command -v herdr >/dev/null || {
+		printf 'Herdr is required to verify Copilot pane cancellation.\n' >&2
+		exit 1
+	}
+	ADMIN_HEADER_FILE="$COMPAT_WORKSPACE/.admin-header"
+	printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" >"$ADMIN_HEADER_FILE"
+	chmod 0600 "$ADMIN_HEADER_FILE"
+
+	active_request_count() {
+		curl --silent --show-error --fail \
+			--connect-timeout 5 \
+			--max-time 10 \
+			-H "@$ADMIN_HEADER_FILE" \
+			"${AGENT_PROXY_BASE_URL%/}/admin/active-requests" |
+			node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const state = JSON.parse(input);
+  if (!Number.isInteger(state.count) || state.count < 0) process.exit(1);
+  process.stdout.write(String(state.count));
+});
+'
+	}
+
+	proxy_working_pane_count() {
+		local workspace_id
+		workspace_id=$(
+			XDG_RUNTIME_DIR="$AGENT_PROXY_HERDR_RUNTIME_DIR" herdr workspace list |
+				node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const result = JSON.parse(input).result;
+  const workspace = result.workspaces.find((item) => item.label === "agent-proxy");
+  if (workspace) process.stdout.write(workspace.workspace_id);
+});
+'
+		)
+		if [[ -z "$workspace_id" ]]; then
+			printf '0'
+			return
+		fi
+		XDG_RUNTIME_DIR="$AGENT_PROXY_HERDR_RUNTIME_DIR" \
+			herdr pane list --workspace "$workspace_id" |
+			node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const panes = JSON.parse(input).result.panes;
+  process.stdout.write(String(panes.filter((pane) => pane.agent_status === "working").length));
+});
+'
+	}
+
+	active_before=$(active_request_count)
+	working_before=$(proxy_working_pane_count)
+	set +e
+	run_copilot on \
+		'Compatibility cancellation probe: produce a long response for at least thirty seconds.' \
+		"$COMPAT_WORKSPACE" 2 \
+		>"$COMPAT_FIXTURE_DIR/cancellation.txt" 2>&1 &
+	cancel_pid=$!
+	set -e
+
+	cancel_started=false
+	for _ in {1..40}; do
+		active_during=$(active_request_count)
+		if ((active_during > active_before)); then
+			cancel_started=true
+			break
+		fi
+		if ! kill -0 "$cancel_pid" 2>/dev/null; then
+			active_during=$(active_request_count)
+			((active_during > active_before)) && cancel_started=true
+			break
+		fi
+		sleep 0.1
+	done
+
+	set +e
+	wait "$cancel_pid"
+	cancel_status=$?
+	set -e
+	[[ "$cancel_status" -eq 124 || "$cancel_status" -eq 137 ]]
+	[[ "$cancel_started" == true ]] || {
+		printf 'Copilot cancellation probe did not start provider work.\n' >&2
+		exit 1
+	}
+
+	active_after=-1
+	working_after=-1
+	for _ in {1..60}; do
+		active_after=$(active_request_count)
+		working_after=$(proxy_working_pane_count)
+		if ((active_after <= active_before && working_after <= working_before)); then
+			break
+		fi
+		sleep 0.1
+	done
+	if ((active_after > active_before || working_after > working_before)); then
+		printf 'Copilot cancellation left request or Herdr pane work active.\n' >&2
+		exit 1
+	fi
+	printf 'cancel_exit=%s active_before=%s active_after=%s working_before=%s working_after=%s\n' \
+		"$cancel_status" "$active_before" "$active_after" "$working_before" "$working_after" \
+		>"$COMPAT_FIXTURE_DIR/cancellation-status.txt"
 fi

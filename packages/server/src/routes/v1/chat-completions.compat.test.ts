@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ExecuteOptions,
@@ -236,5 +237,120 @@ describe('Chat Completions tool compatibility', () => {
       tools: [tool],
       parallelToolCalls: false,
     }));
+  });
+
+  it('propagates a streaming client disconnect to the provider signal', async () => {
+    let observedSignal: AbortSignal | undefined;
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const executeStream = vi.fn(async function* (
+      providerOptions: ExecuteOptions,
+    ): AsyncIterable<ProviderEvent> {
+      observedSignal = providerOptions.signal;
+      yield { type: 'text_delta', text: 'started' };
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      throw new Error('Request cancelled');
+    });
+    const provider = {
+      name: 'fixture',
+      execute: vi.fn(async () => result),
+      executeStream,
+    } as unknown as BaseProvider;
+    const deps = createDeps(provider);
+    app = await createApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+
+    await Promise.race([
+      providerReleased,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('provider did not observe cancellation')),
+        2_000,
+      )),
+    ]);
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+    });
+    expect(observedSignal?.aborted).toBe(true);
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
+  it('finalizes a disconnect while the provider is still queued', async () => {
+    let runQueued!: () => Promise<void>;
+    let resolveQueue!: () => void;
+    const queueReleased = new Promise<void>((resolve) => {
+      resolveQueue = resolve;
+    });
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const provider = {
+      name: 'fixture',
+      execute: vi.fn(async () => result),
+      executeStream,
+    } as unknown as BaseProvider;
+    const deps = createDeps(provider);
+    deps.queue.enqueue = vi.fn(async (
+      _provider: string,
+      run: () => Promise<void>,
+    ) => {
+      runQueued = async () => {
+        await run();
+        resolveQueue();
+      };
+      await queueReleased;
+    }) as unknown as ChatCompletionDeps['queue']['enqueue'];
+    app = await createApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.start).toHaveBeenCalledOnce();
+      expect(runQueued).toBeTypeOf('function');
+    });
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+    });
+    await runQueued();
+
+    expect(executeStream).not.toHaveBeenCalled();
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
   });
 });

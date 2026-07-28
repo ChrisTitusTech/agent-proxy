@@ -6,20 +6,23 @@ Wants=network-online.target herdr.service
 
 [Service]
 Type=simple
-WorkingDirectory=@STATE_DIR@
+WorkingDirectory="@STATE_DIR@"
 Environment=NODE_ENV=production
-EnvironmentFile=@CONFIG_DIR@/agent-proxy.env
-ExecStartPre=/usr/bin/env node @DATA_DIR@/current/packages/server/dist/index.js --check
-ExecStart=/usr/bin/env node @DATA_DIR@/current/packages/server/dist/index.js
+Environment=XDG_RUNTIME_DIR=%t
+EnvironmentFile="@CONFIG_DIR@/agent-proxy.env"
+ExecStartPre=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/index.js" --check
+ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/index.js"
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=45s
 KillMode=mixed
 UMask=0077
+RuntimeDirectory=agent-proxy
+RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=@CONFIG_DIR@ @DATA_DIR@ @STATE_DIR@
+ReadWritePaths="@CONFIG_DIR@" "@DATA_DIR@" "@STATE_DIR@" "%t/agent-proxy"
 
 [Install]
 WantedBy=default.target

@@ -12,6 +12,7 @@ SELECTED_CLIENTS=()
 ALL_CLIENTS=(claude codex grok copilot)
 TEMP_ROOT=
 TURN_TIMEOUT=${AGENT_PROXY_COMPAT_TURN_TIMEOUT:-180}
+HOST_XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}
 
 usage() {
 	cat <<EOF
@@ -295,7 +296,7 @@ run_client() {
 		"$artifact_dir/fixtures" || return 1
 
 	if ! version_output=$(
-		timeout 10 env -i \
+		timeout --signal=TERM --kill-after=5s 10s env -i \
 			HOME="$state_dir/home" \
 			PATH="$PATH" \
 			LANG="${LANG:-C.UTF-8}" \
@@ -370,8 +371,15 @@ process.stdout.write(health.version);
 		printf 'export COMPAT_CLIENT_BINARY=%q\n' "$client_binary"
 		printf 'export COMPAT_FIXTURE_DIR=%q\n' "$raw_dir/protocol"
 		printf 'export COMPAT_WORKSPACE=%q\n' "$state_dir/workspace"
-		if [[ "$client" == codex && -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+		if [[ ("$client" == codex || "$client" == copilot) && -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
 			printf 'export AGENT_PROXY_ADMIN_TOKEN=%q\n' "$AGENT_PROXY_ADMIN_TOKEN"
+		fi
+		if [[ "$client" == copilot && -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+			if [[ -z "$HOST_XDG_RUNTIME_DIR" ]]; then
+				printf 'FAIL [copilot] XDG_RUNTIME_DIR is required for Herdr cancellation evidence.\n' >&2
+				return 1
+			fi
+			printf 'export AGENT_PROXY_HERDR_RUNTIME_DIR=%q\n' "$HOST_XDG_RUNTIME_DIR"
 		fi
 	} >"$runner_environment_file"
 	chmod 0600 "$runner_environment_file"

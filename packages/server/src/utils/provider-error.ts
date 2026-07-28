@@ -71,6 +71,18 @@ export function classifyProviderError(
       fallbackEligible: false,
     };
   }
+  if (
+    /\benoent\b|command not found|executable .*not found|spawn .* no such file/.test(normalized)
+  ) {
+    return {
+      kind: 'executable_missing',
+      code: 'provider_executable_missing',
+      statusCode: 503,
+      message: `${label} executable is unavailable for the logged-in user.`,
+      retryable: false,
+      fallbackEligible: true,
+    };
+  }
   if (/herdr.*(?:unavailable|not running|incompatible|failed)|no herdr execution backend/.test(normalized)) {
     return {
       kind: 'herdr_unavailable',
@@ -88,18 +100,6 @@ export function classifyProviderError(
       statusCode: 503,
       message: `${label} is at capacity. Retry later.`,
       retryable: true,
-      fallbackEligible: true,
-    };
-  }
-  if (
-    /\benoent\b|command not found|executable .*not found|failed to spawn|spawn .* no such file/.test(normalized)
-  ) {
-    return {
-      kind: 'executable_missing',
-      code: 'provider_executable_missing',
-      statusCode: 503,
-      message: `${label} executable is unavailable for the logged-in user.`,
-      retryable: false,
       fallbackEligible: true,
     };
   }

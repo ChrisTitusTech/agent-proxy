@@ -375,22 +375,18 @@ export function registerGenericProviderRoutes(
         deps.registry.executionBackend,
         deps.registry.proxyPort,
       );
-      const model = config.default_model || '';
       const startTime = Date.now();
 
       try {
-        const result = await testProvider.execute({
-          messages: [{ role: 'user', content: 'Say "OK" and nothing else.' }],
-          model,
-          stream: false,
-        });
+        const status = await testProvider.checkHealth();
         const latencyMs = Date.now() - startTime;
 
         return reply.send({
-          success: true,
-          response: result.content.substring(0, 200),
+          success: status === 'healthy',
+          ...(status === 'healthy'
+            ? { response: 'Executable is available for the logged-in user.' }
+            : { error: 'Executable is unavailable for the logged-in user.' }),
           latencyMs,
-          usage: result.usage,
         });
       } catch (err) {
         const latencyMs = Date.now() - startTime;

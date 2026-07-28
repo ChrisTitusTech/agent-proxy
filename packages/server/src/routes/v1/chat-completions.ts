@@ -528,20 +528,78 @@ export function registerChatCompletionsRoute(
           });
         }
 
+        let attemptFinalized = false;
+        const finishActiveRequest = (): boolean => {
+          if (attemptFinalized) return false;
+          attemptFinalized = true;
+          deps.activeRequests.finish(requestId);
+          return true;
+        };
+        const finalizeCancellation = async (
+          message = 'Request cancelled',
+        ): Promise<void> => {
+          if (!finishActiveRequest()) return;
+          const latencyMs = Date.now() - startTime;
+          try {
+            await logRequest({
+              requestId,
+              apiKeyId,
+              modelAlias: body.model,
+              provider: route.provider,
+              actualModel: route.actualModel,
+              reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
+              status: 'cancelled',
+              statusCode: 499,
+              latencyMs,
+              isStream: body.stream ?? false,
+              errorMessage: sanitizeProviderError(message),
+            });
+          } catch {
+            // Request cleanup must not depend on optional persistence.
+          }
+          if (debugLogId) {
+            try {
+              await deps.debug.logComplete(debugLogId, {
+                requestId,
+                cliArgs: debugCapture?.cliArgs,
+                rawStdout: debugCapture?.stdout,
+                rawStderr: debugCapture?.stderr,
+                streamLines: debugCapture?.streamLines,
+                httpRequest: debugCapture?.httpRequest,
+                httpResponse: debugCapture?.httpResponse,
+                httpStreamLines: debugCapture?.httpStreamLines,
+                rawResponseText: debugCapture?.rawResponseText,
+                status: 'cancelled',
+                latencyMs,
+                errorMessage: sanitizeProviderError(message),
+              });
+            } catch {
+              // Cancellation remains terminal if debug persistence fails.
+            }
+          }
+        };
+
         try {
           if (body.stream) {
 
             const abortController = new AbortController();
-
-
-            const onClientClose = () => abortController.abort();
-            request.raw.once('close', onClientClose);
+            let providerStarted = false;
+            const onClientClose = () => {
+              abortController.abort();
+              if (!providerStarted) void finalizeCancellation();
+            };
+            request.raw.once('aborted', onClientClose);
+            reply.raw.once('close', onClientClose);
 
             try {
 
             await deps.queue.enqueue(route.provider, async () => {
 
-            if (abortController.signal.aborted) return;
+            if (abortController.signal.aborted) {
+              await finalizeCancellation();
+              return;
+            }
+            providerStarted = true;
 
 
 
@@ -664,6 +722,12 @@ export function registerChatCompletionsRoute(
             } catch (streamErr) {
 
               const errMsg = streamErr instanceof Error ? streamErr.message : 'Stream interrupted';
+              const failure = classifyProviderError(errMsg, route.provider);
+              if (abortController.signal.aborted || failure.kind === 'cancelled') {
+                reply.raw.end();
+                await finalizeCancellation(errMsg);
+                return;
+              }
               safeWrite(reply.raw, `data: ${JSON.stringify({ error: { message: errMsg } })}\n\n`);
               safeWrite(reply.raw, 'data: [DONE]\n\n');
               reply.raw.end();
@@ -682,11 +746,16 @@ export function registerChatCompletionsRoute(
                 errorMessage: errMsg,
               });
 
-              deps.activeRequests.finish(requestId);
-              deps.healthChecker.onRequestFailure(route.provider);
+              if (finishActiveRequest()) {
+                deps.healthChecker.onRequestFailure(route.provider);
+              }
               return;
             }
 
+            if (abortController.signal.aborted || reply.raw.destroyed) {
+              await finalizeCancellation();
+              return;
+            }
             reply.raw.end();
 
             const streamLatency = Date.now() - startTime;
@@ -724,12 +793,13 @@ export function registerChatCompletionsRoute(
               });
             }
 
-            deps.activeRequests.finish(requestId);
+            finishActiveRequest();
             });
 
             return;
             } finally {
-              request.raw.removeListener('close', onClientClose);
+              request.raw.removeListener('aborted', onClientClose);
+              reply.raw.removeListener('close', onClientClose);
             }
           }
 
@@ -860,11 +930,17 @@ export function registerChatCompletionsRoute(
             });
           }
 
-          deps.activeRequests.finish(requestId);
+          finishActiveRequest();
           return reply.status(200).send(response);
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           lastErrorProvider = route.provider;
+          const failure = classifyProviderError(lastError, route.provider);
+          if (attemptFinalized || failure.kind === 'cancelled') {
+            await finalizeCancellation(lastError.message);
+            lastError = new Error('Request cancelled');
+            break;
+          }
           const isTimeout = lastError.message.includes('timed out');
 
           const errLatency = Date.now() - startTime;
@@ -899,12 +975,10 @@ export function registerChatCompletionsRoute(
             });
           }
 
-          deps.activeRequests.finish(requestId);
-          deps.healthChecker.onRequestFailure(route.provider);
-          if (!classifyProviderError(
-            lastError,
-            route.provider,
-          ).fallbackEligible) break;
+          if (finishActiveRequest()) {
+            deps.healthChecker.onRequestFailure(route.provider);
+          }
+          if (!failure.fallbackEligible) break;
           continue;
         }
       }

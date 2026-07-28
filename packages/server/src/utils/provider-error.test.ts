@@ -7,6 +7,7 @@ import {
 describe('provider error classification', () => {
   it.each([
     ['spawn /private/provider ENOENT', 'provider_executable_missing'],
+    ['Herdr worker failed: spawn codex ENOENT', 'provider_executable_missing'],
     ['Not logged in. Run login.', 'provider_login_required'],
     ['OAuth token expired and refresh failed', 'provider_login_expired'],
     ['connect ECONNREFUSED 127.0.0.1:443', 'provider_unreachable'],
@@ -15,6 +16,7 @@ describe('provider error classification', () => {
     ['unknown model gpt-missing', 'provider_model_unavailable'],
     ['invalid request payload', 'provider_validation_error'],
     ['Herdr is unavailable', 'herdr_unavailable'],
+    ['Herdr worker failed to spawn before startup', 'herdr_unavailable'],
     ['codex queue is full', 'provider_queue_overloaded'],
   ])('classifies %s', (message, code) => {
     expect(classifyProviderError(message, 'codex').code).toBe(code);

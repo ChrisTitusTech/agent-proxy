@@ -81,9 +81,13 @@ service_stop() {
 }
 
 service_enable() {
+	local start_now=${1:-true}
 	if use_systemd; then
 		systemctl --user daemon-reload
-		systemctl --user enable --now herdr.service agent-proxy.service
+		systemctl --user enable herdr.service agent-proxy.service
+		if [[ "$start_now" == true ]]; then
+			systemctl --user start herdr.service agent-proxy.service
+		fi
 	fi
 }
 
@@ -145,12 +149,17 @@ escape_sed() {
 	printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
 
+systemd_quote_value() {
+	printf '%s' "$1" |
+		sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g'
+}
+
 install_units() {
 	local release_dir=$1
 	local data_escaped config_escaped state_escaped
-	data_escaped=$(escape_sed "$DATA_DIR")
-	config_escaped=$(escape_sed "$CONFIG_DIR")
-	state_escaped=$(escape_sed "$STATE_DIR")
+	data_escaped=$(escape_sed "$(systemd_quote_value "$DATA_DIR")")
+	config_escaped=$(escape_sed "$(systemd_quote_value "$CONFIG_DIR")")
+	state_escaped=$(escape_sed "$(systemd_quote_value "$STATE_DIR")")
 	mkdir -p "$UNIT_DIR"
 	sed \
 		-e "s|@DATA_DIR@|$data_escaped|g" \
@@ -161,7 +170,7 @@ install_units() {
 	chmod 0644 "$PROXY_UNIT"
 }
 
-create_backup() {
+create_backup() (
 	local paths=()
 	[[ -d "$CONFIG_DIR" ]] && paths+=(config)
 	[[ -d "$STATE_DIR" ]] && paths+=(state)
@@ -173,20 +182,39 @@ create_backup() {
 	chmod 0700 "$BACKUP_DIR"
 	local stage archive
 	stage=$(mktemp -d)
-	trap 'rm -rf "$stage"' RETURN
+	trap 'rm -rf "$stage"' EXIT
 	[[ ! -d "$CONFIG_DIR" ]] || cp -a "$CONFIG_DIR" "$stage/config"
-	[[ ! -d "$STATE_DIR" ]] || cp -a "$STATE_DIR" "$stage/state"
-	archive="$BACKUP_DIR/agent-proxy-backup-$(date -u +%Y%m%dT%H%M%S%NZ).tar.gz"
+	if [[ -d "$STATE_DIR" ]]; then
+		mkdir -p "$stage/state"
+		tar -C "$STATE_DIR" --exclude='./backups' -cf - . |
+			tar -C "$stage/state" -xf -
+	fi
+	archive="$BACKUP_DIR/agent-proxy-backup-$(date -u +%Y%m%dT%H%M%S%N)Z.tar.gz"
 	(umask 077 && tar -C "$stage" -czf "$archive" "${paths[@]}")
 	chmod 0600 "$archive"
 	printf '%s\n' "$archive"
+)
+
+backup_consistently() {
+	local restart=false
+	if service_is_active; then
+		restart=true
+		service_stop
+	fi
+	local status=0
+	create_backup || status=$?
+	if [[ "$restart" == true ]] && use_systemd; then
+		systemctl --user start agent-proxy.service
+	fi
+	return "$status"
 }
 
-install_release() {
+install_release() (
+	local start_service=${1:-true}
 	validate_archive
 	local extract_dir release_id release_dir old_current=
 	extract_dir=$(mktemp -d)
-	trap 'rm -rf "$extract_dir"' RETURN
+	trap 'rm -rf "$extract_dir"' EXIT
 	tar -C "$extract_dir" -xzf "$ARCHIVE"
 	release_id=$(<"$extract_dir/agent-proxy/VERSION")
 	[[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || {
@@ -223,9 +251,9 @@ install_release() {
 		chmod 0600 "$CONFIG_DIR/agent-proxy.env"
 	fi
 	install_units "$release_dir"
-	service_enable
+	service_enable "$start_service"
 	printf 'Activated current-user agent-proxy release %s\n' "$release_id"
-}
+)
 
 case "$COMMAND" in
 install)
@@ -233,15 +261,27 @@ install)
 		printf -- '--archive is required for install.\n' >&2
 		exit 2
 	}
-	install_release
+	install_release true
 	;;
 upgrade)
 	[[ -n "$ARCHIVE" ]] || {
 		printf -- '--archive is required for upgrade.\n' >&2
 		exit 2
 	}
-	[[ ! -d "$CONFIG_DIR" && ! -d "$STATE_DIR" ]] || create_backup >/dev/null
-	install_release
+	was_active=false
+	if service_is_active; then
+		was_active=true
+		service_stop
+	fi
+	if [[ -d "$CONFIG_DIR" || -d "$STATE_DIR" ]]; then
+		if ! create_backup >/dev/null; then
+			if [[ "$was_active" == true ]] && use_systemd; then
+				systemctl --user start agent-proxy.service
+			fi
+			exit 1
+		fi
+	fi
+	install_release "$was_active"
 	;;
 rollback)
 	[[ -L "$DATA_DIR/previous" ]] || {
@@ -258,7 +298,7 @@ rollback)
 	printf 'Rolled back to %s\n' "$previous"
 	;;
 backup)
-	create_backup
+	backup_consistently
 	;;
 uninstall)
 	service_stop

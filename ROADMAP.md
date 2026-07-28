@@ -187,6 +187,8 @@ Completion evidence:
   cross-session parallelism, terminal-state, and live visibility checks.
 - GitHub Copilot CLI `1.0.75`, Codex, and Open WebUI `v0.9.5` passed their live
   current-user compatibility matrices through the localhost API.
+- Copilot disconnect cancellation returned its tracked request and Herdr pane
+  to a terminal state before the compatibility runner completed.
 - Open WebUI cancellation used the specified bounded-detach behavior because
   `v0.9.5` did not close its upstream stream; the provider remained tracked
   through its configured timeout and accounting completed exactly once.

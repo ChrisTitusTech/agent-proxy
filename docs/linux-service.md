@@ -29,6 +29,8 @@ systemctl --user status herdr.service agent-proxy.service
 The installer generates owner-only API credentials, installs both user units,
 and enables them for `default.target`. `agent-proxy.service` orders itself
 after `herdr.service`; inference fails closed with `503` if Herdr is not ready.
+The user service creates `${XDG_RUNTIME_DIR}/agent-proxy` with
+`RuntimeDirectory=agent-proxy` and owner-only permissions before preflight.
 
 Lifecycle commands use the same installer:
 
@@ -42,6 +44,9 @@ scripts/install.sh uninstall --purge
 
 Uninstall preserves configuration and operational state unless `--purge` is
 specified. Provider-owned credentials and CLI state are never removed.
+Backup and upgrade stop an active proxy before snapshotting the SQLite WAL
+state, then restore the prior active state. Existing backup archives are
+excluded from later snapshots.
 
 ## Configuration
 

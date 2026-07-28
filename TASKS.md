@@ -164,8 +164,10 @@ Completion evidence:
   pane reuse, same-pane serialization, cross-session parallelism, and live pane
   metadata checks.
 - Copilot CLI `1.0.75`, Codex, and Open WebUI `v0.9.5` pass live current-user
-  text, streaming, isolation, tool, visibility, and accounting checks. Open
-  WebUI cancellation uses the allowed bounded-detach outcome.
+  text, streaming, isolation, tool, visibility, and accounting checks.
+  Copilot disconnect cancellation returns both the request tracker and Herdr
+  pane to a terminal state; Open WebUI cancellation uses the allowed
+  bounded-detach outcome.
 - Dead-code analysis is clean after removing the legacy service deployment,
   direct inference paths, Claude SDK/channel bridge, Codex app-server, unused
   UI, and obsolete dependencies.

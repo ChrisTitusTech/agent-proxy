@@ -32,7 +32,28 @@ HERDR_BIN="$HERDR_BIN" \
 	HERDR_RUNTIME_DIR="$RUNTIME_DIR" \
 	HERDR_WORKSPACE_LABEL="$WORKSPACE_LABEL" \
 	node --input-type=module - <<'NODE'
+import { execFileSync } from 'node:child_process';
 import { HerdrLauncher } from './packages/server/dist/herdr/launcher.js';
+
+const command = (...args) => JSON.parse(execFileSync(
+  process.env.HERDR_BIN,
+  args,
+  { encoding: 'utf8' },
+)).result;
+const createdWorkspace = command(
+  'workspace', 'create',
+  '--cwd', process.cwd(),
+  '--label', process.env.HERDR_WORKSPACE_LABEL,
+  '--no-focus',
+);
+const workspaceId = createdWorkspace.workspace.workspace_id;
+const staleTab = command(
+  'tab', 'create',
+  '--workspace', workspaceId,
+  '--cwd', process.cwd(),
+  '--label', 'api-stale-0123456789abcdef',
+  '--no-focus',
+).tab;
 
 const launcher = new HerdrLauncher({
   binary: process.env.HERDR_BIN,
@@ -66,6 +87,10 @@ const [sameA, sameB] = await Promise.all([
   run('key:test|session:shared', 'same-a'),
   run('key:test|session:shared', 'same-b'),
 ]);
+const tabsAfterStart = command('tab', 'list', '--workspace', workspaceId).tabs;
+if (tabsAfterStart.some((tab) => tab.tab_id === staleTab.tab_id)) {
+  throw new Error('A stale API tab from the previous runtime was not pruned.');
+}
 const serialElapsed = Date.now() - serialStart;
 if (sameA !== sameB || serialElapsed < 450) {
   throw new Error(`Shared session was not serialized: ${JSON.stringify({ sameA, sameB, serialElapsed })}`);
@@ -80,7 +105,26 @@ const parallelElapsed = Date.now() - parallelStart;
 if (isolatedA === isolatedB || parallelElapsed >= serialElapsed) {
   throw new Error(`Distinct sessions were not isolated: ${JSON.stringify({ isolatedA, isolatedB, parallelElapsed })}`);
 }
+
+const shutdownRequest = request('key:test|session:shutdown', 'never');
+shutdownRequest.args = ['-e', 'setTimeout(() => console.log("never"), 30000)'];
+shutdownRequest.timeoutMs = 35_000;
+const activeHandle = await launcher.start(shutdownRequest);
+activeHandle.stdout.resume();
+activeHandle.stderr.resume();
+const queuedStart = launcher.start(shutdownRequest);
 await launcher.shutdown();
+const shutdownResults = await Promise.allSettled([
+  activeHandle.completion,
+  queuedStart,
+]);
+if (shutdownResults.some((result) => result.status !== 'rejected')) {
+  throw new Error(`Shutdown did not reject active and queued starts: ${JSON.stringify(shutdownResults)}`);
+}
+const panesAfterShutdown = command('pane', 'list', '--workspace', workspaceId).panes;
+if (panesAfterShutdown.some((pane) => pane.agent_status === 'working')) {
+  throw new Error('Shutdown returned before terminal Herdr pane reporting completed.');
+}
 NODE
 
 printf 'Live Herdr load and isolation passed.\n'

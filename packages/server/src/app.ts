@@ -163,27 +163,6 @@ export async function createApp(
     return reply.send({ status: 'ok' });
   });
 
-  app.get('/admin/health', async (_request, reply) => {
-    const herdr = await executionBackend.readiness();
-    return reply.status(herdr.ready ? 200 : 503).send({
-      status: herdr.ready ? 'ready' : 'unavailable',
-      version: serverPackage.version,
-      herdr,
-      providers: registry.getAll().map((provider) => provider.name),
-    });
-  });
-
-
-  app.get('/admin/server-info', async (_request, reply) => {
-    return reply.send({
-      serverPort: config.server.port,
-      serverHost: config.server.host,
-      dashboardPort: config.dashboard.port,
-      dashboardHost: config.dashboard.host,
-    });
-  });
-
-
   if (config.auth.enabled) {
     app.addHook('onRequest', async (request, reply) => {
 
@@ -219,6 +198,27 @@ export async function createApp(
     }
     await adminAuthMiddleware(request, reply, config.auth.adminToken);
   });
+
+  app.get('/admin/health', async (_request, reply) => {
+    const herdr = await executionBackend.readiness();
+    return reply.status(herdr.ready ? 200 : 503).send({
+      status: herdr.ready ? 'ready' : 'unavailable',
+      version: serverPackage.version,
+      herdr,
+      providers: registry.getAll().map((provider) => provider.name),
+    });
+  });
+
+
+  app.get('/admin/server-info', async (_request, reply) => {
+    return reply.send({
+      serverPort: config.server.port,
+      serverHost: config.server.host,
+      dashboardPort: config.dashboard.port,
+      dashboardHost: config.dashboard.host,
+    });
+  });
+
   registerResponsesRoute(app, {
     router,
     queue: queueManager,
