@@ -42,6 +42,7 @@ run_installer() {
 ARCHIVE_V1=$(make_archive 1.0.0-test1)
 ARCHIVE_V2=$(make_archive 1.0.0-test2)
 ARCHIVE_V3=$(make_archive 1.0.0-test3)
+ARCHIVE_V4=$(make_archive 1.0.0-test4)
 
 run_installer install --archive "$ARCHIVE_V1"
 [[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
@@ -80,10 +81,12 @@ first_backup=$(find "$XDG_STATE_HOME/agent-proxy/backups" -type f -name '*.tar.g
 FAKE_BIN="$TEST_DIR/fake-bin"
 SYSTEMCTL_LOG="$TEST_DIR/systemctl.log"
 SYSTEMCTL_STATE="$TEST_DIR/systemctl.state"
+HERDR_SYSTEMCTL_STATE="$TEST_DIR/herdr-systemctl.state"
 SYSTEMCTL_FAIL_ONCE="$TEST_DIR/systemctl.fail-once"
-export SYSTEMCTL_LOG SYSTEMCTL_STATE SYSTEMCTL_FAIL_ONCE
+export SYSTEMCTL_LOG SYSTEMCTL_STATE HERDR_SYSTEMCTL_STATE SYSTEMCTL_FAIL_ONCE
 mkdir -p "$FAKE_BIN"
 printf 'active\n' >"$SYSTEMCTL_STATE"
+printf 'active\n' >"$HERDR_SYSTEMCTL_STATE"
 cat >"$FAKE_BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -94,6 +97,9 @@ case "$*" in
 "--user is-active --quiet agent-proxy.service")
 	[[ $(<"$SYSTEMCTL_STATE") == active ]]
 	;;
+"--user is-active --quiet herdr.service")
+	[[ $(<"$HERDR_SYSTEMCTL_STATE") == active ]]
+	;;
 "--user stop agent-proxy.service")
 	printf 'stop\n' >>"$SYSTEMCTL_LOG"
 	printf 'inactive\n' >"$SYSTEMCTL_STATE"
@@ -101,10 +107,15 @@ case "$*" in
 "--user stop agent-proxy.service herdr.service")
 	printf 'stop-both\n' >>"$SYSTEMCTL_LOG"
 	printf 'inactive\n' >"$SYSTEMCTL_STATE"
+	printf 'inactive\n' >"$HERDR_SYSTEMCTL_STATE"
 	;;
 "--user start agent-proxy.service")
 	printf 'start\n' >>"$SYSTEMCTL_LOG"
 	printf 'active\n' >"$SYSTEMCTL_STATE"
+	;;
+"--user start herdr.service")
+	printf 'start-herdr\n' >>"$SYSTEMCTL_LOG"
+	printf 'active\n' >"$HERDR_SYSTEMCTL_STATE"
 	;;
 "--user start herdr.service agent-proxy.service")
 	printf 'start-both\n' >>"$SYSTEMCTL_LOG"
@@ -113,6 +124,7 @@ case "$*" in
 		exit 1
 	fi
 	printf 'active\n' >"$SYSTEMCTL_STATE"
+	printf 'active\n' >"$HERDR_SYSTEMCTL_STATE"
 	;;
 "--user disable agent-proxy.service herdr.service")
 	printf 'disable-both\n' >>"$SYSTEMCTL_LOG"
@@ -180,6 +192,15 @@ run_installer uninstall
 [[ -f "$XDG_STATE_HOME/agent-proxy/agent-proxy.db" ]]
 
 run_installer install --archive "$ARCHIVE_V1"
+printf 'inactive\n' >"$SYSTEMCTL_STATE"
+printf 'active\n' >"$HERDR_SYSTEMCTL_STATE"
+: >"$SYSTEMCTL_LOG"
+PATH="$FAKE_BIN:$PATH" "$PROJECT_DIR/scripts/install.sh" \
+	upgrade --archive "$ARCHIVE_V4"
+[[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test4 ]]
+[[ $(<"$SYSTEMCTL_STATE") == inactive ]]
+[[ $(<"$HERDR_SYSTEMCTL_STATE") == active ]]
+[[ $(paste -sd, "$SYSTEMCTL_LOG") == stop-both,start-herdr ]]
 run_installer uninstall --purge
 [[ ! -e "$XDG_CONFIG_HOME/agent-proxy" ]]
 [[ ! -e "$XDG_DATA_HOME/agent-proxy" ]]

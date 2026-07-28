@@ -9,7 +9,7 @@ import type {
   ProviderExecutionHandle,
   ProviderExecutionRequest,
 } from '../herdr/launcher.js';
-import { resolveProxyPort } from './base-provider.js';
+import { providerExecutionIdentity, resolveProxyPort } from './base-provider.js';
 import { CodexProvider } from './codex-provider.js';
 import { GrokProvider } from './grok-provider.js';
 import { GenericCliProvider } from './generic-cli-provider.js';
@@ -331,6 +331,47 @@ model_provider = "openai"
       stream: false,
     })).rejects.toThrow('backend should not start');
     expect(backend.starts).toHaveLength(1);
+  });
+
+  it('preserves the validated upstream profile for Codex resume checks', async () => {
+    const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
+    temporaryDirectories.push(codexHome);
+    await writeFile(
+      resolve(codexHome, 'config.toml'),
+      `model_provider = "agent_proxy"
+[model_providers.agent_proxy]
+base_url = "http://127.0.0.1:18300/v1"
+[profiles.agent_proxy_upstream]
+model_provider = "openai"
+`,
+      'utf8',
+    );
+    process.env.CODEX_HOME = codexHome;
+    const backend = new RecordingBackend();
+    const providerConfig = config({
+      extra_args: ['--profile', 'agent_proxy_upstream'],
+      cli_options: { enable_session_reuse: true },
+    });
+    const provider = new CodexProvider(providerConfig, backend, 18300);
+    const options = {
+      messages: [{ role: 'user' as const, content: 'second turn' }],
+      model: 'gpt-5.6-sol',
+      stream: false,
+      clientKey: 'shared-client',
+    };
+    (provider as any).ensureCliSessionManager().set(
+      'shared-client',
+      'thread-resume',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(options)),
+    );
+
+    await expect(provider.execute(options)).rejects.toThrow('backend should not start');
+    expect(backend.starts[0].args.slice(0, 3)).toEqual([
+      'exec',
+      'resume',
+      'thread-resume',
+    ]);
   });
 
   it('rejects an active Grok custom model before creating a pane', async () => {

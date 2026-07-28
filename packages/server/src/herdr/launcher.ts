@@ -315,7 +315,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     try {
       if (this.quarantinedSessionKeys.has(sessionKey)) {
         throw new HerdrUnavailableError(
-          'The prior provider process could not be confirmed stopped. Restart Herdr before reusing this session.',
+          'The prior provider process could not be confirmed stopped. Restart both Herdr and agent-proxy before reusing this session.',
         );
       }
       const existing = this.panes.get(sessionKey);
@@ -412,9 +412,13 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     const listed = await this.command<{ type: string; tabs: Tab[] }>([
       'tab', 'list', '--workspace', workspaceId,
     ]);
-    const staleTabs = listed.tabs.filter(
-      (tab) => /^api-.+-[a-f0-9]{16}$/i.test(tab.label),
+    const trackedTabIds = new Set(
+      Array.from(this.panes.values(), (pane) => pane.tabId),
     );
+    const staleTabs = listed.tabs.filter((tab) => (
+      /^api-.+-[a-f0-9]{16}$/i.test(tab.label)
+      && !trackedTabIds.has(tab.tab_id)
+    ));
     let allClosed = true;
     for (const tab of staleTabs) {
       try {

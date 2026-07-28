@@ -318,7 +318,7 @@ describe('Herdr pane lifecycle', () => {
     await expect(internals.ensurePane(
       'session-a',
       request(),
-    )).rejects.toThrow(/could not be confirmed stopped/);
+    )).rejects.toThrow(/Restart both Herdr and agent-proxy/);
   });
 
   it('retains pane tracking when a prune close fails', async () => {
@@ -433,6 +433,44 @@ describe('Herdr pane lifecycle', () => {
       (args) => args[0] === 'tab' && args[1] === 'close',
     )).toHaveLength(1);
     expect(closeAttempts).toBe(2);
+  });
+
+  it('does not close tracked panes while retrying stale-tab cleanup', async () => {
+    const { internals, commands, tabs } = launcherWithCommandFixture();
+    tabs.push(
+      {
+        tab_id: 'stale-tab',
+        workspace_id: 'workspace',
+        label: 'api-codex-a1b2c3d4e5f60708',
+      },
+      {
+        tab_id: 'current-tab',
+        workspace_id: 'workspace',
+        label: 'api-codex-a1b2c3d4e5f60709',
+      },
+    );
+    internals.panes.set('current-session', {
+      paneId: 'current-pane',
+      tabId: 'current-tab',
+      lastUsedAt: Date.now(),
+    });
+    const fixtureCommand = internals.command;
+    internals.command = async (args: string[]) => {
+      if (
+        args[0] === 'tab'
+        && args[1] === 'close'
+        && args[2] === 'stale-tab'
+      ) {
+        commands.push(args);
+        throw new Error('temporary close failure');
+      }
+      return fixtureCommand(args);
+    };
+
+    await expect(internals.pruneStaleTabs('workspace')).resolves.toBe(false);
+
+    expect(commands).toContainEqual(['tab', 'close', 'stale-tab']);
+    expect(commands).not.toContainEqual(['tab', 'close', 'current-tab']);
   });
 
   it('prunes session keys after their startup reservations end', () => {

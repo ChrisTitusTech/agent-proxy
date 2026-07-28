@@ -88,6 +88,20 @@ export function filterResumeUnsupportedArgs(args: string[]): string[] {
   return result;
 }
 
+function configuredProfileArgs(args: string[]): string[] {
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    if ((argument === '-p' || argument === '--profile') && args[index + 1]) {
+      return [argument, args[index + 1]];
+    }
+    if (
+      argument.startsWith('--profile=')
+      || argument.startsWith('-p=')
+    ) return [argument];
+  }
+  return [];
+}
+
 export class CodexProvider extends BaseProvider {
   readonly name = 'codex' as const;
 
@@ -242,6 +256,17 @@ export class CodexProvider extends BaseProvider {
     ];
 
     return args;
+  }
+
+  protected override getRecursionCheckArgs(
+    options: ExecuteOptions,
+    args: string[],
+  ): string[] {
+    if (args[0] !== 'exec' || args[1] !== 'resume') return args;
+    return [
+      ...args,
+      ...configuredProfileArgs(this.getEffectiveConfig(options).extra_args),
+    ];
   }
 
 

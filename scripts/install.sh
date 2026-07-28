@@ -86,19 +86,31 @@ service_stop_all() {
 	fi
 }
 
+service_start_selected() {
+	local start_proxy=${1:-true}
+	local start_herdr=${2:-$start_proxy}
+	if [[ "$start_proxy" == true && "$start_herdr" == true ]]; then
+		systemctl --user start herdr.service agent-proxy.service
+	elif [[ "$start_herdr" == true ]]; then
+		systemctl --user start herdr.service
+	elif [[ "$start_proxy" == true ]]; then
+		systemctl --user start agent-proxy.service
+	fi
+}
+
 service_enable() {
-	local start_now=${1:-true}
+	local start_proxy=${1:-true}
+	local start_herdr=${2:-$start_proxy}
 	if use_systemd; then
 		systemctl --user daemon-reload
 		systemctl --user enable herdr.service agent-proxy.service
-		if [[ "$start_now" == true ]]; then
-			systemctl --user start herdr.service agent-proxy.service
-		fi
+		service_start_selected "$start_proxy" "$start_herdr"
 	fi
 }
 
 service_is_active() {
-	use_systemd && systemctl --user is-active --quiet agent-proxy.service
+	local unit=${1:-agent-proxy.service}
+	use_systemd && systemctl --user is-active --quiet "$unit"
 }
 
 validate_archive() {
@@ -258,7 +270,8 @@ backup_consistently() {
 
 install_release() (
 	set -E
-	local start_service=${1:-true}
+	local start_proxy=${1:-true}
+	local start_herdr=${2:-$start_proxy}
 	validate_archive
 	local extract_dir release_id release_dir old_current='' old_previous=''
 	local activation_started=false
@@ -307,8 +320,8 @@ install_release() (
 		fi
 		if use_systemd; then
 			systemctl --user daemon-reload
-			if [[ "$start_service" == true && -n "$old_current" ]]; then
-				systemctl --user start herdr.service agent-proxy.service
+			if [[ -n "$old_current" ]]; then
+				service_start_selected "$start_proxy" "$start_herdr"
 			fi
 		fi
 		rm -rf "$release_dir"
@@ -349,7 +362,7 @@ install_release() (
 	ln -sfn "$release_dir" "$DATA_DIR/current"
 	activation_started=true
 	install_units "$release_dir"
-	service_enable "$start_service"
+	service_enable "$start_proxy" "$start_herdr"
 	trap - ERR
 	printf 'Activated current-user agent-proxy release %s\n' "$release_id"
 )
@@ -360,7 +373,7 @@ install)
 		printf -- '--archive is required for install.\n' >&2
 		exit 2
 	}
-	install_release true
+	install_release true true
 	;;
 upgrade)
 	[[ -n "$ARCHIVE" ]] || {
@@ -368,20 +381,24 @@ upgrade)
 		exit 2
 	}
 	validate_upgrade_candidate
-	was_active=false
-	if service_is_active; then
-		was_active=true
+	proxy_was_active=false
+	herdr_was_active=false
+	if service_is_active agent-proxy.service; then
+		proxy_was_active=true
 		service_stop
+	fi
+	if service_is_active herdr.service; then
+		herdr_was_active=true
 	fi
 	if [[ -d "$CONFIG_DIR" || -d "$STATE_DIR" ]]; then
 		if ! create_backup >/dev/null; then
-			if [[ "$was_active" == true ]] && use_systemd; then
+			if [[ "$proxy_was_active" == true ]] && use_systemd; then
 				systemctl --user start agent-proxy.service
 			fi
 			exit 1
 		fi
 	fi
-	install_release "$was_active"
+	install_release "$proxy_was_active" "$herdr_was_active"
 	;;
 rollback)
 	[[ -L "$DATA_DIR/previous" ]] || {
