@@ -195,8 +195,12 @@ run_installer install --archive "$ARCHIVE_V1"
 printf 'inactive\n' >"$SYSTEMCTL_STATE"
 printf 'active\n' >"$HERDR_SYSTEMCTL_STATE"
 : >"$SYSTEMCTL_LOG"
-PATH="$FAKE_BIN:$PATH" "$PROJECT_DIR/scripts/install.sh" \
-	upgrade --archive "$ARCHIVE_V4"
+upgrade_command=(
+	"$PROJECT_DIR/scripts/install.sh"
+	upgrade
+	--archive "$ARCHIVE_V4"
+)
+PATH="$FAKE_BIN:$PATH" "${upgrade_command[@]}"
 [[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test4 ]]
 [[ $(<"$SYSTEMCTL_STATE") == inactive ]]
 [[ $(<"$HERDR_SYSTEMCTL_STATE") == active ]]
