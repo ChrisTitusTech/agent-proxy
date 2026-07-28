@@ -16,6 +16,7 @@ import { extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { ModelRouter } from '../../services/router.js';
@@ -734,6 +735,7 @@ export function registerMessagesRoute(
 
               if (abortController.signal.aborted) return;
 
+              await deps.registry.assertExecutionReady(provider);
 
 
               const origin = request.headers.origin;
@@ -916,7 +918,10 @@ export function registerMessagesRoute(
                 });
 
                 deps.activeRequests.finish(requestId);
-                deps.healthChecker.onRequestFailure(route.provider);
+                const failure = classifyProviderError(errMsg, route.provider);
+                if (shouldDegradeProviderHealth(failure)) {
+                  deps.healthChecker.onRequestFailure(route.provider);
+                }
                 return;
               }
 
@@ -946,7 +951,6 @@ export function registerMessagesRoute(
                   errorMessage: toolSelectionError,
                 });
                 deps.activeRequests.finish(requestId);
-                deps.healthChecker.onRequestFailure(route.provider);
                 return;
               }
 
@@ -1230,11 +1234,14 @@ export function registerMessagesRoute(
           }
 
           deps.activeRequests.finish(requestId);
-          deps.healthChecker.onRequestFailure(route.provider);
-          if (!classifyProviderError(
+          const failure = classifyProviderError(
             lastError,
             route.provider,
-          ).fallbackEligible) break;
+          );
+          if (shouldDegradeProviderHealth(failure)) {
+            deps.healthChecker.onRequestFailure(route.provider);
+          }
+          if (!failure.fallbackEligible) break;
           continue;
         }
       }

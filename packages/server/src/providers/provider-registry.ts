@@ -33,6 +33,16 @@ export class ProviderRegistry {
     return this.providers.has(name);
   }
 
+  async assertExecutionReady(provider: BaseProvider): Promise<void> {
+    if (!provider.requiresHerdr) return;
+    const readiness = await this.executionBackend.readiness();
+    if (!readiness.ready) {
+      throw new Error(
+        `Herdr is unavailable; provider execution was not started. ${readiness.message ?? ''}`.trim(),
+      );
+    }
+  }
+
   unregister(name: string): boolean {
     return this.providers.delete(name);
   }

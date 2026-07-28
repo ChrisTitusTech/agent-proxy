@@ -2,9 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from './provider-error.js';
 
 describe('provider error classification', () => {
+  it.each([
+    'queue is full',
+    'queue wait timed out',
+    'Herdr is unavailable',
+    'provider recursion',
+    'request cancelled',
+  ])('does not degrade provider health for local failure: %s', (message) => {
+    expect(shouldDegradeProviderHealth(
+      classifyProviderError(message, 'codex'),
+    )).toBe(false);
+  });
+
   it.each([
     ['spawn /private/provider ENOENT', 'provider_executable_missing'],
     ['Herdr worker failed: spawn codex ENOENT', 'provider_executable_missing'],

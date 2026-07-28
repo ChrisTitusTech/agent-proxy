@@ -13,6 +13,7 @@ import { extractClientKey, extractProviderClientKey } from '../../utils/client-k
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { LogEntry } from '../../middleware/request-logger.js';
@@ -859,11 +860,14 @@ async function executeNonStreaming(
         undefined,
         sanitizeProviderError(lastError.message),
       );
-      await deps.healthChecker.onRequestFailure(route.provider);
-      if (!classifyProviderError(
+      const failure = classifyProviderError(
         lastError,
         route.provider,
-      ).fallbackEligible) break;
+      );
+      if (shouldDegradeProviderHealth(failure)) {
+        await deps.healthChecker.onRequestFailure(route.provider);
+      }
+      if (!failure.fallbackEligible) break;
     } finally {
       deps.activeRequests.finish(context.responseId);
     }
@@ -1287,6 +1291,16 @@ async function executeStreaming(
     responseError(reply, 502, `Provider '${route.provider}' is unavailable.`, null, 'provider_error');
     return;
   }
+  try {
+    await deps.registry.assertExecutionReady(provider);
+  } catch (error) {
+    const failure = classifyProviderError(
+      error instanceof Error ? error : String(error),
+      route.provider,
+    );
+    responseError(reply, failure.statusCode, failure.message, null, failure.code);
+    return;
+  }
 
   deps.activeRequests.start({
     requestId: context.responseId,
@@ -1425,7 +1439,10 @@ async function executeStreaming(
       undefined,
       sanitizeProviderError(failure.message),
     );
-    await deps.healthChecker.onRequestFailure(route.provider);
+    const classified = classifyProviderError(failure, route.provider);
+    if (shouldDegradeProviderHealth(classified)) {
+      await deps.healthChecker.onRequestFailure(route.provider);
+    }
   } finally {
     deps.activeRequests.finish(context.responseId);
     if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();

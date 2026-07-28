@@ -68,6 +68,7 @@ function createDeps(
     } as unknown as MessagesDeps['rateLimiter'],
     registry: {
       get: vi.fn(() => provider),
+      assertExecutionReady: vi.fn(async () => undefined),
     } as unknown as MessagesDeps['registry'],
     healthChecker: {
       isHealthy: vi.fn(async () => true),
@@ -106,6 +107,32 @@ afterEach(async () => {
 });
 
 describe('Anthropic Messages normalization', () => {
+  it('returns a 503 before opening SSE when Herdr is unavailable', async () => {
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    deps.registry.assertExecutionReady = vi.fn(async () => {
+      throw new Error('Herdr is unavailable; provider execution was not started.');
+    });
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'fixture',
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['content-type']).not.toContain('text/event-stream');
+    expect(executeStream).not.toHaveBeenCalled();
+  });
+
   it('propagates a non-streaming client disconnect to the provider signal', async () => {
     let observedSignal: AbortSignal | undefined;
     let releaseProvider!: () => void;

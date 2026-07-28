@@ -22,6 +22,16 @@ export interface ProviderFailure {
   fallbackEligible: boolean;
 }
 
+export function shouldDegradeProviderHealth(failure: ProviderFailure): boolean {
+  return ![
+    'cancelled',
+    'herdr_unavailable',
+    'queue_overloaded',
+    'validation_error',
+    'recursion',
+  ].includes(failure.kind);
+}
+
 function safeProviderName(provider?: string): string {
   if (!provider || !/^[a-z0-9_-]+$/i.test(provider)) return 'Provider';
   return provider.charAt(0).toUpperCase() + provider.slice(1);

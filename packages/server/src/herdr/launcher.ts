@@ -172,6 +172,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private async startTracked(
     request: ProviderExecutionRequest,
   ): Promise<ProviderExecutionHandle> {
+    const deadline = Date.now() + request.timeoutMs;
     const ready = await this.readiness();
     if (!ready.ready) {
       throw new HerdrUnavailableError(
@@ -180,17 +181,25 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     }
 
     const sessionKey = this.sessionKey(request);
-    const release = await this.mutex.acquire(sessionKey);
+    const release = await this.mutex.acquire(sessionKey, {
+      ...(request.signal ? { signal: request.signal } : {}),
+      timeoutMs: Math.max(0, deadline - Date.now()),
+    });
     let pane: PaneRecord | undefined;
     try {
+      this.assertRequestCanStart(request, deadline);
       if (this.shuttingDown) {
         throw new HerdrUnavailableError('Herdr launcher is shutting down.');
       }
       pane = await this.ensurePane(sessionKey, request);
+      this.assertRequestCanStart(request, deadline);
       if (this.shuttingDown) {
         throw new HerdrUnavailableError('Herdr launcher is shutting down.');
       }
-      const handle = await this.startWorker(pane.paneId, sessionKey, request);
+      const handle = await this.startWorker(pane.paneId, sessionKey, {
+        ...request,
+        timeoutMs: Math.max(1, deadline - Date.now()),
+      });
       this.active.add(handle);
       this.reservedPaneIds.delete(pane.paneId);
       if (this.shuttingDown) handle.cancel();
@@ -210,6 +219,18 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       if (pane) this.reservedPaneIds.delete(pane.paneId);
       release();
       throw error;
+    }
+  }
+
+  private assertRequestCanStart(
+    request: ProviderExecutionRequest,
+    deadline: number,
+  ): void {
+    if (request.signal?.aborted) {
+      throw new Error(`${request.provider} request cancelled before provider start.`);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`${request.provider} CLI timed out before provider start.`);
     }
   }
 

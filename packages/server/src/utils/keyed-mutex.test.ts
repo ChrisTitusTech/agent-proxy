@@ -6,7 +6,7 @@ import { KeyedMutex } from './keyed-mutex.js';
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('KeyedMutex', () => {
-  it('preserves keyed mutex behavior', async () => {
+  it('serializes work using the same key', async () => {
     const mutex = new KeyedMutex();
     const order: string[] = [];
 
@@ -30,7 +30,7 @@ describe('KeyedMutex', () => {
     expect(order).toEqual(['a-start', 'a-end', 'b-start', 'b-end', 'c-start', 'c-end']);
   });
 
-  it('preserves keyed mutex behavior', async () => {
+  it('allows work using different keys to overlap', async () => {
     const mutex = new KeyedMutex();
     let concurrent = 0;
     let maxConcurrent = 0;
@@ -51,7 +51,7 @@ describe('KeyedMutex', () => {
     expect(maxConcurrent).toBe(2);
   });
 
-  it('preserves keyed mutex behavior', async () => {
+  it('releases the key after a callback failure', async () => {
     const mutex = new KeyedMutex();
 
     await expect(
@@ -65,7 +65,7 @@ describe('KeyedMutex', () => {
     expect(result).toBe('ok');
   });
 
-  it('preserves keyed mutex behavior', async () => {
+  it('makes release idempotent', async () => {
     const mutex = new KeyedMutex();
 
     const release = await mutex.acquire('k');
@@ -74,5 +74,27 @@ describe('KeyedMutex', () => {
 
     const result = await mutex.runExclusive('k', async () => 'ok');
     expect(result).toBe('ok');
+  });
+
+  it('cancels a queued acquisition without blocking later waiters', async () => {
+    const mutex = new KeyedMutex();
+    const releaseFirst = await mutex.acquire('k');
+    const controller = new AbortController();
+    const cancelled = mutex.acquire('k', { signal: controller.signal });
+    const later = mutex.acquire('k');
+
+    controller.abort();
+    await expect(cancelled).rejects.toThrow(/cancelled/);
+    releaseFirst();
+    const releaseLater = await later;
+    releaseLater();
+  });
+
+  it('bounds a queued acquisition by timeout', async () => {
+    const mutex = new KeyedMutex();
+    const release = await mutex.acquire('k');
+
+    await expect(mutex.acquire('k', { timeoutMs: 10 })).rejects.toThrow(/timed out/);
+    release();
   });
 });

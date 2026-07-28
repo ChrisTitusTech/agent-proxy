@@ -152,6 +152,20 @@ generate_secret() {
 	od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
 }
 
+safe_user_path() {
+	local combined="${PATH:-}:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
+	local result='' entry
+	local -a entries
+	IFS=: read -r -a entries <<<"$combined"
+	for entry in "${entries[@]}"; do
+		[[ "$entry" =~ ^/[A-Za-z0-9_./+@%=-]+$ ]] || continue
+		[[ ":$result:" == *":$entry:"* ]] || {
+			result="${result:+$result:}$entry"
+		}
+	done
+	printf '%s' "$result"
+}
+
 escape_sed() {
 	printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
 }
@@ -270,6 +284,10 @@ install_release() (
 		if [[ -n "$old_current" ]]; then
 			install_units "$old_current"
 		else
+			if use_systemd; then
+				systemctl --user disable agent-proxy.service herdr.service \
+					>/dev/null 2>&1 || true
+			fi
 			rm -f "$PROXY_UNIT" "$HERDR_UNIT"
 		fi
 		if use_systemd; then
@@ -301,8 +319,12 @@ install_release() (
 			printf 'CONFIG_PATH=%s/config.yaml\n' "$CONFIG_DIR"
 			printf 'AGENT_PROXY_DATABASE_PATH=%s/agent-proxy.db\n' "$STATE_DIR"
 			printf 'AGENT_PROXY_HOST=127.0.0.1\nAGENT_PROXY_PORT=8300\n'
+			printf 'PATH=%s\n' "$(safe_user_path)"
 			printf 'SHUTDOWN_TIMEOUT_MS=30000\n'
 		} >"$CONFIG_DIR/agent-proxy.env"
+	fi
+	if ! grep -q '^PATH=' "$CONFIG_DIR/agent-proxy.env"; then
+		printf 'PATH=%s\n' "$(safe_user_path)" >>"$CONFIG_DIR/agent-proxy.env"
 	fi
 
 	validate_release_config "$release_dir"

@@ -60,6 +60,7 @@ export function resolveProxyPort(
 export abstract class BaseProvider {
   abstract readonly name: string;
 
+  readonly requiresHerdr: boolean = true;
 
   readonly endpointTypes: readonly EndpointType[] = ['chat'];
 

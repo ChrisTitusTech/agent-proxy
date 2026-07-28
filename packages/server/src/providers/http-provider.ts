@@ -34,6 +34,7 @@ function scheduleAbort(controller: AbortController, timeoutMs: number): () => vo
 
 export class HttpProvider extends BaseProvider {
   readonly name: string;
+  override readonly requiresHerdr: boolean = false;
   override readonly endpointTypes = ['chat', 'embeddings', 'tts', 'rerank'] as const;
   private httpConfig: HttpProviderConfig;
 

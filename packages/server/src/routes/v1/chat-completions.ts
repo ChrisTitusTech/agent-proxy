@@ -14,6 +14,7 @@ import { extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { ModelRouter } from '../../services/router.js';
@@ -599,6 +600,7 @@ export function registerChatCompletionsRoute(
               await finalizeCancellation();
               return;
             }
+            await deps.registry.assertExecutionReady(provider);
             providerStarted = true;
 
 
@@ -746,7 +748,7 @@ export function registerChatCompletionsRoute(
                 errorMessage: errMsg,
               });
 
-              if (finishActiveRequest()) {
+              if (finishActiveRequest() && shouldDegradeProviderHealth(failure)) {
                 deps.healthChecker.onRequestFailure(route.provider);
               }
               return;
@@ -986,7 +988,7 @@ export function registerChatCompletionsRoute(
             });
           }
 
-          if (finishActiveRequest()) {
+          if (finishActiveRequest() && shouldDegradeProviderHealth(failure)) {
             deps.healthChecker.onRequestFailure(route.provider);
           }
           if (!failure.fallbackEligible) break;

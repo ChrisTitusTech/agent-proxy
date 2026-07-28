@@ -11,7 +11,9 @@ export HOME="$TEST_DIR/home"
 export XDG_CONFIG_HOME="$TEST_DIR/config home%test"
 export XDG_DATA_HOME="$TEST_DIR/data home%test"
 export XDG_STATE_HOME="$TEST_DIR/state home%test"
-mkdir -p "$HOME"
+USER_PATH_BIN="$TEST_DIR/user-bin"
+mkdir -p "$HOME" "$USER_PATH_BIN"
+export PATH="$USER_PATH_BIN:$PATH"
 
 make_archive() {
 	local release_id=$1
@@ -52,6 +54,7 @@ grep -Fq "ExecStart=/usr/bin/env node \"${XDG_DATA_HOME//%/%%}/agent-proxy/curre
 grep -Fq "ExecStart=/usr/bin/env node \"${XDG_DATA_HOME//%/%%}/agent-proxy/current/packages/server/dist/herdr/server.js\"" \
 	"$XDG_CONFIG_HOME/systemd/user/herdr.service"
 [[ $(stat -c '%a' "$XDG_CONFIG_HOME/agent-proxy/agent-proxy.env") == 600 ]]
+grep -Fq "PATH=$USER_PATH_BIN:" "$XDG_CONFIG_HOME/agent-proxy/agent-proxy.env"
 if find "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" ! -user "$(id -un)" -print -quit |
 	grep -q .; then
 	printf 'Installer created a file not owned by the current user.\n' >&2
@@ -103,6 +106,9 @@ case "$*" in
 		exit 1
 	fi
 	printf 'active\n' >"$SYSTEMCTL_STATE"
+	;;
+"--user disable agent-proxy.service herdr.service")
+	printf 'disable-both\n' >>"$SYSTEMCTL_LOG"
 	;;
 *)
 	exit 0
@@ -162,5 +168,16 @@ run_installer uninstall --purge
 [[ ! -e "$XDG_CONFIG_HOME/agent-proxy" ]]
 [[ ! -e "$XDG_DATA_HOME/agent-proxy" ]]
 [[ ! -e "$XDG_STATE_HOME/agent-proxy" ]]
+
+: >"$SYSTEMCTL_LOG"
+touch "$SYSTEMCTL_FAIL_ONCE"
+if PATH="$FAKE_BIN:$PATH" "$PROJECT_DIR/scripts/install.sh" install --archive "$ARCHIVE_V1"; then
+	printf 'First install unexpectedly survived a service activation failure.\n' >&2
+	exit 1
+fi
+grep -q '^disable-both$' "$SYSTEMCTL_LOG"
+[[ ! -e "$XDG_DATA_HOME/agent-proxy/current" ]]
+[[ ! -e "$XDG_CONFIG_HOME/systemd/user/agent-proxy.service" ]]
+[[ ! -e "$XDG_CONFIG_HOME/systemd/user/herdr.service" ]]
 
 printf 'Current-user installer lifecycle passed.\n'

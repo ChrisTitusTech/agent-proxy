@@ -85,6 +85,7 @@ function createDeps(
     } as unknown as ResponsesDeps['rateLimiter'],
     registry: {
       get: vi.fn((name: string) => providers[name]),
+      assertExecutionReady: vi.fn(async () => undefined),
     } as unknown as ResponsesDeps['registry'],
     healthChecker: {
       isHealthy: vi.fn(async () => true),
@@ -1850,6 +1851,33 @@ describe('Responses provider contract safeguards', () => {
 });
 
 describe('Responses cancellation, failures, and fallback', () => {
+  it('returns a 503 before opening SSE when Herdr is unavailable', async () => {
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const deps = createDeps({
+      codex: fakeProvider({ executeStream }),
+    });
+    deps.registry.assertExecutionReady = vi.fn(async () => {
+      throw new Error('Herdr is unavailable; provider execution was not started.');
+    });
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['content-type']).not.toContain('text/event-stream');
+    expect(executeStream).not.toHaveBeenCalled();
+  });
+
   it('rejects a non-streaming provider error finish reason', async () => {
     const provider = fakeProvider({
       execute: async () => ({
