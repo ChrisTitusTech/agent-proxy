@@ -14,6 +14,16 @@ for unit in "$PROXY_UNIT" "$HERDR_UNIT"; do
 		exit 1
 	fi
 	grep -q '^WantedBy=default.target$' "$unit"
+	grep -q '^PrivateDevices=true$' "$unit"
+	grep -q '^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$' "$unit"
+	grep -q '^RestrictNamespaces=true$' "$unit"
+	grep -q '^RestrictSUIDSGID=true$' "$unit"
+	grep -q '^CapabilityBoundingSet=$' "$unit"
+	grep -q '^LockPersonality=true$' "$unit"
+	grep -q '^SystemCallArchitectures=native$' "$unit"
+	grep -q '^ProtectKernelModules=true$' "$unit"
+	grep -q '^ProtectKernelTunables=true$' "$unit"
+	grep -q '^ProtectHostname=true$' "$unit"
 done
 
 grep -Eq '^After=.*herdr\.service' "$PROXY_UNIT"

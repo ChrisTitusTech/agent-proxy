@@ -17,7 +17,17 @@ RuntimeDirectory=agent-proxy
 RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
+ProtectHostname=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+LockPersonality=true
+SystemCallArchitectures=native
 ReadWritePaths="@CONFIG_DIR@" "@DATA_DIR@" "@STATE_DIR@" "%t/agent-proxy"
 
 [Install]
