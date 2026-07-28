@@ -122,4 +122,24 @@ describe('mergeProviderConfig', () => {
       isolation: 'external',
     });
   });
+
+  it('ignores unsupported persisted Claude permission modes', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const base = baseConfig({
+      cli_path: 'claude',
+      default_model: 'claude-sonnet-5',
+      sdk_options: { permission_mode: 'default' },
+    });
+    const overrides = {
+      sdk_options: { permission_mode: 'legacyMode' },
+    } as unknown as ProviderOverrides;
+
+    const merged = mergeProviderConfig(base, overrides, 'claude');
+
+    expect(merged.sdk_options?.permission_mode).toBe('default');
+    expect(warn).toHaveBeenCalledWith(
+      "[provider-override] 'sdk_options.permission_mode' has an unsupported value for provider 'claude' - ignored.",
+    );
+    warn.mockRestore();
+  });
 });

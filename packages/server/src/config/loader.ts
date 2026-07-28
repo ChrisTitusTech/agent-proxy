@@ -2,7 +2,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import type { AppConfig, ProviderConfigYaml, ProviderOverrides, ReasoningEffort } from '@agent-proxy/shared';
+import {
+  isClaudePermissionMode,
+  type AppConfig,
+  type ProviderConfigYaml,
+  type ProviderOverrides,
+  type ReasoningEffort,
+} from '@agent-proxy/shared';
 import { rawConfigSchema, type RawProviderConfig } from './schema.js';
 import {
   DEFAULT_SERVER_PORT,
@@ -66,7 +72,9 @@ function normalizeProviderOverrides(value: unknown, provider?: string): Provider
     const rawSdk = raw.sdk_options as Record<string, unknown>;
     const sdk: NonNullable<ProviderOverrides['sdk_options']> = {};
     if (typeof rawSdk.max_turns === 'number' && rawSdk.max_turns > 0) sdk.max_turns = rawSdk.max_turns;
-    if (typeof rawSdk.permission_mode === 'string') sdk.permission_mode = rawSdk.permission_mode;
+    if (isClaudePermissionMode(rawSdk.permission_mode)) {
+      sdk.permission_mode = rawSdk.permission_mode;
+    }
     if (Array.isArray(rawSdk.allowed_tools)) sdk.allowed_tools = rawSdk.allowed_tools.filter((a): a is string => typeof a === 'string');
     if (Array.isArray(rawSdk.disallowed_tools)) sdk.disallowed_tools = rawSdk.disallowed_tools.filter((a): a is string => typeof a === 'string');
     if (typeof rawSdk.max_budget_usd === 'number' && rawSdk.max_budget_usd > 0) sdk.max_budget_usd = rawSdk.max_budget_usd;

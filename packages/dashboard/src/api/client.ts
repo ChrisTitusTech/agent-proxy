@@ -305,7 +305,7 @@ export function fetchProviders() {
 
 export interface ClaudeSdkOptions {
   max_turns?: number;
-  permission_mode?: string;
+  permission_mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto';
   allowed_tools?: string[];
   disallowed_tools?: string[];
   max_budget_usd?: number;
