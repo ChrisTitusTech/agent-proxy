@@ -47,6 +47,9 @@ Status: Complete, with deployment evidence superseded
 - [x] P3-11: Return actionable compatibility and authentication errors.
 
 Phase 4 must rerun live evidence under the logged-in user's Herdr session.
+Detailed Phase 3 acceptance criteria, versions, validation commands, waivers,
+and sanitized evidence locations are preserved in
+[docs/phase-3-evidence.md](./docs/phase-3-evidence.md).
 
 ## Phase 4: User-owned Herdr execution
 
@@ -116,11 +119,14 @@ Status: Ready to begin
     `scripts/test-open-webui-compat.sh --all --require-live`.
 - [ ] P4-12: Remove superseded execution and deployment code.
   - Acceptance: the root installer, dedicated-user unit, service-account
-    wording, direct headless provider path, unsupported extension paths, and
-    unused dependencies are absent; documented dynamic entry points pass the
+    wording in active code, configuration, and current runbooks, direct
+    headless provider path, unsupported extension paths, and unused
+    dependencies are absent. Clearly marked historical evidence may retain
+    service-account terminology; documented dynamic entry points pass the
     dead-code gate.
-  - Validation: repository search, `npm run lint:dead-code`, package audit,
-    release manifest review, and the full project gate.
+  - Validation: scoped searches of active runtime and deployment artifacts
+    separately from historical documentation, `npm run lint:dead-code`,
+    package audit, release manifest review, and the full project gate.
 
 Phase exit gate:
 
@@ -130,13 +136,8 @@ npm run typecheck
 npm test
 npm run build
 npm run lint:dead-code
-mapfile -d '' -t shell_files < <(
-  printf '%s\0' start.sh
-  find scripts -type f -name '*.sh' -print0
-)
-bash -n "${shell_files[@]}"
-shellcheck "${shell_files[@]}"
-shfmt -d "${shell_files[@]}"
+scripts/validate-shell.sh
+git diff --check
 scripts/test-user-install.sh
 scripts/test-user-service.sh
 scripts/test-herdr-launcher.sh
@@ -146,9 +147,18 @@ OPEN_WEBUI_MODELS=gpt-5.6-sol \
   scripts/test-open-webui-compat.sh --all --require-live
 ```
 
-Rollback: restore the previous user-owned release and data backup. If Herdr
-execution cannot be restored, reject inference rather than launching hidden
-headless agents.
+Rollback:
+
+- For a first-time user-owned install, stop and remove the user services and
+  release while leaving preexisting CLI-owned provider state untouched.
+- For migration, back up legacy configuration and database state before
+  changes and leave the machine-wide deployment intact until acceptance. A
+  pre-acceptance rollback stops the user services and restores the preserved
+  legacy deployment and state.
+- After intentional legacy removal, restore only a preserved user-owned
+  release and user-data backup.
+- If Herdr execution cannot be restored in any case, reject inference rather
+  than launching hidden headless agents.
 
 ## Phase 5: Provider reliability
 

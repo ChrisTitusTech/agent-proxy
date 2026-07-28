@@ -65,8 +65,9 @@ One `agent-proxy` instance belongs to one interactive Linux user.
   backup, or uninstall operations.
 - Files created by the installer or runtime must remain owned by the current
   user.
-- A second Linux user receives a separate configuration, database, tokens,
-  Herdr session, and proxy instance.
+- A second Linux user receives a separate configuration, database, proxy and
+  admin keys, Herdr session, and proxy instance. Provider credentials remain
+  in that user's CLI-owned state.
 - Simultaneous user sessions must use independently configurable ports.
 
 The supported locations are:
@@ -313,13 +314,8 @@ npm run typecheck
 npm test
 npm run build
 npm run lint:dead-code
-mapfile -d '' -t shell_files < <(
-  printf '%s\0' start.sh
-  find scripts -type f -name '*.sh' -print0
-)
-bash -n "${shell_files[@]}"
-shellcheck "${shell_files[@]}"
-shfmt -d "${shell_files[@]}"
+scripts/validate-shell.sh
+git diff --check
 ```
 
 The user-owned Herdr phase additionally requires:

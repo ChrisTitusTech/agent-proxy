@@ -90,7 +90,9 @@ Limitations:
 - GitHub Copilot was not part of the live client matrix.
 
 Phase 4 must rerun the enabled matrix as the logged-in user with Herdr
-visibility as a required assertion.
+visibility as a required assertion. Detailed Phase 3 acceptance criteria,
+versions, validation commands, waivers, and sanitized evidence locations remain
+available in [docs/phase-3-evidence.md](./docs/phase-3-evidence.md).
 
 ## Phase 4: User-owned Herdr execution
 
@@ -150,13 +152,8 @@ npm run typecheck
 npm test
 npm run build
 npm run lint:dead-code
-mapfile -d '' -t shell_files < <(
-  printf '%s\0' start.sh
-  find scripts -type f -name '*.sh' -print0
-)
-bash -n "${shell_files[@]}"
-shellcheck "${shell_files[@]}"
-shfmt -d "${shell_files[@]}"
+scripts/validate-shell.sh
+git diff --check
 scripts/test-user-install.sh
 scripts/test-user-service.sh
 scripts/test-herdr-launcher.sh
@@ -168,7 +165,14 @@ OPEN_WEBUI_MODELS=gpt-5.6-sol \
 
 Rollback:
 
-- Preserve the previous user-owned release and user data backup.
+- A first-time user-owned installation with no previous release is removed
+  cleanly; its preexisting CLI-owned provider state is left untouched.
+- A migration first backs up legacy configuration and database state without
+  modifying the machine-wide installation. Until the migration is accepted,
+  rollback stops the user services and restores that preserved legacy
+  deployment and state.
+- After the machine-wide deployment is intentionally removed, rollback is only
+  available to a preserved user-owned release and user-data backup.
 - Keep the API healthy for diagnostics but reject inference if the Herdr
   launcher cannot be restored.
 - Never roll back to invisible headless execution.

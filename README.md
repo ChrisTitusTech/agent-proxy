@@ -21,9 +21,10 @@ server and credits the upstream project for that work.
 Status updated: 2026-07-27
 
 Phase 3 protocol and client compatibility is complete for the historical
-Codex-only profile. Phase 4 is ready to replace the superseded machine-wide
-service with a current-user runtime where every built-in provider invocation is
-managed and visible through Herdr. The existing direct headless execution and
+service-account deployment, with live Codex evidence and explicit Claude and
+Grok waivers. Phase 4 is ready to replace the superseded machine-wide service
+with a current-user runtime where every built-in provider invocation is managed
+and visible through Herdr. The existing direct headless execution and
 dedicated-service-user packaging remain implementation debt until Phase 4
 passes.
 
@@ -77,11 +78,16 @@ must be between 1 and 600 seconds, and redirects are rejected.
 - Linux
 - Node.js 24 or newer
 - npm
-- Herdr installed for the current user
+- Herdr installed for the current user for the Phase 4 target runtime
 - At least one supported CLI installed and authenticated for the current user
 - A writable directory for SQLite data and logs
 
 ## Quick start
+
+The following commands start the historical Phase 3 headless development
+baseline. They do not implement the target Herdr execution contract and must
+not be used as evidence that Phase 4 is complete. Phase 4 will replace this
+section with Herdr login-session startup and readiness instructions.
 
 ```bash
 npm ci

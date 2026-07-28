@@ -73,13 +73,7 @@ npm run typecheck
 npm test
 npm run build
 npm run lint:dead-code
-mapfile -d '' -t shell_files < <(
-  printf '%s\0' start.sh
-  find scripts -type f -name '*.sh' -print0
-)
-bash -n "${shell_files[@]}"
-shellcheck "${shell_files[@]}"
-shfmt -d "${shell_files[@]}"
+scripts/validate-shell.sh
 git diff --check
 ```
 

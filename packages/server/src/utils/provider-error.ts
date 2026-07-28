@@ -60,7 +60,7 @@ export function classifyProviderError(
       kind: 'executable_missing',
       code: 'provider_executable_missing',
       statusCode: 503,
-      message: `${label} executable is unavailable. Install the configured CLI for the current user.`,
+      message: `${label} executable is unavailable. Install the configured CLI for the service account.`,
     };
   }
   if (
@@ -70,7 +70,7 @@ export function classifyProviderError(
       kind: 'login_expired',
       code: 'provider_login_expired',
       statusCode: 502,
-      message: `${label} login expired for the current user. Refresh it from Dashboard > Provider Login.`,
+      message: `${label} service-account login expired. Refresh it from Dashboard > Provider Login.`,
     };
   }
   if (
@@ -80,7 +80,7 @@ export function classifyProviderError(
       kind: 'login_required',
       code: 'provider_login_required',
       statusCode: 502,
-      message: `${label} is not logged in for the current user. Start login from Dashboard > Provider Login.`,
+      message: `${label} service account is not logged in. Start login from Dashboard > Provider Login.`,
     };
   }
   if (

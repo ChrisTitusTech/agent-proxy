@@ -42,6 +42,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check for unused code and dependencies
+        run: npm run lint:dead-code
+
       - name: Verify Linux service restart and persistence
         run: scripts/test-linux-service.sh
 
@@ -77,13 +80,7 @@ jobs:
 
       - name: Validate shell scripts and systemd packaging
         run: |
-          bash -n start.sh
-          find scripts -type f -name '*.sh' -print0 |
-            xargs -0 -n1 bash -n
-          shellcheck start.sh
-          find scripts -type f -name '*.sh' -print0 |
-            xargs -0 shellcheck
-          shfmt -d start.sh scripts/*.sh scripts/client-compat/runners/*.sh
+          scripts/validate-shell.sh
           scripts/test-client-compat-self-test.sh
           scripts/test-linux-install.sh
           systemd-analyze verify packaging/systemd/agent-proxy.service
