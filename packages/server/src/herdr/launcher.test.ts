@@ -106,13 +106,20 @@ interface LauncherInternals {
     request: ProviderExecutionRequest,
     state: 'working' | 'idle',
     terminalState?: 'completed' | 'failed' | 'timed_out' | 'cancelled',
+    deadline?: number,
   ) => Promise<void>;
-  command: (args: string[]) => Promise<unknown>;
+  command: (
+    args: string[],
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ) => Promise<unknown>;
   panes: Map<string, { paneId: string; tabId: string; lastUsedAt: number }>;
   reservedPaneIds: Set<string>;
   prunePanes: (currentKey: string) => Promise<void>;
-  pruneStaleTabs: (workspaceId: string) => Promise<void>;
+  pruneStaleTabs: (workspaceId: string) => Promise<boolean>;
+  ensureWorkspace: (cwd: string) => Promise<string>;
   sessionKey: (request: ProviderExecutionRequest) => string;
+  releaseStartingSessionKey: (key: string) => void;
+  sessionKeys: Map<string, { key: string; lastUsedAt: number }>;
   startWorker: (
     paneId: string,
     sessionKey: string,
@@ -348,9 +355,47 @@ describe('Herdr pane lifecycle', () => {
       return fixtureCommand(args);
     };
 
-    await expect(internals.pruneStaleTabs('workspace')).resolves.toBeUndefined();
+    await expect(internals.pruneStaleTabs('workspace')).resolves.toBe(false);
     expect(commands).toContainEqual(['tab', 'close', 'stale-tab']);
     expect(commands).toContainEqual(['tab', 'close', 'stale-tab-2']);
+  });
+
+  it('retries stale-tab cleanup after a close failure', async () => {
+    const { internals, commands, tabs } = launcherWithCommandFixture();
+    tabs.push({
+      tab_id: 'stale-tab',
+      workspace_id: 'workspace',
+      label: 'api-codex-a1b2c3d4e5f60708',
+    });
+    const fixtureCommand = internals.command;
+    let closeAttempts = 0;
+    internals.command = async (args: string[]) => {
+      if (args[0] === 'tab' && args[1] === 'close') {
+        closeAttempts += 1;
+        if (closeAttempts === 1) throw new Error('temporary close failure');
+      }
+      return fixtureCommand(args);
+    };
+
+    await internals.ensureWorkspace(process.cwd());
+    await internals.ensureWorkspace(process.cwd());
+
+    expect(commands.filter(
+      (args) => args[0] === 'tab' && args[1] === 'close',
+    )).toHaveLength(1);
+    expect(closeAttempts).toBe(2);
+  });
+
+  it('prunes session keys after their startup reservations end', () => {
+    const { internals } = launcherWithCommandFixture(1);
+    const keys = Array.from({ length: 4 }, (_, index) => (
+      internals.sessionKey(request(`client-${index}`))
+    ));
+
+    expect(internals.sessionKeys.size).toBe(4);
+    for (const key of keys) internals.releaseStartingSessionKey(key);
+
+    expect(internals.sessionKeys.size).toBe(2);
   });
 
   it('does not launch a worker after startup consumes its request deadline', async () => {
@@ -379,6 +424,30 @@ describe('Herdr pane lifecycle', () => {
     expect(commands.some(
       (args) => args[0] === 'pane' && args[1] === 'run',
     )).toBe(false);
+  });
+
+  it('interrupts a pending pane command at the request deadline', async () => {
+    const { internals } = launcherWithCommandFixture();
+    internals.panes.set('session-a', {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now(),
+    });
+    internals.reportPane = async () => undefined;
+    internals.command = async (_args, options) => new Promise((_resolve, reject) => {
+      setTimeout(
+        () => reject(new Error('command deadline reached')),
+        options?.timeoutMs ?? 2_000,
+      );
+    });
+    const startedAt = Date.now();
+
+    await expect(internals.startWorker(
+      'pane-1',
+      'session-a',
+      { ...request(), timeoutMs: 20 },
+    )).rejects.toThrow(/timed out/);
+    expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
   it('returns a handle when the worker exits before pane run resolves', async () => {

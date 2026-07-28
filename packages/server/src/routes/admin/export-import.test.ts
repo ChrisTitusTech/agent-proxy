@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasValidGenericQueueLimits } from './export-import.js';
+import { hasValidGenericQueueLimits } from './generic-provider-validation.js';
 
 describe('generic provider import validation', () => {
   it('accepts non-negative queue limits and positive concurrency', () => {

@@ -11,6 +11,7 @@ import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { HealthChecker } from '../../services/health-checker.js';
 import type { QueueManager } from '../../services/queue.js';
 import { GenericCliProvider } from '../../providers/generic-cli-provider.js';
+import { hasValidGenericQueueLimits } from './generic-provider-validation.js';
 
 
 const GENERIC_PROVIDER_PREFIX = 'generic_provider:';
@@ -24,6 +25,10 @@ const PROVIDER_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 
 const SAFE_CLI_PATH = /^[a-zA-Z0-9_\-./\\:]+$/;
+const INVALID_QUEUE_LIMITS_MESSAGE = [
+  'Queue limits must be finite integers;',
+  'concurrency must be at least 1 and queue limits cannot be negative.',
+].join(' ');
 
 function validateProviderName(name: string): string | null {
   if (!PROVIDER_NAME_PATTERN.test(name)) {
@@ -198,6 +203,11 @@ export function registerGenericProviderRoutes(
         ...(configData.description !== undefined && { description: configData.description }),
         ...(configData.working_dir !== undefined && { working_dir: configData.working_dir }),
       };
+      if (!hasValidGenericQueueLimits(config)) {
+        return reply.status(400).send({
+          error: { message: INVALID_QUEUE_LIMITS_MESSAGE },
+        });
+      }
 
 
       await saveGenericProviderToDb(name, config);
@@ -249,6 +259,11 @@ export function registerGenericProviderRoutes(
 
 
       const updated: GenericCliProviderConfig = { ...existing, ...partial };
+      if (!hasValidGenericQueueLimits(updated)) {
+        return reply.status(400).send({
+          error: { message: INVALID_QUEUE_LIMITS_MESSAGE },
+        });
+      }
 
 
       await saveGenericProviderToDb(name, updated);

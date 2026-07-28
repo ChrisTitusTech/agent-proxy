@@ -18,6 +18,7 @@ import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { QueueManager } from '../../services/queue.js';
 import type { HealthChecker } from '../../services/health-checker.js';
 import { sanitizeRuntimeProviderConfig } from './providers.js';
+import { hasValidGenericQueueLimits } from './generic-provider-validation.js';
 
 const RATE_LIMITS_KEY = 'rate_limits';
 const VALIDATION_KEY = 'validation_config';
@@ -80,31 +81,6 @@ interface ImportResult {
   };
   skipped: string[];
 }
-
-export function hasValidGenericQueueLimits(
-  config: Pick<
-    GenericCliProviderConfig,
-    'max_concurrent' | 'max_queue_size' | 'max_queue_wait_ms'
-  >,
-): boolean {
-  return Number.isSafeInteger(config.max_concurrent)
-    && config.max_concurrent >= 1
-    && (
-      config.max_queue_size === undefined
-      || (
-        Number.isSafeInteger(config.max_queue_size)
-        && config.max_queue_size >= 0
-      )
-    )
-    && (
-      config.max_queue_wait_ms === undefined
-      || (
-        Number.isSafeInteger(config.max_queue_wait_ms)
-        && config.max_queue_wait_ms >= 0
-      )
-    );
-}
-
 
 function validateExportData(body: unknown): string | null {
   const data = body as Record<string, unknown>;

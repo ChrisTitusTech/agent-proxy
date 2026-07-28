@@ -289,6 +289,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     if (count === undefined) return;
     if (count <= 1) this.startingSessionKeys.delete(key);
     else this.startingSessionKeys.set(key, count - 1);
+    this.pruneSessionKeys();
   }
 
   private pruneSessionKeys(): void {
@@ -399,8 +400,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
         }
       }
       if (!this.staleTabsPruned) {
-        await this.pruneStaleTabs(this.workspaceId);
-        this.staleTabsPruned = true;
+        this.staleTabsPruned = await this.pruneStaleTabs(this.workspaceId);
       }
       return this.workspaceId;
     } finally {
@@ -408,20 +408,22 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     }
   }
 
-  private async pruneStaleTabs(workspaceId: string): Promise<void> {
+  private async pruneStaleTabs(workspaceId: string): Promise<boolean> {
     const listed = await this.command<{ type: string; tabs: Tab[] }>([
       'tab', 'list', '--workspace', workspaceId,
     ]);
     const staleTabs = listed.tabs.filter(
       (tab) => /^api-.+-[a-f0-9]{16}$/i.test(tab.label),
     );
+    let allClosed = true;
     for (const tab of staleTabs) {
       try {
         await this.command(['tab', 'close', tab.tab_id]);
       } catch {
-        // One unreachable stale tab must not block workspace initialization.
+        allClosed = false;
       }
     }
+    return allClosed;
   }
 
   private async prunePanes(currentKey: string): Promise<void> {
@@ -663,16 +665,28 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     };
     try {
       assertStartupCanContinue();
-      await this.reportPane(paneId, sessionKey, request, 'working');
+      await this.reportPane(
+        paneId,
+        sessionKey,
+        request,
+        'working',
+        undefined,
+        workerDeadline,
+      );
       assertStartupCanContinue();
       await this.command([
         'pane', 'run', paneId, process.execPath, workerPath, socketPath,
-      ]);
+      ], {
+        timeoutMs: Math.max(1, workerDeadline - Date.now()),
+        ...(request.signal ? { signal: request.signal } : {}),
+      });
       assertStartupCanContinue();
     } catch (error) {
-      finish(undefined, error instanceof Error ? error : new Error(String(error)));
+      const startupError = cancellationError
+        ?? (error instanceof Error ? error : new Error(String(error)));
+      finish(undefined, startupError);
       await completion.catch(() => undefined);
-      throw error;
+      throw startupError;
     }
 
     startupInProgress = false;
@@ -686,6 +700,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     request: ProviderExecutionRequest,
     state: 'working' | 'idle',
     terminalState?: 'completed' | 'failed' | 'timed_out' | 'cancelled',
+    deadline?: number,
   ): Promise<void> {
     if (state === 'idle') {
       const entry = Array.from(this.panes.entries())
@@ -698,6 +713,12 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     let stateReported = false;
     let reportError: unknown;
     for (let attempt = 0; attempt < 3 && !stateReported; attempt++) {
+      if (deadline !== undefined && Date.now() >= deadline) {
+        throw new Error(`${request.provider} CLI timed out before worker launch.`);
+      }
+      if (deadline !== undefined && request.signal?.aborted) {
+        throw new Error(`${request.provider} request cancelled before worker launch.`);
+      }
       try {
         await this.command([
           'pane', 'report-agent', paneId,
@@ -705,13 +726,32 @@ export class HerdrLauncher implements ProviderExecutionBackend {
           '--agent', request.provider,
           '--state', state,
           '--message', message,
-        ]);
+        ], {
+          ...(deadline !== undefined
+            ? { timeoutMs: Math.max(1, deadline - Date.now()) }
+            : {}),
+          ...(deadline !== undefined && request.signal
+            ? { signal: request.signal }
+            : {}),
+        });
         stateReported = true;
       } catch (error) {
         reportError = error;
+        if (
+          (deadline !== undefined && request.signal?.aborted)
+          || (deadline !== undefined && Date.now() >= deadline)
+        ) {
+          throw error;
+        }
         if (attempt < 2) {
+          const delayMs = deadline === undefined
+            ? 100 * (attempt + 1)
+            : Math.min(
+              100 * (attempt + 1),
+              Math.max(0, deadline - Date.now()),
+            );
           await new Promise((resolveDelay) => {
-            setTimeout(resolveDelay, 100 * (attempt + 1));
+            setTimeout(resolveDelay, delayMs);
           });
         }
       }
@@ -732,7 +772,14 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       '--token', `session=${sessionKey}`,
       ...(request.requestId ? ['--token', `request=${request.requestId}`] : []),
       ...(terminalState ? ['--token', `terminal=${terminalState}`] : []),
-    ]).catch(() => undefined);
+    ], {
+      ...(deadline !== undefined
+        ? { timeoutMs: Math.max(1, deadline - Date.now()) }
+        : {}),
+      ...(deadline !== undefined && request.signal
+        ? { signal: request.signal }
+        : {}),
+    }).catch(() => undefined);
   }
 
   private async closeTrackedPane(paneId: string): Promise<boolean> {
@@ -783,11 +830,18 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     }
   }
 
-  private async command<T = { type: string }>(args: string[]): Promise<T> {
+  private async command<T = { type: string }>(
+    args: string[],
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<T> {
     try {
       const { stdout } = await execFileAsync(this.config.binary, args, {
-        timeout: this.config.commandTimeoutMs,
+        timeout: Math.min(
+          this.config.commandTimeoutMs,
+          options.timeoutMs ?? this.config.commandTimeoutMs,
+        ),
         maxBuffer: 4 * 1024 * 1024,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       if (!stdout.trim()) return {} as T;
       const envelope = JSON.parse(stdout) as HerdrEnvelope<T>;

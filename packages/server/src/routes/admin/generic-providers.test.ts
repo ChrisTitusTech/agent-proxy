@@ -112,4 +112,78 @@ describe('generic provider admin validation', () => {
       maxQueueWaitMs: 250,
     });
   });
+
+  it.each([
+    { max_concurrent: 0 },
+    { max_concurrent: 1.5 },
+    { max_queue_size: -1 },
+    { max_queue_wait_ms: -1 },
+    { max_queue_wait_ms: 1.5 },
+  ])('rejects invalid queue limits before creating a provider: %j', async (limits) => {
+    const app = Fastify();
+    apps.push(app);
+    const registry = new ProviderRegistry();
+    const queueManager = new QueueManager();
+    registerGenericProviderRoutes(app, {
+      registry,
+      queueManager,
+      healthChecker: {
+        checkProvider: async () => 'healthy',
+      } as unknown as HealthChecker,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/admin/generic-providers',
+      payload: {
+        name: 'invalid-provider',
+        cli_path: process.execPath,
+        default_model: 'test',
+        max_concurrent: 1,
+        ...limits,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(registry.has('invalid-provider')).toBe(false);
+    expect(queueManager.getStatus('invalid-provider')).toBeNull();
+  });
+
+  it('rejects invalid queue-limit updates without changing persisted config', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const registry = new ProviderRegistry();
+    const queueManager = new QueueManager();
+    registerGenericProviderRoutes(app, {
+      registry,
+      queueManager,
+      healthChecker: {
+        checkProvider: async () => 'healthy',
+      } as unknown as HealthChecker,
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/admin/generic-providers',
+      payload: {
+        name: 'fixture-provider',
+        cli_path: process.execPath,
+        max_concurrent: 1,
+        max_queue_size: 3,
+      },
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/admin/generic-providers/fixture-provider',
+      payload: { max_queue_size: -1 },
+    });
+    const persisted = await app.inject({
+      method: 'GET',
+      url: '/admin/generic-providers/fixture-provider',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(persisted.json().config.max_queue_size).toBe(3);
+    expect(queueManager.getStatus('fixture-provider')?.maxQueueSize).toBe(3);
+  });
 });
