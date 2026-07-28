@@ -8,7 +8,10 @@ export class KeyedMutex {
 
 
 
-  async acquire(key: string): Promise<() => void> {
+  async acquire(
+    key: string,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<() => void> {
     const prev = this.tails.get(key) ?? Promise.resolve();
 
     let releaseGate!: () => void;
@@ -18,7 +21,41 @@ export class KeyedMutex {
     const tail = prev.then(() => gate);
     this.tails.set(key, tail);
 
-    await prev;
+    let waitTimer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      if (options.signal?.aborted) {
+        reject(new Error('Mutex wait cancelled.'));
+        return;
+      }
+      if (options.signal) {
+        abortListener = () => reject(new Error('Mutex wait cancelled.'));
+        options.signal.addEventListener('abort', abortListener, { once: true });
+      }
+      if (options.timeoutMs !== undefined) {
+        waitTimer = setTimeout(
+          () => reject(new Error('Mutex wait timed out.')),
+          Math.max(0, options.timeoutMs),
+        );
+        waitTimer.unref();
+      }
+    });
+
+    try {
+      await Promise.race([prev, interrupted]);
+    } catch (error) {
+      releaseGate();
+      if (this.tails.get(key) === tail) {
+        this.tails.set(key, prev);
+        void prev.then(() => {
+          if (this.tails.get(key) === prev) this.tails.delete(key);
+        });
+      }
+      throw error;
+    } finally {
+      if (waitTimer) clearTimeout(waitTimer);
+      if (abortListener) options.signal?.removeEventListener('abort', abortListener);
+    }
 
     let released = false;
     return () => {

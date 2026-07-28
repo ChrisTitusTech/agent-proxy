@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,11 +20,22 @@ function config(overrides: Partial<AppConfig> = {}): AppConfig {
   const executable = join(tempDir, 'codex');
   writeFileSync(executable, '#!/bin/sh\nexit 0\n', 'utf8');
   chmodSync(executable, 0o700);
+  const herdr = join(tempDir, 'herdr');
+  writeFileSync(herdr, '#!/bin/sh\nexit 0\n', 'utf8');
+  chmodSync(herdr, 0o700);
 
   return {
     server: { host: '127.0.0.1', port: 8300, cors: { origins: [] } },
     dashboard: { host: '127.0.0.1', port: 5300 },
     database: { path: join(tempDir, 'state', 'agent-proxy.db') },
+    herdr: {
+      binary: herdr,
+      runtimeDirectory: join(tempDir, 'runtime'),
+      workspaceLabel: 'agent-proxy',
+      commandTimeoutMs: 10_000,
+      paneTtlMs: 30_000,
+      maxPanes: 8,
+    },
     auth: {
       enabled: true,
       adminToken: 'admin-token',
@@ -96,6 +114,16 @@ describe('runPreflightChecks', () => {
     expect(result.executables.codex).toBe(executable);
   });
 
+  it('rejects a Herdr runtime directory that is not owner-only', () => {
+    const appConfig = config();
+    mkdirSync(appConfig.herdr.runtimeDirectory, { mode: 0o755 });
+
+    expect(() => runPreflightChecks(appConfig, {
+      configPath: join(tempDir, 'config.yaml'),
+      path: tempDir,
+    })).toThrow(/Herdr runtime directory must have mode 0700/);
+  });
+
   it('reports every actionable startup problem', () => {
     const appConfig = config({
       auth: {
@@ -140,6 +168,31 @@ describe('runPreflightChecks', () => {
       configPath: join(tempDir, 'config.yaml'),
       path: tempDir,
     })).not.toThrow();
+  });
+
+  it('rejects a provider executable symlinked to agent-proxy', () => {
+    const proxyExecutable = join(tempDir, 'agent-proxy');
+    const providerLink = join(tempDir, 'codex-link');
+    writeFileSync(proxyExecutable, '#!/bin/sh\nexit 0\n', 'utf8');
+    chmodSync(proxyExecutable, 0o700);
+    symlinkSync(proxyExecutable, providerLink);
+    const appConfig = config({
+      providers: {
+        codex: {
+          enabled: true,
+          cli_path: providerLink,
+          default_model: 'test',
+          max_concurrent: 1,
+          timeout_ms: 30_000,
+          extra_args: [],
+        },
+      },
+    });
+
+    expect(() => runPreflightChecks(appConfig, {
+      configPath: join(tempDir, 'config.yaml'),
+      path: tempDir,
+    })).toThrow(/cli_path resolves to agent-proxy and would recurse/);
   });
 
   it('rejects shipped placeholder credentials', () => {

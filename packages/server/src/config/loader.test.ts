@@ -1,7 +1,7 @@
 
 
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +13,6 @@ import {
   DEFAULT_RATE_LIMIT_RPM,
   DEFAULT_RESPONSES_RETENTION_TTL_MS,
   DEFAULT_RESPONSES_MAX_ENTRIES,
-  CLAUDE_PERMISSION_MODES,
 } from '@agent-proxy/shared';
 import { loadConfig } from './loader.js';
 
@@ -227,38 +226,6 @@ model_mappings:
     const config = loadConfig(path);
     expect(config.modelMappings[0].provider_overrides).toEqual({ timeout_ms: 5000 });
   });
-
-  it.each(CLAUDE_PERMISSION_MODES)(
-    'accepts the supported Claude SDK permission mode %s',
-    (permissionMode) => {
-      const path = writeConfig(`
-providers:
-  claude:
-    mode: "sdk"
-    sdk_options:
-      permission_mode: "${permissionMode}"
-`);
-
-      expect(loadConfig(path).providers.claude.sdk_options?.permission_mode).toBe(permissionMode);
-    },
-  );
-
-  it('drops unsupported permission modes from config-seeded model overrides', () => {
-    const path = writeConfig(`
-model_mappings:
-  - alias: "claude-custom"
-    provider: "claude"
-    actual_model: "claude-sonnet-5"
-    provider_overrides:
-      sdk_options:
-        max_turns: 10
-        permission_mode: "legacyMode"
-`);
-
-    expect(loadConfig(path).modelMappings[0].provider_overrides).toEqual({
-      sdk_options: { max_turns: 10 },
-    });
-  });
 });
 
 describe('loads and validates configuration', () => {
@@ -324,24 +291,25 @@ providers:
     expect(() => loadConfig(path)).toThrow(/extra_args/);
   });
 
-  it('loads and validates configuration', () => {
+  it('strips removed provider execution keys with an actionable warning', () => {
     const path = writeConfig(`
 providers:
   codex:
     mode: "turbo"
-`);
-    expect(() => loadConfig(path)).toThrow(/mode/);
-  });
-
-  it('rejects unsupported Claude SDK permission modes', () => {
-    const path = writeConfig(`
-providers:
-  claude:
-    mode: "sdk"
     sdk_options:
-      permission_mode: "legacyMode"
+      legacy: true
+    channel_options: {}
+    app_server_options: {}
 `);
-    expect(() => loadConfig(path)).toThrow(/providers\.claude\.sdk_options\.permission_mode/);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const config = loadConfig(path);
+
+    expect(config.providers.codex.enabled).toBe(true);
+    expect(warning).toHaveBeenCalledWith(expect.stringMatching(
+      /providers\.codex\.mode.*current-user Herdr service.*remove these legacy keys/,
+    ));
+    warning.mockRestore();
   });
 
   it('loads and validates configuration', () => {

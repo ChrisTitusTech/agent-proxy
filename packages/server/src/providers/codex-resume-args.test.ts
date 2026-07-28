@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ExecuteOptions, ProviderConfigYaml } from '@agent-proxy/shared';
+import { providerExecutionIdentity } from './base-provider.js';
 import { CodexProvider, filterResumeUnsupportedArgs } from './codex-provider.js';
 
 function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml {
@@ -92,30 +93,6 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     ]));
   });
 
-  it('rejects external tool selection in app-server mode', async () => {
-    provider = new CodexProvider(baseConfig());
-    (provider as unknown as { config: ProviderConfigYaml }).config.mode = 'app-server';
-    const options = baseOptions({
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'lookup',
-          parameters: { type: 'object' },
-        },
-      }],
-      toolChoice: 'required',
-    });
-
-    await expect(provider.execute(options)).rejects.toThrow(
-      'External tool selection is not supported in Codex app-server mode; use cli mode.',
-    );
-    await expect(
-      provider.executeStream(options)[Symbol.asyncIterator]().next(),
-    ).rejects.toThrow(
-      'External tool selection is not supported in Codex app-server mode; use cli mode.',
-    );
-  });
-
   it('builds Codex resume arguments', () => {
     provider = new CodexProvider(baseConfig());
     const args = (provider as any).buildArgs(baseOptions({
@@ -138,7 +115,12 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     (provider as any).buildArgs(options);
     const sm = provider.getCliSessionManager();
     expect(sm).not.toBeNull();
-    sm!.set('client-a', 'tid-XYZ', 'gpt-5.6-sol');
+    sm!.set(
+      'client-a',
+      'tid-XYZ',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(options)),
+    );
 
 
     const args2: string[] = (provider as any).buildArgs(options);
@@ -194,7 +176,12 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     });
     (provider as any).buildArgs(opt('a'));
     const sm = provider.getCliSessionManager()!;
-    sm.set('a', 'tid-A', 'gpt-5.6-sol');
+    sm.set(
+      'a',
+      'tid-A',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(opt('a'))),
+    );
 
     const argsB: string[] = (provider as any).buildArgs(opt('b'));
     expect(argsB).not.toContain('resume');
@@ -202,5 +189,81 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     const argsA: string[] = (provider as any).buildArgs(opt('a'));
     expect(argsA[1]).toBe('resume');
     expect(argsA[2]).toBe('tid-A');
+  });
+
+  it('does not resume a thread across different permission arguments', () => {
+    provider = new CodexProvider(baseConfig());
+    const permissive = baseOptions({
+      clientKey: 'client-a',
+      providerOverrides: {
+        extra_args: ['--sandbox', 'workspace-write'],
+        cli_options: { enable_session_reuse: true },
+      },
+    });
+    (provider as any).buildArgs(permissive);
+    provider.getCliSessionManager()!.set(
+      'client-a',
+      'tid-permissive',
+      'gpt-5.6-sol',
+      providerExecutionIdentity(provider.getEffectiveConfig(permissive)),
+    );
+
+    const restrictedArgs: string[] = (provider as any).buildArgs(baseOptions({
+      clientKey: 'client-a',
+      providerOverrides: {
+        extra_args: ['--sandbox', 'read-only'],
+        cli_options: { enable_session_reuse: true },
+      },
+    }));
+
+    expect(restrictedArgs).not.toContain('resume');
+    expect(restrictedArgs).toContain('read-only');
+  });
+
+  it('serializes thread selection for concurrent reusable-session turns', async () => {
+    provider = new CodexProvider(baseConfig());
+    const options = baseOptions({
+      clientKey: 'shared-session',
+      providerOverrides: { cli_options: { enable_session_reuse: true } },
+    });
+    const builtArgs: string[][] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    (provider as any).executeWithoutExternalTools = async (
+      current: ExecuteOptions,
+    ) => {
+      const args = (provider as any).buildArgs(current) as string[];
+      builtArgs.push(args);
+      if (builtArgs.length === 1) {
+        await firstBlocked;
+        provider!.getCliSessionManager()!.set(
+          current.clientKey!,
+          'tid-first',
+          current.model,
+          providerExecutionIdentity(provider!.getEffectiveConfig(current)),
+        );
+      }
+      return {
+        content: 'done',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        finishReason: 'stop',
+      };
+    };
+
+    const first = provider.execute(options);
+    await vi.waitFor(() => expect(builtArgs).toHaveLength(1));
+    const second = provider.execute(options);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(builtArgs).toHaveLength(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(builtArgs[1].slice(0, 3)).toEqual([
+      'exec',
+      'resume',
+      'tid-first',
+    ]);
   });
 });

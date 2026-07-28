@@ -1,10 +1,12 @@
 # Responses API subset
 
-Last updated: 2026-07-23
+Last updated: 2026-07-28
 
 `POST /v1/responses` implements the Phase 2 OpenAI Responses compatibility
-contract. The endpoint remains experimental until the native Codex, Grok, and
-Open WebUI acceptance matrix passes in Phase 3.
+contract. Its provider-independent contract suite and live native Codex
+acceptance pass through the current-user Herdr runtime. Grok live inference
+still requires a successfully authenticated subscription before it can be
+added to the live provider matrix.
 
 ## Supported requests
 
@@ -95,7 +97,7 @@ the selected model route enables `include_reasoning`.
 
 Native CLIs do not automatically gain arbitrary client-function support. Tool
 loops work only when the selected provider adapter emits client-visible tool
-calls. Phase 3 determines which Codex and Grok versions and execution profiles
+calls. Live acceptance determines which Codex and Grok versions and execution profiles
 can advertise that capability.
 
 ## Validation

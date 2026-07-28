@@ -1,10 +1,7 @@
-import type { ExecuteOptions, ExecuteResult, ProviderEvent, ProviderConfigYaml, HealthStatus } from '@agent-proxy/shared';
-import { BaseProvider } from './base-provider.js';
+import type { ExecuteOptions, ExecuteResult, ProviderEvent, ProviderConfigYaml } from '@agent-proxy/shared';
+import { BaseProvider, providerExecutionIdentity } from './base-provider.js';
 import { convertMessagesToSinglePrompt } from '../utils/message-converter.js';
 import { prepareCodexPrompt } from '../utils/image-extractor.js';
-import { CodexAppServerProcess, type CodexAppServerProcessConfig } from './codex-appserver-process.js';
-import { CodexAppServerSessionManager } from './codex-appserver-session-manager.js';
-import { executeAppServer, executeStreamAppServer, type AppServerExecutorConfig, type AppServerMeta } from './codex-appserver-executor.js';
 import { CodexCliSessionManager } from './codex-cli-session-manager.js';
 import { mergeProviderConfig } from './provider-override.js';
 import { unlink } from 'node:fs/promises';
@@ -13,6 +10,8 @@ import {
   externalToolEvents,
   prepareExternalToolRequest,
 } from './external-tool-adapter.js';
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
+import { KeyedMutex } from '../utils/keyed-mutex.js';
 
 interface CodexExecuteContext {
   text: string;
@@ -89,30 +88,35 @@ export function filterResumeUnsupportedArgs(args: string[]): string[] {
   return result;
 }
 
+function configuredProfileArgs(args: string[]): string[] {
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    if ((argument === '-p' || argument === '--profile') && args[index + 1]) {
+      return [argument, args[index + 1]];
+    }
+    if (
+      argument.startsWith('--profile=')
+      || argument.startsWith('-p=')
+    ) return [argument];
+  }
+  return [];
+}
+
 export class CodexProvider extends BaseProvider {
   readonly name = 'codex' as const;
 
-
-  private appServerProcess: CodexAppServerProcess | null = null;
-  private appServerSessionManager: CodexAppServerSessionManager | null = null;
-  private appServerTeardown: Promise<void> | null = null;
-
   private cliSessionManager: CodexCliSessionManager | null = null;
+  private readonly cliSessionMutex = new KeyedMutex();
 
   private warnedEphemeralForceAlias = new Set<string>();
 
-  constructor(config: ProviderConfigYaml) {
-    super(config);
+  constructor(
+    config: ProviderConfigYaml,
+    executionBackend?: ProviderExecutionBackend,
+    proxyPort?: number,
+  ) {
+    super(config, executionBackend, proxyPort);
     this.initParser();
-
-
-    if (this.isAppServerMode) {
-      this.initAppServer();
-    }
-  }
-
-  private get isAppServerMode(): boolean {
-    return this.config.mode === 'app-server';
   }
 
 
@@ -133,6 +137,10 @@ export class CodexProvider extends BaseProvider {
     return merged;
   }
 
+  protected override getExecutionConfig(options: ExecuteOptions): ProviderConfigYaml {
+    return this.getEffectiveConfig(options);
+  }
+
 
 
   private ensureCliSessionManager(ttlMs?: number): CodexCliSessionManager {
@@ -142,104 +150,23 @@ export class CodexProvider extends BaseProvider {
     return this.cliSessionManager;
   }
 
+  private sessionLockKey(options: ExecuteOptions): string | undefined {
+    if (!options.clientKey) return undefined;
+    const effective = this.getEffectiveConfig(options);
+    return effective.cli_options?.enable_session_reuse === true
+      ? options.clientKey
+      : undefined;
+  }
 
   getCliSessionManager(): CodexCliSessionManager | null {
     return this.cliSessionManager;
   }
-
-
-
-  private initAppServer(): void {
-    if (this.appServerTeardown) {
-      // destroyAppServer assigns this promise before its first await and clears
-      // it in its own continuation before this callback runs.
-      void this.appServerTeardown.then(() => {
-        if (this.isAppServerMode && !this.appServerProcess) {
-          this.initAppServer();
-        }
-      }).catch((error) => {
-        console.error('[codex] app-server restart blocked by teardown failure:', error);
-      });
-      return;
-    }
-
-    const options = this.config.app_server_options ?? {};
-    const ttl = options.session_ttl_ms;
-
-    const processConfig: CodexAppServerProcessConfig = {
-      cliPath: this.config.cli_path,
-      options,
-      env: this.getCleanEnv(),
-      workingDir: this.workingDir,
-    };
-
-    this.appServerProcess = new CodexAppServerProcess(processConfig);
-    this.appServerProcess.start().catch((err) => {
-      console.error('[codex] app-server initial start failed:', err.message);
-    });
-
-    if (options.enable_session_reuse !== false) {
-      this.appServerSessionManager = new CodexAppServerSessionManager(ttl);
-    }
-  }
-
-  private async destroyAppServer(): Promise<void> {
-    if (this.appServerTeardown) {
-      return this.appServerTeardown;
-    }
-
-    const appServerProcess = this.appServerProcess;
-    this.appServerProcess = null;
-    const sessionManager = this.appServerSessionManager;
-    this.appServerSessionManager = null;
-
-    const teardown = (async () => {
-      try {
-        await appServerProcess?.stop();
-      } finally {
-        sessionManager?.destroy();
-      }
-    })();
-    this.appServerTeardown = teardown;
-
-    try {
-      await teardown;
-    } finally {
-      if (this.appServerTeardown === teardown) {
-        this.appServerTeardown = null;
-      }
-    }
-  }
-
 
   destroyCliSessionManager(): void {
     this.cliSessionManager?.destroy();
     this.cliSessionManager = null;
     this.warnedEphemeralForceAlias.clear();
   }
-
-  private buildAppServerConfig(options: ExecuteOptions): AppServerExecutorConfig {
-    return {
-      model: options.model || this.config.default_model,
-      options: this.config.app_server_options ?? {},
-      process: this.appServerProcess!,
-      sessionManager: this.appServerSessionManager ?? undefined,
-      clientKey: options.clientKey,
-      timeoutMs: this.config.timeout_ms,
-    };
-  }
-
-  private appServerDebugArgs(model: string, meta?: AppServerMeta): string[] {
-    const args = ['[app-server]', `model=${model}`];
-    if (meta) {
-      args.push(`thread=${meta.threadId ?? 'none'}`);
-      args.push(`reused=${meta.threadReused}`);
-      if (meta.retried) args.push('retried=true');
-    }
-    return args;
-  }
-
-
 
 
   protected override getStdinData(options: ExecuteOptions): string {
@@ -257,7 +184,11 @@ export class CodexProvider extends BaseProvider {
     let resumeThreadId: string | null = null;
     if (effective.cli_options?.enable_session_reuse === true && options.clientKey && !ctx?.imageFiles?.length) {
       const sm = this.ensureCliSessionManager(effective.cli_options.session_ttl_ms);
-      const existing = sm.get(options.clientKey, model);
+      const existing = sm.get(
+        options.clientKey,
+        model,
+        providerExecutionIdentity(effective),
+      );
       if (existing) {
         resumeThreadId = existing.threadId;
       }
@@ -327,6 +258,17 @@ export class CodexProvider extends BaseProvider {
     return args;
   }
 
+  protected override getRecursionCheckArgs(
+    options: ExecuteOptions,
+    args: string[],
+  ): string[] {
+    if (args[0] !== 'exec' || args[1] !== 'resume') return args;
+    return [
+      ...args,
+      ...configuredProfileArgs(this.getEffectiveConfig(options).extra_args),
+    ];
+  }
+
 
   protected override parseNonStreamOutput(stdout: string): ExecuteResult {
     const trimmed = stdout.trim();
@@ -369,20 +311,6 @@ export class CodexProvider extends BaseProvider {
 
 
   private async executeWithoutExternalTools(options: ExecuteOptions): Promise<ExecuteResult> {
-    if (this.isAppServerMode) {
-      if (!this.appServerProcess?.isAlive()) {
-        throw new Error('Codex app-server process is not running');
-      }
-      const config = this.buildAppServerConfig(options);
-      const result = await executeAppServer(options, config);
-      const model = options.model || this.config.default_model;
-
-      options.onDebug?.({
-        cliArgs: this.appServerDebugArgs(model, result.appServerMeta),
-        stdout: result.content,
-      });
-      return result;
-    }
     const { prompt, imageFiles, tempFiles } = await prepareCodexPrompt(options.messages);
     const ext: CodexExecuteOptions = {
       ...options,
@@ -393,8 +321,13 @@ export class CodexProvider extends BaseProvider {
     const effective = this.getEffectiveConfig(options);
     const sessionReuseEnabled = effective.cli_options?.enable_session_reuse === true && !!options.clientKey;
     const model = options.model || effective.default_model;
+    const executionIdentity = providerExecutionIdentity(effective);
     const wasResume = sessionReuseEnabled
-      ? !!this.cliSessionManager?.get(options.clientKey!, model)
+      ? !!this.cliSessionManager?.get(
+        options.clientKey!,
+        model,
+        executionIdentity,
+      )
       : false;
 
     try {
@@ -402,7 +335,12 @@ export class CodexProvider extends BaseProvider {
 
       if (sessionReuseEnabled && result.meta?.threadId) {
         const sm = this.ensureCliSessionManager(effective.cli_options?.session_ttl_ms);
-        sm.set(options.clientKey!, result.meta.threadId, model);
+        sm.set(
+          options.clientKey!,
+          result.meta.threadId,
+          model,
+          executionIdentity,
+        );
         return { ...result, meta: { ...result.meta, threadReused: wasResume } };
       }
       return result;
@@ -418,52 +356,45 @@ export class CodexProvider extends BaseProvider {
   }
 
   override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
-    const prepared = prepareExternalToolRequest(options);
-    if (prepared && this.isAppServerMode) {
-      throw new Error(
-        'External tool selection is not supported in Codex app-server mode; use cli mode.',
-      );
+    const lockKey = this.sessionLockKey(options);
+    const release = lockKey
+      ? await this.cliSessionMutex.acquire(lockKey, {
+        ...(options.signal ? { signal: options.signal } : {}),
+      })
+      : undefined;
+    try {
+      const prepared = prepareExternalToolRequest(options);
+      const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
+      return prepared ? adaptExternalToolResult(result, prepared) : result;
+    } finally {
+      release?.();
     }
-    const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
-    return prepared ? adaptExternalToolResult(result, prepared) : result;
   }
 
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
+    const lockKey = this.sessionLockKey(options);
+    const release = lockKey
+      ? await this.cliSessionMutex.acquire(lockKey, {
+        ...(options.signal ? { signal: options.signal } : {}),
+      })
+      : undefined;
+    try {
+      yield* this.executeStreamUnlocked(options);
+    } finally {
+      release?.();
+    }
+  }
+
+  private async *executeStreamUnlocked(
+    options: ExecuteOptions,
+  ): AsyncIterable<ProviderEvent> {
     const prepared = prepareExternalToolRequest(options);
     if (prepared) {
-      if (this.isAppServerMode) {
-        throw new Error(
-          'External tool selection is not supported in Codex app-server mode; use cli mode.',
-        );
-      }
       const result = adaptExternalToolResult(
         await this.executeWithoutExternalTools(prepared.options),
         prepared,
       );
       yield* externalToolEvents(result);
-      return;
-    }
-    if (this.isAppServerMode) {
-      if (!this.appServerProcess?.isAlive()) {
-        throw new Error('Codex app-server process is not running');
-      }
-      const streamLines: string[] = [];
-      let streamMeta: AppServerMeta | undefined;
-      const config = this.buildAppServerConfig(options);
-      config.onAppServerMeta = (meta) => { streamMeta = meta; };
-
-      for await (const event of executeStreamAppServer(options, config)) {
-        if (event.type === 'text_delta') {
-          streamLines.push(event.text);
-        }
-        yield event;
-      }
-      const model = options.model || this.config.default_model;
-
-      options.onDebug?.({
-        cliArgs: this.appServerDebugArgs(model, streamMeta),
-        streamLines,
-      });
       return;
     }
     const { prompt, imageFiles, tempFiles } = await prepareCodexPrompt(options.messages);
@@ -477,13 +408,19 @@ export class CodexProvider extends BaseProvider {
     const effective = this.getEffectiveConfig(options);
     const sessionReuseEnabled = effective.cli_options?.enable_session_reuse === true && !!options.clientKey;
     const model = options.model || effective.default_model;
+    const executionIdentity = providerExecutionIdentity(effective);
 
     try {
       for await (const event of super.executeStream(ext)) {
         if (event.type === 'thread_started') {
           if (sessionReuseEnabled) {
             const sm = this.ensureCliSessionManager(effective.cli_options?.session_ttl_ms);
-            sm.set(options.clientKey!, event.threadId, model);
+            sm.set(
+              options.clientKey!,
+              event.threadId,
+              model,
+              executionIdentity,
+            );
           }
 
           continue;
@@ -500,36 +437,7 @@ export class CodexProvider extends BaseProvider {
     }
   }
 
-  override async checkHealth(): Promise<HealthStatus> {
-    if (this.isAppServerMode) {
-      return this.appServerProcess?.isAlive() ? 'healthy' : 'unhealthy';
-    }
-    return super.checkHealth();
-  }
-
-
-  override updateConfig(partial: Partial<ProviderConfigYaml>): void {
-    const wasAppServer = this.isAppServerMode;
-    super.updateConfig(partial);
-
-
-    if (!wasAppServer && this.isAppServerMode) {
-      this.initAppServer();
-    }
-
-
-    if (wasAppServer && !this.isAppServerMode) {
-      void this.destroyAppServer().catch((error) => {
-        console.error('[codex] failed to stop app-server after mode change:', error);
-      });
-    }
-  }
-
   override async shutdown(): Promise<void> {
-    try {
-      await this.destroyAppServer();
-    } finally {
-      this.destroyCliSessionManager();
-    }
+    this.destroyCliSessionManager();
   }
 }

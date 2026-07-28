@@ -9,7 +9,6 @@
 
 
 import { z } from 'zod';
-import { CLAUDE_PERMISSION_MODES } from '@agent-proxy/shared';
 
 
 const opt = <T extends z.ZodType>(schema: T) =>
@@ -17,7 +16,6 @@ const opt = <T extends z.ZodType>(schema: T) =>
 
 const port = z.int().min(1).max(65535);
 const positiveInt = z.int().positive();
-const positiveNumber = z.number().positive();
 
 const serverSchema = z.object({
   port: opt(port),
@@ -38,6 +36,15 @@ const databaseSchema = z.object({
   path: opt(z.string()),
 });
 
+const herdrSchema = z.object({
+  binary: opt(z.string()),
+  runtime_directory: opt(z.string()),
+  workspace_label: opt(z.string()),
+  command_timeout_ms: opt(positiveInt),
+  pane_ttl_ms: opt(positiveInt),
+  max_panes: opt(positiveInt),
+});
+
 const authSchema = z.object({
   enabled: opt(z.boolean()),
   admin_token: opt(z.string()),
@@ -51,40 +58,6 @@ const authSchema = z.object({
   ),
 });
 
-const sdkOptionsSchema = z.object({
-  max_turns: opt(positiveInt),
-  permission_mode: opt(z.enum(CLAUDE_PERMISSION_MODES)),
-  allowed_tools: opt(z.array(z.string())),
-  disallowed_tools: opt(z.array(z.string())),
-  max_budget_usd: opt(positiveNumber),
-  session_ttl_ms: opt(positiveInt),
-  enable_session_reuse: opt(z.boolean()),
-  persist_session: opt(z.boolean()),
-}).strict();
-
-const channelOptionsSchema = z.object({
-  endpoint_url: opt(z.string()),
-  api_key: opt(z.string()),
-  poll_interval_ms: opt(positiveInt),
-  result_timeout_ms: opt(positiveInt),
-  response_schema: z.record(z.string(), z.unknown()).nullish().transform((v) => v ?? undefined),
-  isolation: opt(z.enum(['external', 'one-job-per-worker', 'shared-session'])),
-  managed: opt(z.boolean()),
-  auto_start: opt(z.boolean()),
-  bridge_port: opt(positiveInt),
-  bridge_command: opt(z.string()),
-}).strict();
-
-const appServerOptionsSchema = z.object({
-  transport: opt(z.enum(['stdio', 'websocket'])),
-  websocket_url: opt(z.string()),
-  session_ttl_ms: opt(positiveInt),
-  enable_session_reuse: opt(z.boolean()),
-  max_turns: opt(positiveInt),
-  auto_restart: opt(z.boolean()),
-  max_restart_count: opt(positiveInt),
-}).strict();
-
 const cliOptionsSchema = z.object({
   ephemeral: opt(z.boolean()),
   enable_session_reuse: opt(z.boolean()),
@@ -96,13 +69,11 @@ export const providerSchema = z.object({
   cli_path: opt(z.string()),
   default_model: opt(z.string()),
   max_concurrent: opt(positiveInt),
+  max_queue_size: opt(positiveInt),
+  max_queue_wait_ms: opt(positiveInt),
   timeout_ms: opt(positiveInt),
   extra_args: opt(z.array(z.string())),
   working_dir: opt(z.string()),
-  mode: opt(z.enum(['cli', 'sdk', 'app-server', 'channel-worker'])),
-  sdk_options: opt(sdkOptionsSchema),
-  channel_options: opt(channelOptionsSchema),
-  app_server_options: opt(appServerOptionsSchema),
   cli_options: opt(cliOptionsSchema),
 }).strict();
 
@@ -149,6 +120,7 @@ export const rawConfigSchema = z.object({
   server: opt(serverSchema),
   dashboard: opt(dashboardSchema),
   database: opt(databaseSchema),
+  herdr: opt(herdrSchema),
   auth: opt(authSchema),
   providers: opt(z.record(z.string(), opt(providerSchema))),
   rate_limits: opt(rateLimitsSchema),

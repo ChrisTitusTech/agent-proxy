@@ -1,10 +1,10 @@
 # Live client compatibility harness
 
-`scripts/test-client-compat.sh` is the Phase 3 entrypoint for sanitized
-acceptance tests against unmodified Claude Code, Codex, and Grok Build clients.
-The harness owns isolation, prerequisite handling, evidence capture, and
-redaction. The included runner scripts implement the client-specific behavior
-validated by P3-02, P3-03, and P3-04.
+`scripts/test-client-compat.sh` is the sanitized acceptance entrypoint for
+unmodified Claude Code, Codex, GitHub Copilot CLI, and Grok Build clients. The
+harness owns isolation, prerequisite handling, evidence capture, and redaction.
+The current-user Phase 4 release gate requires the Codex and Copilot runners;
+Claude and Grok require an authenticated subscription before required-live use.
 
 ## Usage
 
@@ -20,7 +20,9 @@ scripts/test-client-compat.sh --all --require-live
 Each ordinary live client turn is bounded to 180 seconds. Set
 `AGENT_PROXY_COMPAT_TURN_TIMEOUT` to a positive number of seconds when a slow
 subscription backend needs a larger test window. The cancellation fixture
-keeps its own shorter timeout.
+keeps its own shorter timeout. Required-live Codex and Copilot runs verify that
+the cancelled request leaves both the proxy request tracker and its Herdr pane
+in a terminal state.
 
 Without `--require-live`, an unavailable executable or runner is reported as a
 skip. Release and acceptance gates use `--require-live`, which converts every
@@ -72,6 +74,7 @@ named `<client>.sh` and receives this clean environment:
 - `AGENT_PROXY_COMPAT_TURN_TIMEOUT`
 - `AGENT_PROXY_COMPAT_REQUIRE_LIVE`
 - `AGENT_PROXY_ADMIN_TOKEN`, when configured
+- `AGENT_PROXY_HERDR_RUNTIME_DIR` for Copilot cancellation-state inspection
 - isolated `HOME`, `TMPDIR`, and XDG paths
 - the host `PATH` and locale
 

@@ -2,15 +2,37 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from './provider-error.js';
 
 describe('provider error classification', () => {
   it.each([
+    'queue is full',
+    'queue wait timed out',
+    'Herdr is unavailable',
+    'provider recursion',
+    'request cancelled',
+  ])('does not degrade provider health for local failure: %s', (message) => {
+    expect(shouldDegradeProviderHealth(
+      classifyProviderError(message, 'codex'),
+    )).toBe(false);
+  });
+
+  it.each([
     ['spawn /private/provider ENOENT', 'provider_executable_missing'],
+    ['Herdr worker failed: spawn codex ENOENT', 'provider_executable_missing'],
     ['Not logged in. Run login.', 'provider_login_required'],
     ['OAuth token expired and refresh failed', 'provider_login_expired'],
     ['connect ECONNREFUSED 127.0.0.1:443', 'provider_unreachable'],
     ['provider request timed out after 30000ms', 'timeout'],
+    ['quota exhausted for this account', 'provider_quota_exceeded'],
+    ['unknown model gpt-missing', 'provider_model_unavailable'],
+    ['invalid request payload', 'provider_validation_error'],
+    ['Herdr is unavailable', 'herdr_unavailable'],
+    ['Herdr worker failed to spawn before startup', 'herdr_unavailable'],
+    ['Herdr worker protocol mismatch', 'herdr_unavailable'],
+    ['Herdr worker did not connect before startup timeout', 'herdr_unavailable'],
+    ['codex queue is full', 'provider_queue_overloaded'],
   ])('classifies %s', (message, code) => {
     expect(classifyProviderError(message, 'codex').code).toBe(code);
   });
@@ -20,9 +42,24 @@ describe('provider error classification', () => {
       'Not logged in for person@example.test using sk-secretvalue123456',
       'codex',
     );
-    expect(failure.message).toContain('Dashboard > Provider Login');
+    expect(failure.message).toContain('current user');
     expect(failure.message).not.toContain('person@example.test');
     expect(failure.message).not.toContain('sk-secretvalue123456');
+  });
+
+  it('keeps client retry policy separate from provider fallback policy', () => {
+    expect(classifyProviderError('Herdr is unavailable', 'codex')).toMatchObject({
+      retryable: true,
+      fallbackEligible: false,
+    });
+    expect(classifyProviderError(
+      'Codex configuration routes provider traffic back to agent-proxy',
+      'codex',
+    ).fallbackEligible).toBe(false);
+    expect(classifyProviderError('quota exhausted', 'codex')).toMatchObject({
+      retryable: true,
+      fallbackEligible: true,
+    });
   });
 
   it('redacts paths, accounts, and credential-like values from fallback errors', () => {

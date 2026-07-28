@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ExecuteOptions,
@@ -8,6 +9,7 @@ import type {
 } from '@agent-proxy/shared';
 import type { BaseProvider } from '../../providers/base-provider.js';
 import type { ResolvedRoute } from '../../services/router.js';
+import { logRequest } from '../../middleware/request-logger.js';
 import {
   normalizeAnthropicMessages,
   registerMessagesRoute,
@@ -67,6 +69,7 @@ function createDeps(
     } as unknown as MessagesDeps['rateLimiter'],
     registry: {
       get: vi.fn(() => provider),
+      assertExecutionReady: vi.fn(async () => undefined),
     } as unknown as MessagesDeps['registry'],
     healthChecker: {
       isHealthy: vi.fn(async () => true),
@@ -102,9 +105,325 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   await app?.close();
   app = undefined;
+  vi.mocked(logRequest).mockClear();
 });
 
 describe('Anthropic Messages normalization', () => {
+  it('returns a 503 before opening SSE when Herdr is unavailable', async () => {
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    deps.registry.assertExecutionReady = vi.fn(async () => {
+      throw new Error('Herdr is unavailable; provider execution was not started.');
+    });
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      payload: {
+        model: 'fixture',
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['content-type']).not.toContain('text/event-stream');
+    expect(executeStream).not.toHaveBeenCalled();
+  });
+
+  it('propagates a non-streaming client disconnect to the provider signal', async () => {
+    let observedSignal: AbortSignal | undefined;
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const execute = vi.fn(async (providerOptions: ExecuteOptions) => {
+      observedSignal = providerOptions.signal;
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      throw new Error('Request cancelled');
+    });
+    const deps = createDeps(fakeProvider({ execute }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('records cancellation when non-streaming execution returns after disconnect', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const execute = vi.fn(async (providerOptions: ExecuteOptions) => {
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      return defaultResult;
+    });
+    const deps = createDeps(fakeProvider({ execute }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(deps.cache.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps observing disconnects while a non-streaming cache write is pending', async () => {
+    let cacheStarted!: () => void;
+    const cachePending = new Promise<void>((resolve) => {
+      cacheStarted = resolve;
+    });
+    let releaseCache!: () => void;
+    const cacheReleased = new Promise<void>((resolve) => {
+      releaseCache = resolve;
+    });
+    const deps = createDeps(fakeProvider());
+    deps.cache.set = vi.fn(async () => {
+      cacheStarted();
+      await cacheReleased;
+    });
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await cachePending;
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    releaseCache();
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+  });
+
+  it('records a streaming provider cancellation as cancelled', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const executeStream = vi.fn(async function* (
+      providerOptions: ExecuteOptions,
+    ): AsyncIterable<ProviderEvent> {
+      yield { type: 'text_delta', text: 'started' };
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      throw new Error('Request cancelled');
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+      expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'error',
+    )).toBe(false);
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
+  it('records cancellation when streaming execution returns after disconnect', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const executeStream = vi.fn(async function* (
+      providerOptions: ExecuteOptions,
+    ): AsyncIterable<ProviderEvent> {
+      yield { type: 'text_delta', text: 'started' };
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+    controller.abort();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(deps.cache.set).not.toHaveBeenCalled();
+  });
+
+  it('finalizes a disconnect while the provider is still queued', async () => {
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const deps = createDeps(fakeProvider({ executeStream }));
+    deps.queue.enqueue = vi.fn((
+      _provider: string,
+      _run: () => Promise<void>,
+      options: { signal?: AbortSignal } = {},
+    ) => new Promise<void>((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => {
+        reject(new Error('fixture queue wait cancelled with request'));
+      }, { once: true });
+    })) as unknown as MessagesDeps['queue']['enqueue'];
+    app = await createTestApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/messages`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.start).toHaveBeenCalledOnce();
+      expect(deps.queue.enqueue).toHaveBeenCalledOnce();
+    });
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.finish).toHaveBeenCalledOnce();
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+
+    expect(executeStream).not.toHaveBeenCalled();
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'error',
+    )).toBe(false);
+    expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+  });
+
   it('preserves tool definitions, calls, results, and choice', () => {
     const result = normalizeAnthropicMessages({
       model: 'claude-test',
@@ -619,7 +938,7 @@ describe('Anthropic Messages provider errors', () => {
       type: 'error',
       error: {
         type: 'authentication_error',
-        message: 'Fixture service-account login expired. Refresh it from Dashboard > Provider Login.',
+        message: "Fixture login expired. Refresh the logged-in user's provider session.",
       },
     });
     expect(response.body).not.toContain('person@example.test');

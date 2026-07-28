@@ -18,15 +18,14 @@ server and credits the upstream project for that work.
 
 ## Status
 
-Status updated: 2026-07-27
+Status updated: 2026-07-28
 
-Phase 3 protocol and client compatibility is complete for the historical
-service-account deployment, with live Codex evidence and explicit Claude and
-Grok waivers. Phase 4 is ready to replace the superseded machine-wide service
-with a current-user runtime where every built-in provider invocation is managed
-and visible through Herdr. The existing direct headless execution and
-dedicated-service-user packaging remain implementation debt until Phase 4
-passes.
+Phases 4 and 5 are complete. The supported deployment is owned by the logged-in
+user, all CLI-provider inference runs in that user's Herdr session, and queue,
+session, cancellation, fallback, and terminal-state behavior are bounded.
+Live acceptance passes with Codex, GitHub Copilot CLI, and Open WebUI. Claude
+and Grok remain disabled unless their normal current-user subscriptions are
+authenticated.
 
 See [SPEC.md](./SPEC.md) for the product contract and
 [ROADMAP.md](./ROADMAP.md) for implementation phases.
@@ -73,7 +72,7 @@ network targets by default. Enable `allow_private_network` only when connecting
 to an operator-controlled local service such as Ollama. HTTP provider timeouts
 must be between 1 and 600 seconds, and redirects are rejected.
 
-## Phase 4 target requirements
+## Requirements
 
 - Linux
 - Node.js 24 or newer
@@ -82,41 +81,36 @@ must be between 1 and 600 seconds, and redirects are rejected.
 - At least one supported CLI installed and authenticated for the current user
 - A writable directory for SQLite data and logs
 
-## Historical Phase 3 quick start
+## Current-user quick start
 
-The following commands start the historical Phase 3 headless development
-baseline. They do not implement the target Herdr execution contract and must
-not be used as evidence that Phase 4 is complete. Phase 4 will replace this
-section with Herdr login-session startup and readiness instructions.
+Build a release and install it without root:
 
 ```bash
 npm ci
-cp .env.example .env
-cp config.example.yaml config.yaml
-
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-node -e "console.log('sk-proxy-' + require('crypto').randomBytes(24).toString('hex'))"
-
-npm run build
-npm start --workspace=packages/server
+scripts/build-release.sh
+scripts/install.sh install --archive dist/releases/agent-proxy-*-linux-*.tar.gz
+systemctl --user status herdr.service agent-proxy.service
 ```
 
-Put the first generated value in `ADMIN_TOKEN` and the second in
-`PROXY_API_KEY`. The defaults bind to `127.0.0.1:8300`.
+The installer generates owner-only admin and proxy credentials, installs
+versioned releases and user units in XDG directories, and starts both services
+for the login session. The API defaults to `127.0.0.1:8300`.
 
 For development:
 
 ```bash
-./start.sh start
-./start.sh status
-./start.sh stop
+cp config.example.yaml config.yaml
+export ADMIN_TOKEN="$(openssl rand -hex 32)"
+export PROXY_API_KEY="sk-proxy-$(openssl rand -hex 24)"
+npm run build
+npm start --workspace=packages/server
 ```
 
 The dashboard development server listens on `127.0.0.1:5300`.
 
-The Phase 4 dashboard will check the current user's provider authentication and
-Herdr readiness. Provider tokens and account identifiers must never be returned
-by the admin API.
+The authenticated `/admin/health` endpoint reports Herdr readiness and provider
+availability. Provider tokens and account identifiers are never returned by the
+admin API.
 
 ## Containers
 
@@ -169,12 +163,23 @@ name = "agent-proxy"
 base_url = "http://127.0.0.1:8300/v1"
 env_key = "AGENT_PROXY_API_KEY"
 wire_api = "responses"
+
+# agent-proxy child Codex processes must bypass the localhost proxy.
+[profiles.agent_proxy_upstream]
+model_provider = "openai"
 ```
 
 ```bash
 export AGENT_PROXY_API_KEY=sk-proxy-replace-me
 codex
 ```
+
+Keep the `agent_proxy_upstream` profile selected in the agent-proxy Codex
+provider's `extra_args` (the packaged current-user config does this by
+default). Native Codex uses the root `agent_proxy` provider, while Codex
+children launched through Herdr use the upstream profile. Reusing the root
+provider for both would recursively call agent-proxy and is rejected before a
+pane is created.
 
 Grok Build supports custom models in `~/.grok/config.toml`:
 
@@ -218,9 +223,8 @@ bash -n start.sh
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the complete contributor workflow
 and [SECURITY.md](./SECURITY.md) for private vulnerability reporting.
 
-The former machine-wide systemd runbook is retained only as historical Phase 1
-evidence in [docs/linux-service.md](./docs/linux-service.md). Phase 4 replaces
-it with a user-owned login-session runbook.
+See [docs/linux-service.md](./docs/linux-service.md) for the current-user
+login-session runbook.
 
 ## References
 

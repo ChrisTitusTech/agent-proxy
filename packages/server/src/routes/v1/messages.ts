@@ -12,10 +12,11 @@ import type {
 import { isReasoningEffort } from '@agent-proxy/shared';
 import { nanoid } from 'nanoid';
 import { createRequestId } from '../../utils/stream-transformer.js';
-import { extractClientKey } from '../../utils/client-key.js';
+import { extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { ModelRouter } from '../../services/router.js';
@@ -620,7 +621,7 @@ export function registerMessagesRoute(
       const apiKeyId = (request as unknown as { apiKeyId?: string }).apiKeyId;
       const keyLimits = (request as unknown as { apiKeyRateLimits?: { rpm?: number | null; rpd?: number | null } }).apiKeyRateLimits;
 
-      const clientKey = extractClientKey(request, apiKeyId);
+      const clientKey = extractProviderClientKey(request, apiKeyId);
 
 
       const requestHash = !body.stream && !normalized.data.tools?.length
@@ -703,6 +704,36 @@ export function registerMessagesRoute(
           isStream: body.stream ?? false,
           startedAt: startTime,
         });
+        let attemptFinalized = false;
+        const finishActiveRequest = (): boolean => {
+          if (attemptFinalized) return false;
+          attemptFinalized = true;
+          deps.activeRequests.finish(requestId);
+          return true;
+        };
+        const finalizeCancellation = async (
+          message = 'Request cancelled',
+        ): Promise<void> => {
+          if (!finishActiveRequest()) return;
+          const latencyMs = Date.now() - startTime;
+          try {
+            await logRequest({
+              requestId,
+              apiKeyId,
+              modelAlias: body.model,
+              provider: route.provider,
+              actualModel: route.actualModel,
+              reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
+              status: 'cancelled',
+              statusCode: 499,
+              latencyMs,
+              isStream: body.stream ?? false,
+              errorMessage: sanitizeProviderError(message),
+            });
+          } catch {
+            // Request cleanup must not depend on optional persistence.
+          }
+        };
 
 
         const debugEnabled = deps.debug.isEnabled(body.model);
@@ -728,12 +759,28 @@ export function registerMessagesRoute(
           if (body.stream) {
 
             const abortController = new AbortController();
-            request.raw.on('close', () => abortController.abort());
+            let providerStarted = false;
+            const onClientClose = () => {
+              abortController.abort();
+              if (!providerStarted) void finalizeCancellation();
+            };
+            request.raw.once('aborted', onClientClose);
+            reply.raw.once('close', onClientClose);
 
-            await deps.queue.enqueue(route.provider, async () => {
+            try {
+              await deps.queue.enqueue(route.provider, async () => {
 
-              if (abortController.signal.aborted) return;
+              if (abortController.signal.aborted) {
+                await finalizeCancellation();
+                return;
+              }
 
+              await deps.registry.assertExecutionReady(provider);
+              if (abortController.signal.aborted) {
+                await finalizeCancellation();
+                return;
+              }
+              providerStarted = true;
 
 
               const origin = request.headers.origin;
@@ -795,6 +842,7 @@ export function registerMessagesRoute(
                 signal: abortController.signal,
                 onDebug,
                 clientKey,
+                requestId,
                 reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
                 providerOverrides: route.providerOverrides,
                 extraBody: route.extraBody,
@@ -897,6 +945,15 @@ export function registerMessagesRoute(
               } catch (streamErr) {
 
                 const errMsg = streamErr instanceof Error ? streamErr.message : 'Stream interrupted';
+                const failure = classifyProviderError(errMsg, route.provider);
+                if (
+                  abortController.signal.aborted
+                  || failure.kind === 'cancelled'
+                ) {
+                  reply.raw.end();
+                  await finalizeCancellation(errMsg);
+                  return;
+                }
                 writeSSE(reply.raw, 'error', makeAnthropicError('api_error', errMsg));
                 reply.raw.end();
 
@@ -914,8 +971,16 @@ export function registerMessagesRoute(
                   errorMessage: errMsg,
                 });
 
-                deps.activeRequests.finish(requestId);
-                deps.healthChecker.onRequestFailure(route.provider);
+                finishActiveRequest();
+                if (shouldDegradeProviderHealth(failure)) {
+                  await deps.healthChecker.onRequestFailure(route.provider);
+                }
+                return;
+              }
+
+              if (abortController.signal.aborted) {
+                reply.raw.end();
+                await finalizeCancellation();
                 return;
               }
 
@@ -944,8 +1009,7 @@ export function registerMessagesRoute(
                   isStream: true,
                   errorMessage: toolSelectionError,
                 });
-                deps.activeRequests.finish(requestId);
-                deps.healthChecker.onRequestFailure(route.provider);
+                finishActiveRequest();
                 return;
               }
 
@@ -1003,16 +1067,27 @@ export function registerMessagesRoute(
                 });
               }
 
-              deps.activeRequests.finish(requestId);
-            });
+              finishActiveRequest();
+              }, { signal: abortController.signal });
+            } finally {
+              request.raw.removeListener('aborted', onClientClose);
+              reply.raw.removeListener('close', onClientClose);
+              finishActiveRequest();
+            }
 
             return;
           }
 
 
-          const result = await deps.queue.enqueue(
-            route.provider,
-            () => provider.execute({
+          const abortController = new AbortController();
+          const onClientClose = () => abortController.abort();
+          request.raw.once('aborted', onClientClose);
+          reply.raw.once('close', onClientClose);
+          let result;
+          try {
+            result = await deps.queue.enqueue(
+              route.provider,
+              () => provider.execute({
               messages: internalMessages,
               model: route.actualModel,
               stream: false,
@@ -1020,14 +1095,21 @@ export function registerMessagesRoute(
               temperature: body.temperature,
               onDebug,
               clientKey,
+              requestId,
               reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
               providerOverrides: route.providerOverrides,
               extraBody: route.extraBody,
               tools: normalized.data.tools,
               toolChoice: normalized.data.toolChoice,
               parallelToolCalls: normalized.data.parallelToolCalls,
-            }),
-          );
+              signal: abortController.signal,
+              }),
+              { signal: abortController.signal },
+            );
+          if (abortController.signal.aborted) {
+            await finalizeCancellation();
+            return;
+          }
 
 
           let content = result.content;
@@ -1067,7 +1149,7 @@ export function registerMessagesRoute(
                 errorMessage: message,
               });
             }
-            deps.activeRequests.finish(requestId);
+            finishActiveRequest();
             return reply.status(502).send(makeAnthropicError('api_error', message));
           };
           const toolSelectionError = validateToolSelectionResult(
@@ -1147,6 +1229,15 @@ export function registerMessagesRoute(
               result.usage.totalTokens,
             );
           }
+          if (
+            abortController.signal.aborted
+            || request.raw.aborted
+            || request.raw.destroyed
+            || reply.raw.destroyed
+          ) {
+            await finalizeCancellation();
+            return;
+          }
 
           const nonStreamLatency = Date.now() - startTime;
           logRequest({
@@ -1180,11 +1271,21 @@ export function registerMessagesRoute(
             });
           }
 
-          deps.activeRequests.finish(requestId);
+          finishActiveRequest();
           return reply.status(200).send(response);
+          } finally {
+            request.raw.removeListener('aborted', onClientClose);
+            reply.raw.removeListener('close', onClientClose);
+          }
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           lastErrorProvider = route.provider;
+          const failure = classifyProviderError(lastError, route.provider);
+          if (failure.kind === 'cancelled') {
+            await finalizeCancellation(lastError.message);
+            lastError = new Error('Request cancelled');
+            break;
+          }
           const isTimeout = lastError.message.includes('timed out');
 
           const errLatency = Date.now() - startTime;
@@ -1216,8 +1317,11 @@ export function registerMessagesRoute(
             });
           }
 
-          deps.activeRequests.finish(requestId);
-          deps.healthChecker.onRequestFailure(route.provider);
+          finishActiveRequest();
+          if (shouldDegradeProviderHealth(failure)) {
+            await deps.healthChecker.onRequestFailure(route.provider);
+          }
+          if (!failure.fallbackEligible) break;
           continue;
         }
       }

@@ -85,6 +85,7 @@ function createDeps(
     } as unknown as ResponsesDeps['rateLimiter'],
     registry: {
       get: vi.fn((name: string) => providers[name]),
+      assertExecutionReady: vi.fn(async () => undefined),
     } as unknown as ResponsesDeps['registry'],
     healthChecker: {
       isHealthy: vi.fn(async () => true),
@@ -1850,6 +1851,33 @@ describe('Responses provider contract safeguards', () => {
 });
 
 describe('Responses cancellation, failures, and fallback', () => {
+  it('returns a 503 before opening SSE when Herdr is unavailable', async () => {
+    const executeStream = vi.fn(async function* (): AsyncIterable<ProviderEvent> {
+      yield { type: 'done' };
+    });
+    const deps = createDeps({
+      codex: fakeProvider({ executeStream }),
+    });
+    deps.registry.assertExecutionReady = vi.fn(async () => {
+      throw new Error('Herdr is unavailable; provider execution was not started.');
+    });
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: {
+        model: 'gpt-test',
+        input: 'hello',
+        stream: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['content-type']).not.toContain('text/event-stream');
+    expect(executeStream).not.toHaveBeenCalled();
+  });
+
   it('rejects a non-streaming provider error finish reason', async () => {
     const provider = fakeProvider({
       execute: async () => ({
@@ -1954,7 +1982,7 @@ describe('Responses cancellation, failures, and fallback', () => {
     });
 
     expect(response.statusCode).toBe(502);
-    expect(response.json().error.message).toContain('Codex service-account login expired');
+    expect(response.json().error.message).toContain('Codex login expired');
     expect(response.json().error.message).not.toContain('Grok');
   });
 
@@ -1989,6 +2017,36 @@ describe('Responses cancellation, failures, and fallback', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['x-fallback-provider']).toBe('grok');
     expect(response.json().output[0].content[0].text).toBe('Fallback succeeded.');
+  });
+
+  it('does not fall back when the shared Herdr runtime is unavailable', async () => {
+    const fallback = vi.fn(async () => defaultResult);
+    const deps = createDeps(
+      {
+        codex: fakeProvider({
+          name: 'codex',
+          execute: async () => {
+            throw new Error('Herdr is unavailable');
+          },
+        }),
+        grok: fakeProvider({ name: 'grok', execute: fallback }),
+      },
+      [
+        { provider: 'codex', actualModel: 'codex-model' },
+        { provider: 'grok', actualModel: 'grok-model' },
+      ],
+    );
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('herdr_unavailable');
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it('emits exactly one failed terminal event after a stream error', async () => {
@@ -2083,6 +2141,115 @@ describe('Responses cancellation, failures, and fallback', () => {
     ]);
     expect(observedSignal?.aborted).toBe(true);
   });
+
+  it('does not persist success when non-streaming execution returns after disconnect', async () => {
+    let releaseProvider: (() => void) | undefined;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const provider = fakeProvider({
+      execute: async (options) => {
+        await new Promise<void>((resolve) => {
+          options.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        releaseProvider?.();
+        return defaultResult;
+      },
+    });
+    const store = new ResponsesStore();
+    const deps = createDeps({ codex: provider }, undefined, store);
+    const fixture = await createSdkClient(deps);
+    app = fixture.app;
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(`http://127.0.0.1:${address.port}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-test',
+        input: 'hello',
+      }),
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.start).toHaveBeenCalledOnce();
+    });
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    const requestLogger = vi.mocked(deps.requestLogger!);
+    await vi.waitFor(() => {
+      expect(requestLogger).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(requestLogger.mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it.each([false, true])(
+    'records a queued disconnect as cancelled (stream=%s)',
+    async (stream) => {
+      const provider = fakeProvider();
+      const deps = createDeps({ codex: provider });
+      deps.queue.enqueue = vi.fn((
+        _provider: string,
+        _run: () => Promise<unknown>,
+        options: { signal?: AbortSignal } = {},
+      ) => new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          reject(new Error('fixture queue wait cancelled with request'));
+        }, { once: true });
+      })) as unknown as ResponsesDeps['queue']['enqueue'];
+      const fixture = await createSdkClient(deps);
+      app = fixture.app;
+      const address = app.server.address() as AddressInfo;
+      const controller = new AbortController();
+      const request = fetch(`http://127.0.0.1:${address.port}/v1/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-test',
+          input: 'hello',
+          stream,
+        }),
+        signal: controller.signal,
+      });
+
+      if (stream) {
+        const response = await request;
+        await response.body!.getReader().read();
+      } else {
+        await vi.waitFor(() => {
+          expect(deps.queue.enqueue).toHaveBeenCalledOnce();
+        });
+      }
+      controller.abort();
+      if (!stream) await expect(request).rejects.toThrow();
+
+      const requestLogger = vi.mocked(deps.requestLogger!);
+      await vi.waitFor(() => {
+        expect(requestLogger).toHaveBeenCalledWith(expect.objectContaining({
+          status: 'cancelled',
+          statusCode: 499,
+        }));
+      });
+      expect(requestLogger.mock.calls.some(
+        ([entry]) => entry.status === 'error',
+      )).toBe(false);
+      expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe.each(['codex', 'grok'])('provider-independent Responses contract: %s', (name) => {

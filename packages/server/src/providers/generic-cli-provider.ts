@@ -1,5 +1,6 @@
 import type { ExecuteOptions, ExecuteResult, GenericCliProviderConfig } from '@agent-proxy/shared';
 import { BaseProvider } from './base-provider.js';
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
 import { convertMessagesToSinglePrompt } from '../utils/message-converter.js';
 import { registerParser, PlainTextParser } from '../utils/stream-transformer.js';
 
@@ -41,8 +42,13 @@ export class GenericCliProvider extends BaseProvider {
 
   private readonly genericConfig: GenericCliProviderConfig;
 
-  constructor(name: string, config: GenericCliProviderConfig) {
-    super(config);
+  constructor(
+    name: string,
+    config: GenericCliProviderConfig,
+    executionBackend?: ProviderExecutionBackend,
+    proxyPort?: number,
+  ) {
+    super(config, executionBackend, proxyPort);
     this.name = name;
     this.genericConfig = config;
     this.initParser();
@@ -89,6 +95,17 @@ export class GenericCliProvider extends BaseProvider {
     args.push(...this.config.extra_args);
 
     return args;
+  }
+
+  protected override getRecursionCheckArgs(options: ExecuteOptions): string[] {
+    const template = options.stream && this.genericConfig.stream_args_template
+      ? this.genericConfig.stream_args_template
+      : this.genericConfig.args_template;
+    const model = options.model || this.config.default_model;
+    return [
+      ...template.map((argument) => argument.replace(/\{model\}/g, model)),
+      ...this.config.extra_args,
+    ];
   }
 
 
@@ -138,34 +155,6 @@ export class GenericCliProvider extends BaseProvider {
       finishReason: 'stop',
     };
   }
-
-
-
-  override async checkHealth() {
-    const args = this.genericConfig.health_check_args ?? ['--version'];
-    try {
-      const child = this.spawnProcess(args);
-      child.stdin?.end();
-      const exitCode = await new Promise<number>((resolve) => {
-        const timer = setTimeout(() => {
-          child.kill('SIGTERM');
-          resolve(1);
-        }, 10_000);
-        child.on('close', (code) => {
-          clearTimeout(timer);
-          resolve(code ?? 1);
-        });
-        child.on('error', () => {
-          clearTimeout(timer);
-          resolve(1);
-        });
-      });
-      return exitCode === 0 ? ('healthy' as const) : ('unhealthy' as const);
-    } catch {
-      return 'unhealthy' as const;
-    }
-  }
-
 
   getConfig(): GenericCliProviderConfig {
     return { ...this.genericConfig };

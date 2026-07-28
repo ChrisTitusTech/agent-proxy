@@ -251,6 +251,11 @@ export class ProviderLoginManager {
     return Promise.all(LOGIN_PROVIDERS.map((provider) => this.getStatus(provider, force)));
   }
 
+  getTracked(provider: LoginProvider): ProviderLoginStatus {
+    return this.statuses.get(provider)
+      ?? status(provider, 'checking', 'Checking login status.');
+  }
+
   private async runProbe(
     provider: LoginProvider,
     generation: number,

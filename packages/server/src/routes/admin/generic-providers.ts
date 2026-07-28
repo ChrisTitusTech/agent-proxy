@@ -1,12 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, like } from 'drizzle-orm';
 import type { GenericCliProviderConfig } from '@agent-proxy/shared';
+import {
+  DEFAULT_MAX_QUEUE_SIZE,
+  DEFAULT_MAX_QUEUE_WAIT_MS,
+} from '@agent-proxy/shared';
 import { getDatabase } from '../../db/client.js';
 import { settings, providerHealth } from '../../db/schema.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { HealthChecker } from '../../services/health-checker.js';
 import type { QueueManager } from '../../services/queue.js';
 import { GenericCliProvider } from '../../providers/generic-cli-provider.js';
+import { hasValidGenericQueueLimits } from './generic-provider-validation.js';
 
 
 const GENERIC_PROVIDER_PREFIX = 'generic_provider:';
@@ -20,6 +25,10 @@ const PROVIDER_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 
 const SAFE_CLI_PATH = /^[a-zA-Z0-9_\-./\\:]+$/;
+const INVALID_QUEUE_LIMITS_MESSAGE = [
+  'Queue limits must be finite integers;',
+  'concurrency must be at least 1 and queue limits cannot be negative.',
+].join(' ');
 
 function validateProviderName(name: string): string | null {
   if (!PROVIDER_NAME_PATTERN.test(name)) {
@@ -176,6 +185,8 @@ export function registerGenericProviderRoutes(
         cli_path: configData.cli_path,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 2,
+        max_queue_size: configData.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+        max_queue_wait_ms: configData.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
         timeout_ms: configData.timeout_ms ?? 120000,
         extra_args: configData.extra_args ?? [],
         prompt_mode: configData.prompt_mode ?? 'stdin',
@@ -192,14 +203,29 @@ export function registerGenericProviderRoutes(
         ...(configData.description !== undefined && { description: configData.description }),
         ...(configData.working_dir !== undefined && { working_dir: configData.working_dir }),
       };
+      if (!hasValidGenericQueueLimits(config)) {
+        return reply.status(400).send({
+          error: { message: INVALID_QUEUE_LIMITS_MESSAGE },
+        });
+      }
 
 
       await saveGenericProviderToDb(name, config);
 
 
-      const provider = new GenericCliProvider(name, config);
+      const provider = new GenericCliProvider(
+        name,
+        config,
+        deps.registry.executionBackend,
+        deps.registry.proxyPort,
+      );
       deps.registry.register(provider);
-      deps.queueManager.addQueue(name, config.max_concurrent);
+      deps.queueManager.addQueue(
+        name,
+        config.max_concurrent,
+        config.max_queue_size,
+        config.max_queue_wait_ms,
+      );
 
 
       deps.healthChecker.checkProvider(name).catch(() => {});
@@ -233,6 +259,11 @@ export function registerGenericProviderRoutes(
 
 
       const updated: GenericCliProviderConfig = { ...existing, ...partial };
+      if (!hasValidGenericQueueLimits(updated)) {
+        return reply.status(400).send({
+          error: { message: INVALID_QUEUE_LIMITS_MESSAGE },
+        });
+      }
 
 
       await saveGenericProviderToDb(name, updated);
@@ -258,7 +289,12 @@ export function registerGenericProviderRoutes(
       if (hasStructuralChange && deps.registry.has(name)) {
 
         deps.registry.unregister(name);
-        const newProvider = new GenericCliProvider(name, updated);
+        const newProvider = new GenericCliProvider(
+          name,
+          updated,
+          deps.registry.executionBackend,
+          deps.registry.proxyPort,
+        );
         deps.registry.register(newProvider);
       } else if (deps.registry.has(name)) {
 
@@ -268,6 +304,16 @@ export function registerGenericProviderRoutes(
 
       if (partial.max_concurrent !== undefined) {
         deps.queueManager.updateConcurrency(name, partial.max_concurrent);
+      }
+      if (
+        partial.max_queue_size !== undefined
+        || partial.max_queue_wait_ms !== undefined
+      ) {
+        deps.queueManager.updateLimits(
+          name,
+          updated.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+          updated.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
+        );
       }
 
       return reply.send({ name, config: updated });
@@ -342,6 +388,8 @@ export function registerGenericProviderRoutes(
         cli_path: configData.cli_path,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 10,
+        max_queue_size: configData.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+        max_queue_wait_ms: configData.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
         timeout_ms: configData.timeout_ms ?? 300000,
         extra_args: configData.extra_args ?? [],
         prompt_mode: configData.prompt_mode ?? 'stdin',
@@ -359,23 +407,24 @@ export function registerGenericProviderRoutes(
       };
 
 
-      const testProvider = new GenericCliProvider(providerName, config);
-      const model = config.default_model || '';
+      const testProvider = new GenericCliProvider(
+        providerName,
+        config,
+        deps.registry.executionBackend,
+        deps.registry.proxyPort,
+      );
       const startTime = Date.now();
 
       try {
-        const result = await testProvider.execute({
-          messages: [{ role: 'user', content: 'Say "OK" and nothing else.' }],
-          model,
-          stream: false,
-        });
+        const status = await testProvider.checkHealth();
         const latencyMs = Date.now() - startTime;
 
         return reply.send({
-          success: true,
-          response: result.content.substring(0, 200),
+          success: status === 'healthy',
+          ...(status === 'healthy'
+            ? { response: 'Executable is available for the logged-in user.' }
+            : { error: 'Executable is unavailable for the logged-in user.' }),
           latencyMs,
-          usage: result.usage,
         });
       } catch (err) {
         const latencyMs = Date.now() - startTime;

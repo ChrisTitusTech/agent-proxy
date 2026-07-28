@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import type { ProviderConfigYaml } from '@agent-proxy/shared';
+import {
+  DEFAULT_MAX_QUEUE_SIZE,
+  DEFAULT_MAX_QUEUE_WAIT_MS,
+} from '@agent-proxy/shared';
 import { getDatabase } from '../../db/client.js';
 import { providerHealth, settings } from '../../db/schema.js';
 
@@ -24,11 +28,9 @@ const BUILTIN_RUNTIME_MUTABLE_FIELDS = new Set([
   'enabled',
   'default_model',
   'max_concurrent',
+  'max_queue_size',
+  'max_queue_wait_ms',
   'timeout_ms',
-  'mode',
-  'sdk_options',
-  'channel_options',
-  'app_server_options',
   'cli_options',
 ]);
 
@@ -89,7 +91,7 @@ export function validateRuntimeProviderConfig(
 }
 
 
-export async function loadProviderConfigFromDb(
+async function loadProviderConfigFromDb(
   name: string,
 ): Promise<Partial<ProviderConfigYaml> | null> {
   const db = getDatabase();
@@ -132,15 +134,6 @@ export function mergeProviderConfigPartials(
   return {
     ...current,
     ...partial,
-    sdk_options: partial.sdk_options
-      ? { ...current.sdk_options, ...partial.sdk_options }
-      : current.sdk_options,
-    channel_options: partial.channel_options
-      ? { ...current.channel_options, ...partial.channel_options }
-      : current.channel_options,
-    app_server_options: partial.app_server_options
-      ? { ...current.app_server_options, ...partial.app_server_options }
-      : current.app_server_options,
     cli_options: partial.cli_options
       ? { ...current.cli_options, ...partial.cli_options }
       : current.cli_options,
@@ -243,6 +236,17 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
       if (partial.max_concurrent !== undefined) {
         deps.queueManager.updateConcurrency(name, partial.max_concurrent);
       }
+      if (
+        partial.max_queue_size !== undefined
+        || partial.max_queue_wait_ms !== undefined
+      ) {
+        const current = deps.registry.getProviderConfig(name);
+        deps.queueManager.updateLimits(
+          name,
+          current?.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+          current?.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
+        );
+      }
 
 
       const existingOverride = await loadProviderConfigFromDb(name);
@@ -277,27 +281,17 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
     const startTime = Date.now();
 
 
-    const endpointTypes = (provider as unknown as { endpointTypes?: string[] }).endpointTypes;
-    const isNonChat = endpointTypes && !endpointTypes.includes('chat');
-
-    const testPrompt = isNonChat && endpointTypes?.includes('images')
-      ? 'A simple test image: blue circle on white background'
-      : 'Say "OK" and nothing else.';
-
     try {
-      const result = await provider.execute({
-        messages: [{ role: 'user', content: testPrompt }],
-        model,
-        stream: false,
-      });
+      const status = await provider.checkHealth();
 
       const latencyMs = Date.now() - startTime;
 
       return reply.send({
-        success: true,
-        response: result.content.substring(0, 200),
+        success: status === 'healthy',
+        ...(status === 'healthy'
+          ? { response: 'Executable is available for the logged-in user.' }
+          : { error: 'Executable is unavailable for the logged-in user.' }),
         latencyMs,
-        usage: result.usage,
       });
     } catch (err) {
       const latencyMs = Date.now() - startTime;

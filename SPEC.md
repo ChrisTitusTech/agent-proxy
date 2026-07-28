@@ -1,6 +1,6 @@
 # agent-proxy specification
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## 1. Purpose
 
@@ -79,7 +79,7 @@ The supported locations are:
 | Configuration | `${XDG_CONFIG_HOME:-$HOME/.config}/agent-proxy` |
 | Releases and durable data | `${XDG_DATA_HOME:-$HOME/.local/share}/agent-proxy` |
 | Operational state | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-proxy` |
-| Runtime sockets and jobs | `${XDG_RUNTIME_DIR}/agent-proxy` |
+| Runtime sockets, jobs, and staged provider inputs | `${XDG_RUNTIME_DIR}/agent-proxy` |
 | User service unit | `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user` |
 
 Secrets and generated state must use owner-only permissions.
@@ -88,8 +88,9 @@ Secrets and generated state must use owner-only permissions.
 
 ### 4.1 Required behavior
 
-Every authenticated data-plane request that selects a built-in CLI provider
-must execute through the current user's Herdr server.
+Every authenticated data-plane request that selects a CLI provider, including a
+configured generic CLI provider, must execute through the current user's Herdr
+server.
 
 The launcher must:
 
@@ -111,7 +112,8 @@ Health, model discovery, and admin-only requests must not spawn agents.
 
 ### 4.2 Availability
 
-Herdr is a required runtime dependency for built-in CLI inference.
+Herdr is a required runtime dependency for all CLI-provider inference,
+including configured generic CLI providers.
 
 - The Herdr server must start with the user's login session.
 - `agent-proxy` must verify Herdr readiness before accepting inference work.
@@ -119,6 +121,8 @@ Herdr is a required runtime dependency for built-in CLI inference.
   `503` error.
 - The proxy must not silently fall back to a direct headless spawn.
 - Health output must distinguish API health from Herdr execution readiness.
+- Authenticated readiness must include non-spawning executable checks for
+  enabled providers and any already-tracked subscription-login state.
 
 ### 4.3 Sessions and panes
 
@@ -133,6 +137,9 @@ Herdr is a required runtime dependency for built-in CLI inference.
 - Different client sessions must never observe each other's terminal output,
   provider thread, tool results, or retained prompt state.
 - Pane/session storage must have bounded size and configurable expiration.
+- A pane created for a starting request is reserved until its worker is active
+  or the start fails; concurrent capacity cleanup must not close it.
+- Expired panes are closed and recreated rather than silently revived.
 
 ### 4.4 Recursion prevention
 
@@ -140,6 +147,11 @@ Before launching an agent, the proxy must reject configurations where the
 child CLI would route its own model traffic back to the same `agent-proxy`
 listener. Diagnostics must identify the conflicting provider configuration
 without printing credentials.
+
+When native Codex targets agent-proxy through the root Codex provider, Codex
+children must select a distinct upstream profile. The current-user example
+uses `agent_proxy_upstream`; child execution must never inherit the native
+client's localhost provider selection.
 
 ## 5. API contract
 
@@ -151,7 +163,8 @@ without printing credentials.
 | `POST /v1/chat/completions` | OpenAI Chat Completions subset | Copilot CLI, Open WebUI |
 | `POST /v1/messages` | Anthropic Messages subset | Claude Code, Anthropic SDKs |
 | `GET /v1/models` | OpenAI model list | Discovery and client validation |
-| `GET /health` | Minimal liveness; authenticated API and Herdr readiness | Probes and operators |
+| `GET /health` | Minimal unauthenticated liveness only | Probes |
+| `GET /admin/health` | Authenticated API, Herdr, and provider readiness | Operators |
 | `/admin/*` | Authenticated management API | Dashboard and automation |
 
 Unsupported embedding, retrieval, speech, image-generation, and reranking
@@ -246,6 +259,9 @@ Direct `child_process.spawn` execution is allowed only inside the
 Herdr-launched worker that owns the pane. Route handlers and provider adapters
 must not bypass the Herdr launcher.
 
+Generic CLI providers inherit the same Herdr execution, cancellation, queue,
+session-isolation, and recursion-prevention requirements.
+
 ## 8. Routing and accounting
 
 1. A public model alias maps to ordered provider/model targets.
@@ -296,6 +312,11 @@ login-session supervisor.
 - Logging out may stop the proxy and its agents after bounded cleanup.
 - Upgrade and rollback preserve user configuration, proxy keys, mappings,
   provider authentication, and SQLite state.
+- The Herdr user service starts the executable selected by `herdr.binary`.
+- Upgrade validates legacy configuration before switching `current`; removed
+  execution-mode keys are ignored with an actionable migration warning.
+- If unit installation, reload, enablement, or startup fails after activation,
+  the installer restores the prior release, units, and running state.
 - Shutdown stops new work, cancels or drains active panes within a bound,
   closes SQLite, and exits without orphaned workers.
 - The operator can inspect both services with `systemctl --user` and
@@ -331,7 +352,7 @@ scripts/validate-shell.sh
 git diff --check
 ```
 
-The user-owned Herdr phase additionally requires:
+The user-owned Herdr runtime additionally requires:
 
 - Installer lifecycle tests using isolated XDG directories.
 - systemd user-unit verification.
@@ -342,13 +363,11 @@ The user-owned Herdr phase additionally requires:
 - Proof that every provider attempt appears in Herdr.
 - Proof that no direct headless provider spawn remains.
 - A clean dead-code report with documented dynamic entry points.
+- Provider stress and live shared-pane load tests.
 
 ## 13. Open decisions
 
-1. Define the pane retention default after successful and failed requests.
-2. Define the client-session derivation used when a client cannot send
+1. Define the client-session derivation used when a client cannot send
    `X-Agent-Proxy-Session-Id`.
-3. Decide whether one pane represents a conversation or one provider attempt.
-4. Define the minimum supported Herdr and provider CLI versions.
-5. Confirm upstream licensing, attribution, and notice obligations.
-6. Decide whether any generic adapter belongs in the stable desktop release.
+2. Define the minimum supported Herdr and provider CLI versions.
+3. Confirm upstream licensing, attribution, and notice obligations.

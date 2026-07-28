@@ -9,15 +9,16 @@ REDACTOR="$PROJECT_DIR/scripts/client-compat/redact.mjs"
 REQUIRE_LIVE=false
 ARTIFACT_ROOT=
 SELECTED_CLIENTS=()
-ALL_CLIENTS=(claude codex grok)
+ALL_CLIENTS=(claude codex grok copilot)
 TEMP_ROOT=
 TURN_TIMEOUT=${AGENT_PROXY_COMPAT_TURN_TIMEOUT:-180}
+HOST_XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}
 
 usage() {
 	cat <<EOF
 Usage: ${0##*/} (--client CLIENT | --all) [--require-live] [--artifacts-dir DIR]
 
-Clients: claude, codex, grok
+Clients: claude, codex, grok, copilot
 
 Without --require-live, unavailable clients and unfinished runners are reported
 as skips. With --require-live, every selected client must execute and pass.
@@ -145,6 +146,7 @@ client_command_name() {
 	claude) printf '%s' "${CLAUDE_BIN:-claude}" ;;
 	codex) printf '%s' "${CODEX_BIN:-codex}" ;;
 	grok) printf '%s' "${GROK_BIN:-grok}" ;;
+	copilot) printf '%s' "${COPILOT_BIN:-copilot}" ;;
 	esac
 }
 
@@ -208,6 +210,7 @@ write_metadata() {
 	revision=$(git -C "$PROJECT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf 'source')
 	recorded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+	install -m 0600 /dev/null "$runner_environment_file" || return 1
 	{
 		printf '{\n'
 		printf '  "schema_version": 1,\n'
@@ -294,7 +297,7 @@ run_client() {
 		"$artifact_dir/fixtures" || return 1
 
 	if ! version_output=$(
-		timeout 10 env -i \
+		timeout --signal=TERM --kill-after=5s 10s env -i \
 			HOME="$state_dir/home" \
 			PATH="$PATH" \
 			LANG="${LANG:-C.UTF-8}" \
@@ -318,17 +321,46 @@ run_client() {
 		return
 	fi
 
-	if ! server_version=$(
-		node -e '
+	if ! node -e '
 const { readFileSync } = require("node:fs");
 const health = JSON.parse(readFileSync(process.argv[1], "utf8"));
-if (health.status !== "ok" || typeof health.version !== "string" || health.version.length === 0) {
-  process.exit(1);
-}
+if (health.status !== "ok" || Object.keys(health).length !== 1) process.exit(1);
+' "$raw_dir/server-health.json"; then
+		printf 'FAIL [%s] server liveness exposed unexpected details.\n' "$client" >&2
+		return 1
+	fi
+	server_version=unavailable
+	if [[ -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+		local admin_header_file="$state_dir/.admin-header"
+		install -m 0600 /dev/null "$admin_header_file" || return 1
+		printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" \
+			>"$admin_header_file" || {
+			rm -f -- "$admin_header_file"
+			return 1
+		}
+		if ! curl --silent --show-error --fail \
+			--connect-timeout 5 \
+			--max-time 10 \
+			-H "@$admin_header_file" \
+			"$base_url/admin/health" >"$raw_dir/server-readiness.json"; then
+			rm -f -- "$admin_header_file"
+			report_unavailable "$client" 'authenticated server readiness failed'
+			return
+		fi
+		rm -f -- "$admin_header_file"
+		if ! server_version=$(
+			node -e '
+const { readFileSync } = require("node:fs");
+const health = JSON.parse(readFileSync(process.argv[1], "utf8"));
+if (typeof health.version !== "string" || health.version.length === 0) process.exit(1);
 process.stdout.write(health.version);
-' "$raw_dir/server-health.json"
-	); then
-		printf 'FAIL [%s] server health response has no valid version.\n' "$client" >&2
+' "$raw_dir/server-readiness.json"
+		); then
+			printf 'FAIL [%s] authenticated readiness has no version.\n' "$client" >&2
+			return 1
+		fi
+	elif [[ "$REQUIRE_LIVE" == true ]]; then
+		printf 'FAIL [%s] AGENT_PROXY_ADMIN_TOKEN is required for live evidence.\n' "$client" >&2
 		return 1
 	fi
 
@@ -349,11 +381,17 @@ process.stdout.write(health.version);
 		printf 'export COMPAT_CLIENT_BINARY=%q\n' "$client_binary"
 		printf 'export COMPAT_FIXTURE_DIR=%q\n' "$raw_dir/protocol"
 		printf 'export COMPAT_WORKSPACE=%q\n' "$state_dir/workspace"
-		if [[ -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+		if [[ ("$client" == codex || "$client" == copilot) && -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
 			printf 'export AGENT_PROXY_ADMIN_TOKEN=%q\n' "$AGENT_PROXY_ADMIN_TOKEN"
 		fi
+		if [[ "$client" == copilot && -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+			if [[ -z "$HOST_XDG_RUNTIME_DIR" ]]; then
+				printf 'FAIL [copilot] XDG_RUNTIME_DIR is required for Herdr cancellation evidence.\n' >&2
+				return 1
+			fi
+			printf 'export AGENT_PROXY_HERDR_RUNTIME_DIR=%q\n' "$HOST_XDG_RUNTIME_DIR"
+		fi
 	} >"$runner_environment_file"
-	chmod 0600 "$runner_environment_file"
 
 	set +e
 	# shellcheck disable=SC2016 # Positional parameters expand in the isolated child shell.

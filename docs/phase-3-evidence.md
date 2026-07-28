@@ -8,6 +8,12 @@ assertions.
 
 Historical status: completed under the superseded Phase 3 deployment
 
+The historical `scripts/test-provider-auth.sh` command recorded below was
+removed when Phase 4 replaced service-account authentication with normal
+current-user CLI authentication. Current live acceptance uses
+`scripts/test-client-compat.sh`, `scripts/test-open-webui-compat.sh`, and the
+authenticated `/admin/health` endpoint.
+
 Entry gate verified: 2026-07-23
 
 Phase started: 2026-07-25

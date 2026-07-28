@@ -68,11 +68,21 @@ export async function loadGenericProviders(
 
     try {
 
-      const provider = new GenericCliProvider(name, config);
+      const provider = new GenericCliProvider(
+        name,
+        config,
+        registry.executionBackend,
+        registry.proxyPort,
+      );
       registry.register(provider);
 
 
-      queueManager.addQueue(name, config.max_concurrent);
+      queueManager.addQueue(
+        name,
+        config.max_concurrent,
+        config.max_queue_size,
+        config.max_queue_wait_ms,
+      );
 
       logger?.info(`[generic-provider-loader] Loaded "${name}" (cli_path: ${config.cli_path})`);
       result.loaded.push(name);

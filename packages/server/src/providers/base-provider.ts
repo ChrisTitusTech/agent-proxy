@@ -1,6 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { access, readFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
+import { delimiter, isAbsolute, resolve } from 'node:path';
 import type {
   ExecuteOptions,
   ExecuteResult,
@@ -16,8 +20,13 @@ import type {
   StreamParser,
 } from '@agent-proxy/shared';
 import { streamChunkToEvents } from '@agent-proxy/shared';
+import { parse as parseToml } from 'smol-toml';
 import { getParserForProvider } from '../utils/stream-transformer.js';
 import { getProviderEnvironment } from '../utils/provider-env.js';
+import {
+  UnavailableExecutionBackend,
+  type ProviderExecutionBackend,
+} from '../herdr/launcher.js';
 
 
 const activeProcesses = new Set<ChildProcess>();
@@ -39,18 +48,46 @@ export function getActiveProcessCount(): number {
   return activeProcesses.size;
 }
 
+export function resolveProxyPort(
+  value = process.env.AGENT_PROXY_PORT,
+): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65_535
+    ? parsed
+    : 8300;
+}
+
+export function providerExecutionIdentity(config: ProviderConfigYaml): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      cliPath: config.cli_path,
+      workingDirectory: config.working_dir ?? null,
+      extraArgs: config.extra_args,
+      cliOptions: config.cli_options ?? null,
+    }))
+    .digest('hex');
+}
+
 export abstract class BaseProvider {
   abstract readonly name: string;
 
+  readonly requiresHerdr: boolean = true;
 
   readonly endpointTypes: readonly EndpointType[] = ['chat'];
 
   protected config: ProviderConfigYaml;
   protected parser: StreamParser;
+  protected readonly executionBackend: ProviderExecutionBackend;
+  private readonly proxyPort: number;
 
-  constructor(config: ProviderConfigYaml) {
+  constructor(
+    config: ProviderConfigYaml,
+    executionBackend: ProviderExecutionBackend = new UnavailableExecutionBackend(),
+    proxyPort = resolveProxyPort(),
+  ) {
     this.config = config;
-
+    this.executionBackend = executionBackend;
+    this.proxyPort = resolveProxyPort(String(proxyPort));
     this.parser = null!;
   }
 
@@ -91,7 +128,7 @@ export abstract class BaseProvider {
   async execute(options: ExecuteOptions): Promise<ExecuteResult> {
     const args = this.buildArgs({ ...options, stream: false });
     const stdinData = this.getStdinData({ ...options, stream: false });
-    const { stdout, stderr, exitCode } = await this.runProcess(args, options.signal, undefined, stdinData);
+    const { stdout, stderr, exitCode } = await this.runProcess(args, options, stdinData);
 
     if (exitCode !== 0) {
       options.onDebug?.({ cliArgs: this.fullCommand(args), stdout, stderr });
@@ -106,53 +143,70 @@ export abstract class BaseProvider {
   async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
     const args = this.buildArgs({ ...options, stream: true });
     const stdinData = this.getStdinData({ ...options, stream: true });
-    const child = this.spawnProcess(args);
-
-    if (stdinData) {
-      child.stdin?.write(stdinData);
-    }
-    child.stdin?.end();
-
-    if (options.signal) {
-      options.signal.addEventListener('abort', () => {
-        gracefulKill(child);
-      }, { once: true });
-    }
-
-    const timeout = setTimeout(() => {
-      gracefulKill(child);
-    }, this.config.timeout_ms);
+    const handle = await this.startProcess(args, options, stdinData);
+    const stderrChunks: Buffer[] = [];
+    handle.stderr.on('data', (data: Buffer) => stderrChunks.push(data));
 
     const debugLines: string[] = [];
     const captureDebug = !!options.onDebug;
+    let terminalEventSeen = false;
+    let pendingDoneEvent: ProviderEvent | undefined;
+    let completionObserved = false;
 
     try {
-      const rl = createInterface({ input: child.stdout! });
+      const rl = createInterface({ input: handle.stdout });
 
       for await (const line of rl) {
         if (captureDebug) debugLines.push(line);
-
-
+        if (terminalEventSeen) continue;
         if (this.parser.parseEvents) {
           const events = this.parser.parseEvents(line);
           for (const event of events) {
-            yield event;
-            if (event.type === 'done') return;
+            if (event.type === 'done') {
+              terminalEventSeen = true;
+              pendingDoneEvent = event;
+            } else if (!terminalEventSeen) {
+              yield event;
+            }
           }
         } else {
           const chunk = this.parser.parse(line);
           if (chunk) {
             const events = streamChunkToEvents(chunk);
             for (const event of events) {
-              yield event;
+              if (event.type === 'done') {
+                terminalEventSeen = true;
+                pendingDoneEvent = event;
+              } else if (!terminalEventSeen) {
+                yield event;
+              }
             }
-            if (chunk.type === 'done') return;
           }
         }
       }
+      const result = await handle.completion.then(
+        (completed) => {
+          completionObserved = true;
+          return completed;
+        },
+        (error: unknown) => {
+          completionObserved = true;
+          throw error;
+        },
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `${this.name} CLI exited with code ${result.exitCode}: ${
+            Buffer.concat(stderrChunks).toString('utf8')
+          }`,
+        );
+      }
+      if (pendingDoneEvent) yield pendingDoneEvent;
     } finally {
-      clearTimeout(timeout);
-      gracefulKill(child);
+      if (!completionObserved) {
+        handle.cancel();
+        await handle.completion.catch(() => undefined);
+      }
       if (captureDebug) {
         options.onDebug!({ cliArgs: this.fullCommand(args), streamLines: debugLines });
       }
@@ -171,12 +225,9 @@ export abstract class BaseProvider {
 
 
   async checkHealth(): Promise<HealthStatus> {
-    try {
-      const { exitCode } = await this.runProcess(['--version'], undefined, 10_000);
-      return exitCode === 0 ? 'healthy' : 'unhealthy';
-    } catch {
-      return 'unhealthy';
-    }
+    return await executableAvailable(this.config.cli_path, this.workingDir)
+      ? 'healthy'
+      : 'unhealthy';
   }
 
 
@@ -189,66 +240,64 @@ export abstract class BaseProvider {
     return this.config.working_dir ?? tmpdir();
   }
 
-  protected spawnProcess(args: string[]): ChildProcess {
-
-    const isWin = process.platform === 'win32';
-    const child = spawn(this.config.cli_path, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: this.getCleanEnv(),
-      cwd: this.workingDir,
-      shell: isWin,
-      detached: !isWin,
-    });
-    trackProcess(child, !isWin);
-    return child;
-  }
-
-  private async runProcess(
+  protected async runProcess(
     args: string[],
-    signal?: AbortSignal,
-    timeoutMs?: number,
+    options: ExecuteOptions,
     stdinData?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return new Promise((resolve, reject) => {
-      const child = this.spawnProcess(args);
+    const handle = await this.startProcess(args, options, stdinData);
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    handle.stdout.on('data', (data: Buffer) => stdoutChunks.push(data));
+    handle.stderr.on('data', (data: Buffer) => stderrChunks.push(data));
+    const result = await handle.completion;
+    return {
+      stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+      stderr: Buffer.concat(stderrChunks).toString('utf8'),
+      exitCode: result.exitCode,
+    };
+  }
 
-      if (stdinData) {
-        child.stdin?.write(stdinData);
-      }
-      child.stdin?.end();
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
+  private startProcess(
+    args: string[],
+    options: ExecuteOptions,
+    stdinData?: string,
+  ) {
+    const config = this.getExecutionConfig(options);
+    const environment = this.getCleanEnv();
+    const recursionCheck = assertNoProxyRecursion(
+      this.name,
+      environment,
+      this.proxyPort,
+      this.getRecursionCheckArgs(options, args),
+    );
+    return recursionCheck.then(() => this.executionBackend.start({
+      provider: this.name,
+      model: options.model || config.default_model,
+      executionIdentity: providerExecutionIdentity(config),
+      ...(options.requestId ? { requestId: options.requestId } : {}),
+      clientKey: options.clientKey && (
+        options.clientKey.includes('|session:')
+        || options.clientKey.includes('|request:')
+      )
+        ? options.clientKey
+        : `request:${randomUUID()}`,
+      command: config.cli_path,
+      args,
+      cwd: config.working_dir ?? tmpdir(),
+      env: environment,
+      ...(stdinData !== undefined ? { stdin: stdinData } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+      timeoutMs: config.timeout_ms,
+    }));
+  }
 
-      const timeout = setTimeout(() => {
-        gracefulKill(child);
-        reject(new Error(`${this.name} CLI timed out after ${timeoutMs ?? this.config.timeout_ms}ms`));
-      }, timeoutMs ?? this.config.timeout_ms);
+  protected getExecutionConfig(_options: ExecuteOptions): ProviderConfigYaml {
+    return this.config;
+  }
 
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          clearTimeout(timeout);
-          gracefulKill(child);
-          reject(new Error('Request cancelled'));
-        }, { once: true });
-      }
-
-      child.stdout?.on('data', (data: Buffer) => stdoutChunks.push(data));
-      child.stderr?.on('data', (data: Buffer) => stderrChunks.push(data));
-
-      child.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`Failed to spawn ${this.name} CLI: ${err.message}`));
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timeout);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-          exitCode: code ?? 1,
-        });
-      });
-    });
+  protected getRecursionCheckArgs(_options: ExecuteOptions, args: string[]): string[] {
+    return args;
   }
 
 
@@ -293,7 +342,165 @@ export abstract class BaseProvider {
   }
 }
 
+async function executableAvailable(command: string, workingDirectory: string): Promise<boolean> {
+  const pathValue = process.env.PATH ?? '';
+  const candidates = command.includes('/')
+    ? [isAbsolute(command) ? command : resolve(workingDirectory, command)]
+    : pathValue.split(delimiter).filter(Boolean).map((entry) => resolve(entry, command));
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (!info.isFile()) continue;
+      await access(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      // Try the next PATH entry.
+    }
+  }
+  return false;
+}
 
+class ProviderRecursionError extends Error {
+  readonly code = 'provider_recursion';
+}
+
+async function assertNoProxyRecursion(
+  provider: string,
+  environment: Record<string, string | undefined>,
+  proxyPort: number,
+  args: string[],
+): Promise<void> {
+  for (const argument of args) {
+    for (const candidate of argument.match(/https?:\/\/[^\s"'<>]+/gi) ?? []) {
+      if (isProxyLoopbackUrl(candidate, proxyPort)) {
+        throw new ProviderRecursionError(
+          `${provider} arguments route provider traffic back to agent-proxy on loopback port ${proxyPort}.`,
+        );
+      }
+    }
+  }
+
+  const home = environment.HOME;
+  if (!home) return;
+  const configPath = provider === 'codex'
+    ? resolve(environment.CODEX_HOME ?? resolve(home, '.codex'), 'config.toml')
+    : provider === 'grok'
+      ? resolve(home, '.grok', 'config.toml')
+      : undefined;
+  if (!configPath) return;
+  let config: string;
+  try {
+    config = await readFile(configPath, 'utf8');
+  } catch {
+    return;
+  }
+  const port = String(proxyPort);
+  const baseUrls = provider === 'codex'
+    ? activeCodexBaseUrls(config, args)
+    : activeGrokBaseUrls(config, args);
+  for (const baseUrl of baseUrls) {
+    if (isProxyLoopbackUrl(baseUrl, proxyPort)) {
+      throw new ProviderRecursionError(
+        `${provider} configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
+      );
+    }
+  }
+}
+
+function isProxyLoopbackUrl(value: string, proxyPort: number): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const isLoopback = hostname === 'localhost'
+      || hostname === 'localhost.localdomain'
+      || hostname === 'ip6-localhost'
+      || hostname === '::1'
+      || hostname === '0.0.0.0'
+      || hostname === '::'
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+      || isMappedIpv4Loopback(hostname);
+    const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
+    return isLoopback && effectivePort === String(proxyPort);
+  } catch {
+    return false;
+  }
+}
+
+function isMappedIpv4Loopback(hostname: string): boolean {
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(hostname);
+  if (!mapped) return false;
+  const high = Number.parseInt(mapped[1], 16);
+  return (high >> 8) === 127;
+}
+
+function activeCodexBaseUrls(config: string, args: string[]): string[] {
+  const parsed = parseTomlConfig(config);
+  if (args.includes('--oss') || optionValue(args, '', '--local-provider')) {
+    return [];
+  }
+  const profile = optionValue(args, '-p', '--profile');
+  const activeProvider = configOverride(args, 'model_provider')
+    ?? (profile ? nestedString(parsed, ['profiles', profile, 'model_provider']) : undefined)
+    ?? nestedString(parsed, ['model_provider']);
+  if (!activeProvider) return [];
+  const baseUrl = nestedString(parsed, ['model_providers', activeProvider, 'base_url']);
+  return baseUrl ? [baseUrl] : [];
+}
+
+function activeGrokBaseUrls(config: string, args: string[]): string[] {
+  const parsed = parseTomlConfig(config);
+  const selectedModel = optionValue(args, '-m', '--model')
+    ?? nestedString(parsed, ['models', 'default']);
+  if (!selectedModel) return [];
+  const baseUrl = nestedString(parsed, ['model', selectedModel, 'base_url']);
+  return baseUrl ? [baseUrl] : [];
+}
+
+function parseTomlConfig(config: string): Record<string, unknown> {
+  try {
+    return parseToml(config) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function nestedString(
+  root: Record<string, unknown>,
+  path: string[],
+): string | undefined {
+  let value: unknown = root;
+  for (const segment of path) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    value = (value as Record<string, unknown>)[segment];
+  }
+  return typeof value === 'string' ? value : undefined;
+}
+
+function configOverride(args: string[], key: string): string | undefined {
+  for (let index = args.length - 1; index >= 0; index--) {
+    const argument = args[index];
+    const candidate = (argument === '-c' || argument === '--config')
+      ? args[index + 1]
+      : argument.startsWith('-c=')
+        ? argument.slice(3)
+        : argument.startsWith('--config=')
+          ? argument.slice('--config='.length)
+          : undefined;
+    if (!candidate) continue;
+    const match = new RegExp(`^${key}\\s*=\\s*["']?([^"']+)["']?$`).exec(candidate);
+    if (match) return match[1].trim();
+  }
+  return undefined;
+}
+
+function optionValue(args: string[], shortName: string, longName: string): string | undefined {
+  for (let index = args.length - 1; index >= 0; index--) {
+    const argument = args[index];
+    if (argument === shortName || argument === longName) return args[index + 1];
+    if (argument.startsWith(`${longName}=`)) return argument.slice(longName.length + 1);
+  }
+  return undefined;
+}
 
 export function gracefulKill(child: ChildProcess, timeoutMs = 3000): void {
   void terminateChildProcess(child, timeoutMs);

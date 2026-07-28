@@ -4,6 +4,10 @@ import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import type { AppConfig, RateLimitConfig, ValidationConfig, ProviderConfigYaml, GenericCliProviderConfig } from '@agent-proxy/shared';
 import { API_KEY_PREFIX, isReasoningEffort } from '@agent-proxy/shared';
+import {
+  DEFAULT_MAX_QUEUE_SIZE,
+  DEFAULT_MAX_QUEUE_WAIT_MS,
+} from '@agent-proxy/shared';
 import { GenericCliProvider } from '../../providers/generic-cli-provider.js';
 import { getDatabase } from '../../db/client.js';
 import { modelMappings, apiKeys, settings } from '../../db/schema.js';
@@ -14,6 +18,7 @@ import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { QueueManager } from '../../services/queue.js';
 import type { HealthChecker } from '../../services/health-checker.js';
 import { sanitizeRuntimeProviderConfig } from './providers.js';
+import { hasValidGenericQueueLimits } from './generic-provider-validation.js';
 
 const RATE_LIMITS_KEY = 'rate_limits';
 const VALIDATION_KEY = 'validation_config';
@@ -56,6 +61,8 @@ interface ExportData {
     cli_path: string;
     default_model: string;
     max_concurrent: number;
+    max_queue_size?: number;
+    max_queue_wait_ms?: number;
     timeout_ms: number;
     extra_args: string[];
     working_dir?: string;
@@ -74,7 +81,6 @@ interface ImportResult {
   };
   skipped: string[];
 }
-
 
 function validateExportData(body: unknown): string | null {
   const data = body as Record<string, unknown>;
@@ -166,6 +172,8 @@ export function registerExportImportRoutes(
           cli_path: config.cli_path,
           default_model: config.default_model,
           max_concurrent: config.max_concurrent,
+          max_queue_size: config.max_queue_size,
+          max_queue_wait_ms: config.max_queue_wait_ms,
           timeout_ms: config.timeout_ms,
           extra_args: config.extra_args,
           working_dir: config.working_dir,
@@ -345,6 +353,8 @@ export function registerExportImportRoutes(
         if (providerConfig.enabled !== undefined) override.enabled = providerConfig.enabled;
         if (providerConfig.default_model !== undefined) override.default_model = providerConfig.default_model;
         if (providerConfig.max_concurrent !== undefined) override.max_concurrent = providerConfig.max_concurrent;
+        if (providerConfig.max_queue_size !== undefined) override.max_queue_size = providerConfig.max_queue_size;
+        if (providerConfig.max_queue_wait_ms !== undefined) override.max_queue_wait_ms = providerConfig.max_queue_wait_ms;
         if (providerConfig.timeout_ms !== undefined) override.timeout_ms = providerConfig.timeout_ms;
         if (providerConfig.extra_args !== undefined) override.extra_args = providerConfig.extra_args;
         if (providerConfig.working_dir !== undefined) override.working_dir = providerConfig.working_dir;
@@ -355,8 +365,19 @@ export function registerExportImportRoutes(
 
 
         deps.registry.updateProviderConfig(name, sanitizedOverride);
-        if (sanitizedOverride.max_concurrent) {
+        if (sanitizedOverride.max_concurrent !== undefined) {
           deps.queueManager.updateConcurrency(name, sanitizedOverride.max_concurrent);
+        }
+        if (
+          sanitizedOverride.max_queue_size !== undefined
+          || sanitizedOverride.max_queue_wait_ms !== undefined
+        ) {
+          const current = deps.registry.getProviderConfig(name);
+          deps.queueManager.updateLimits(
+            name,
+            current?.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+            current?.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
+          );
         }
 
 
@@ -393,6 +414,10 @@ export function registerExportImportRoutes(
           skipped.push(`generic provider "${name}" (missing cli_path)`);
           continue;
         }
+        if (!hasValidGenericQueueLimits(genericConfig)) {
+          skipped.push(`generic provider "${name}" (invalid queue limits)`);
+          continue;
+        }
 
 
         const dbKey = `${GENERIC_PROVIDER_PREFIX}${name}`;
@@ -410,9 +435,19 @@ export function registerExportImportRoutes(
           deps.registry.unregister(name);
         }
         if (genericConfig.enabled !== false) {
-          const provider = new GenericCliProvider(name, genericConfig);
+          const provider = new GenericCliProvider(
+            name,
+            genericConfig,
+            deps.registry.executionBackend,
+            deps.registry.proxyPort,
+          );
           deps.registry.register(provider);
-          deps.queueManager.addQueue(name, genericConfig.max_concurrent);
+          deps.queueManager.addQueue(
+            name,
+            genericConfig.max_concurrent,
+            genericConfig.max_queue_size,
+            genericConfig.max_queue_wait_ms,
+          );
           deps.healthChecker.checkProvider(name).catch(() => {});
         }
 

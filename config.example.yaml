@@ -13,6 +13,13 @@ dashboard:
 database:
   path: "./data/agent-proxy.db"
 
+herdr:
+  binary: "herdr"
+  workspace_label: "agent-proxy"
+  command_timeout_ms: 10000
+  pane_ttl_ms: 1800000
+  max_panes: 32
+
 auth:
   enabled: true
   admin_token: "${ADMIN_TOKEN}"
@@ -27,24 +34,20 @@ providers:
     cli_path: "claude"
     default_model: "claude-sonnet-5"
     max_concurrent: 4
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args:
       - "--no-session-persistence"
       - "--permission-mode"
       - "bypassPermissions"
-    # Supported modes: cli, sdk, channel-worker.
-    # mode: "sdk"
-    # sdk_options:
-    #   max_turns: 50
-    #   permission_mode: "bypassPermissions"
-    #   enable_session_reuse: true
-    #   persist_session: false
-
   codex:
     enabled: false
     cli_path: "codex"
     default_model: "gpt-5.6-sol"
     max_concurrent: 4
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args:
       - "--skip-git-repo-check"
@@ -54,18 +57,13 @@ providers:
       ephemeral: true
       enable_session_reuse: false
       session_ttl_ms: 1800000
-    # mode: "app-server"
-    # app_server_options:
-    #   transport: "stdio"
-    #   enable_session_reuse: true
-    #   session_ttl_ms: 1800000
-    #   auto_restart: true
-
   agy:
     enabled: false
     cli_path: "agy"
     default_model: "antigravity"
     max_concurrent: 2
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args: []
 
@@ -75,6 +73,8 @@ providers:
     default_model: "grok-4.5"
     # Start with one worker; some Grok CLI sessions can stall when launched concurrently.
     max_concurrent: 1
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args: []
 

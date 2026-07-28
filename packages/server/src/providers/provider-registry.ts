@@ -1,12 +1,21 @@
 import type { ProviderConfigYaml } from '@agent-proxy/shared';
-import type { BaseProvider } from './base-provider.js';
+import { resolveProxyPort, type BaseProvider } from './base-provider.js';
 import { AgyProvider } from './agy-provider.js';
 import { ClaudeProvider } from './claude-provider.js';
 import { CodexProvider } from './codex-provider.js';
 import { GrokProvider } from './grok-provider.js';
+import {
+  UnavailableExecutionBackend,
+  type ProviderExecutionBackend,
+} from '../herdr/launcher.js';
 
 export class ProviderRegistry {
   private providers = new Map<string, BaseProvider>();
+
+  constructor(
+    readonly executionBackend: ProviderExecutionBackend = new UnavailableExecutionBackend(),
+    readonly proxyPort = resolveProxyPort(),
+  ) {}
 
   register(provider: BaseProvider): void {
     this.providers.set(provider.name, provider);
@@ -22,6 +31,16 @@ export class ProviderRegistry {
 
   has(name: string): boolean {
     return this.providers.has(name);
+  }
+
+  async assertExecutionReady(provider: BaseProvider): Promise<void> {
+    if (!provider.requiresHerdr) return;
+    const readiness = await this.executionBackend.readiness();
+    if (!readiness.ready) {
+      throw new Error(
+        `Herdr is unavailable; provider execution was not started. ${readiness.message ?? ''}`.trim(),
+      );
+    }
   }
 
   unregister(name: string): boolean {
@@ -84,20 +103,30 @@ function validateCliPath(provider: string, cliPath: string): void {
 }
 
 
-type ProviderFactory = (config: ProviderConfigYaml) => BaseProvider;
+type ProviderFactory = (
+  config: ProviderConfigYaml,
+  executionBackend: ProviderExecutionBackend,
+  proxyPort: number,
+) => BaseProvider;
 
 const builtinFactories: Record<string, ProviderFactory> = {
-  claude: (config) => new ClaudeProvider(config),
-  codex: (config) => new CodexProvider(config),
-  agy: (config) => new AgyProvider(config),
-  grok: (config) => new GrokProvider(config),
+  claude: (config, backend, proxyPort) =>
+    new ClaudeProvider(config, backend, proxyPort),
+  codex: (config, backend, proxyPort) =>
+    new CodexProvider(config, backend, proxyPort),
+  agy: (config, backend, proxyPort) =>
+    new AgyProvider(config, backend, proxyPort),
+  grok: (config, backend, proxyPort) =>
+    new GrokProvider(config, backend, proxyPort),
 };
 
 
 export function createProviderRegistry(
   configs: Record<string, ProviderConfigYaml>,
+  executionBackend: ProviderExecutionBackend = new UnavailableExecutionBackend(),
+  proxyPort = resolveProxyPort(),
 ): ProviderRegistry {
-  const registry = new ProviderRegistry();
+  const registry = new ProviderRegistry(executionBackend, proxyPort);
 
   for (const [name, config] of Object.entries(configs)) {
     if (!config.enabled) continue;
@@ -106,7 +135,7 @@ export function createProviderRegistry(
 
     const factory = builtinFactories[name];
     if (factory) {
-      registry.register(factory(config));
+      registry.register(factory(config, executionBackend, proxyPort));
     }
 
   }

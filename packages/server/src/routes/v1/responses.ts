@@ -9,10 +9,11 @@ import type {
   TokenUsage,
   ValidationConfig,
 } from '@agent-proxy/shared';
-import { extractClientKey } from '../../utils/client-key.js';
+import { extractClientKey, extractProviderClientKey } from '../../utils/client-key.js';
 import {
   classifyProviderError,
   sanitizeProviderError,
+  shouldDegradeProviderHealth,
 } from '../../utils/provider-error.js';
 import { logRequest } from '../../middleware/request-logger.js';
 import type { LogEntry } from '../../middleware/request-logger.js';
@@ -142,6 +143,7 @@ interface ExecutionContext {
   normalized: NormalizedResponsesInput;
   messages: ChatMessage[];
   clientKey: string;
+  providerClientKey: string;
   apiKeyId?: string;
   keyLimits?: RequestAuthContext['apiKeyRateLimits'];
   responseId: string;
@@ -159,10 +161,6 @@ function createResponseId(): string {
 
 function createItemId(prefix: 'msg' | 'fc' | 'ctc' | 'rs'): string {
   return `${prefix}_${nanoid(24)}`;
-}
-
-function isTimeoutError(error: Error): boolean {
-  return /timed out|timeout/i.test(error.message);
 }
 
 function isCancellationError(error: Error): boolean {
@@ -623,7 +621,8 @@ function providerOptions(
     signal,
     clientKey: context.body.previous_response_id
       ? undefined
-      : context.clientKey,
+      : context.providerClientKey,
+    requestId: context.responseId,
     reasoningEffort: context.body.reasoning?.effort as ReasoningEffort | undefined
       ?? route.reasoningEffort,
     providerOverrides: route.providerOverrides,
@@ -736,7 +735,7 @@ function logExecution(
   deps: ResponsesDeps,
   context: ExecutionContext,
   route: ResolvedRoute,
-  status: 'success' | 'error' | 'timeout',
+  status: 'success' | 'error' | 'timeout' | 'cancelled',
   usage?: TokenUsage,
   errorMessage?: string,
 ): void {
@@ -749,7 +748,13 @@ function logExecution(
     reasoningEffort: context.body.reasoning?.effort as ReasoningEffort | undefined
       ?? route.reasoningEffort,
     status,
-    statusCode: status === 'success' ? 200 : status === 'timeout' ? 504 : 502,
+    statusCode: status === 'success'
+      ? 200
+      : status === 'cancelled'
+        ? 499
+        : status === 'timeout'
+          ? 504
+          : 502,
     promptTokens: usage?.promptTokens,
     completionTokens: usage?.completionTokens,
     totalTokens: usage?.totalTokens,
@@ -799,7 +804,11 @@ async function executeNonStreaming(
       const result = await deps.queue.enqueue(
         route.provider,
         () => provider.execute(providerOptions(context, route, signal)),
+        { signal },
       );
+      if (signal.aborted) {
+        throw new Error('Request cancelled');
+      }
       if (result.finishReason === 'error') {
         throw new Error('Provider reported an unsuccessful completion.');
       }
@@ -848,17 +857,26 @@ async function executeNonStreaming(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       lastErrorProvider = route.provider;
-      const timeout = isTimeoutError(lastError);
+      const failure = classifyProviderError(
+        lastError,
+        route.provider,
+      );
       logExecution(
         deps,
         context,
         route,
-        timeout ? 'timeout' : 'error',
+        failure.kind === 'cancelled'
+          ? 'cancelled'
+          : failure.kind === 'timeout'
+            ? 'timeout'
+            : 'error',
         undefined,
         sanitizeProviderError(lastError.message),
       );
-      await deps.healthChecker.onRequestFailure(route.provider);
-      if (isCancellationError(lastError)) break;
+      if (shouldDegradeProviderHealth(failure)) {
+        await deps.healthChecker.onRequestFailure(route.provider);
+      }
+      if (!failure.fallbackEligible) break;
     } finally {
       deps.activeRequests.finish(context.responseId);
     }
@@ -1282,6 +1300,16 @@ async function executeStreaming(
     responseError(reply, 502, `Provider '${route.provider}' is unavailable.`, null, 'provider_error');
     return;
   }
+  try {
+    await deps.registry.assertExecutionReady(provider);
+  } catch (error) {
+    const failure = classifyProviderError(
+      error instanceof Error ? error : String(error),
+      route.provider,
+    );
+    responseError(reply, failure.statusCode, failure.message, null, failure.code);
+    return;
+  }
 
   deps.activeRequests.start({
     requestId: context.responseId,
@@ -1344,7 +1372,7 @@ async function executeStreaming(
           throw error;
         }
       }
-    });
+    }, { signal });
 
     if (signal.aborted && !state.responseLengthExceeded) {
       throw new Error('Request cancelled');
@@ -1393,6 +1421,7 @@ async function executeStreaming(
     logExecution(deps, context, route, 'success', state.usage);
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
+    const classified = classifyProviderError(failure, route.provider);
     if (!state.terminal && !reply.raw.destroyed) {
       const failed = baseResponse(
         context.responseId,
@@ -1401,7 +1430,6 @@ async function executeStreaming(
         createdAt,
       );
       failed.output = state.output;
-      const classified = classifyProviderError(failure, route.provider);
       failed.error = {
         code: classified.code,
         message: classified.message,
@@ -1416,11 +1444,17 @@ async function executeStreaming(
       deps,
       context,
       route,
-      isTimeoutError(failure) ? 'timeout' : 'error',
+      classified.kind === 'cancelled'
+        ? 'cancelled'
+        : classified.kind === 'timeout'
+          ? 'timeout'
+          : 'error',
       undefined,
       sanitizeProviderError(failure.message),
     );
-    await deps.healthChecker.onRequestFailure(route.provider);
+    if (shouldDegradeProviderHealth(classified)) {
+      await deps.healthChecker.onRequestFailure(route.provider);
+    }
   } finally {
     deps.activeRequests.finish(context.responseId);
     if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
@@ -1458,6 +1492,7 @@ export function registerResponsesRoute(
 
     const authContext = request as FastifyRequest & RequestAuthContext;
     const clientKey = extractClientKey(request, authContext.apiKeyId);
+    const providerClientKey = extractProviderClientKey(request, authContext.apiKeyId);
     const continuation = prepareContinuation(
       body,
       normalized.data,
@@ -1509,6 +1544,7 @@ export function registerResponsesRoute(
       normalized: normalized.data,
       messages: continuation.data.messages,
       clientKey,
+      providerClientKey,
       apiKeyId: authContext.apiKeyId,
       keyLimits: authContext.apiKeyRateLimits,
       responseId,

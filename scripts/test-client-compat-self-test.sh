@@ -66,16 +66,24 @@ node -e '
 const { writeFileSync } = require("node:fs");
 const http = require("node:http");
 const server = http.createServer((request, response) => {
-  if (request.url !== "/health") {
-    response.writeHead(404).end();
+  response.setHeader("content-type", "application/json");
+  if (request.url === "/health") {
+    response.end(JSON.stringify({ status: "ok" }));
     return;
   }
-  response.setHeader("content-type", "application/json");
-  response.end(JSON.stringify({
-    status: "ok",
-    version: "test-server-4.5.6",
-    providers: ["codex"],
-  }));
+  if (
+    request.url === "/admin/health"
+    && request.headers["x-admin-token"] === "admin-test-secret"
+  ) {
+    response.end(JSON.stringify({
+      status: "ready",
+      version: "test-server-4.5.6",
+      herdr: { ready: true },
+      providers: ["codex"],
+    }));
+    return;
+  }
+  response.writeHead(404).end();
 });
 server.listen(0, "127.0.0.1", () => {
   writeFileSync(process.argv[1], String(server.address().port), { mode: 0o600 });
