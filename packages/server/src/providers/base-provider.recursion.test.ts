@@ -1,4 +1,5 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,7 +10,7 @@ import type {
   ProviderExecutionHandle,
   ProviderExecutionRequest,
 } from '../herdr/launcher.js';
-import { providerExecutionIdentity, resolveProxyPort } from './base-provider.js';
+import { resolveProxyPort } from './base-provider.js';
 import { CodexProvider } from './codex-provider.js';
 import { GrokProvider } from './grok-provider.js';
 import { GenericCliProvider } from './generic-cli-provider.js';
@@ -359,11 +360,22 @@ model_provider = "openai"
       stream: false,
       clientKey: 'shared-client',
     };
+    const expectedIdentity = createHash('sha256')
+      .update(JSON.stringify({
+        cliPath: 'codex',
+        workingDirectory: null,
+        extraArgs: ['--profile', 'agent_proxy_upstream'],
+        cliOptions: {
+          enable_session_reuse: true,
+          ephemeral: false,
+        },
+      }))
+      .digest('hex');
     (provider as any).ensureCliSessionManager().set(
       'shared-client',
       'thread-resume',
       'gpt-5.6-sol',
-      providerExecutionIdentity(provider.getEffectiveConfig(options)),
+      expectedIdentity,
     );
 
     await expect(provider.execute(options)).rejects.toThrow('backend should not start');
@@ -372,6 +384,15 @@ model_provider = "openai"
       'resume',
       'thread-resume',
     ]);
+    // Codex resume rejects --profile, so only the recursion check may restore it.
+    expect(backend.starts[0].args).not.toContain('--profile');
+    expect((provider as any).getRecursionCheckArgs(
+      options,
+      backend.starts[0].args,
+    )).toEqual(expect.arrayContaining([
+      '--profile',
+      'agent_proxy_upstream',
+    ]));
   });
 
   it('rejects an active Grok custom model before creating a pane', async () => {
