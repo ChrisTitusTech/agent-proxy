@@ -13,7 +13,8 @@
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/server && npm run build --workspace=packages/dashboard",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --build"
+    "typecheck": "tsc --build",
+    "lint:dead-code": "knip --include files,dependencies,exports --no-progress"
   },
   "engines": {
     "node": ">=24.0.0"
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "concurrently": "^10.0.3",
+    "knip": "^6.29.0",
     "openai": "^6.49.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"

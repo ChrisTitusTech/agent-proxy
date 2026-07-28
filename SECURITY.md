@@ -25,9 +25,15 @@ Include:
 
 ## Security model
 
-agent-proxy executes authenticated provider CLIs as child processes. Operators
-must run it as a dedicated non-root user, protect API and admin tokens, restrict
-network exposure, and use TLS through a trusted reverse proxy.
+`agent-proxy` executes authenticated provider CLIs as the logged-in desktop
+user. This intentionally grants provider tools the same filesystem access as
+that user. Keep the listener on loopback, protect independent API and admin
+tokens, use restrictive chat/tool profiles, and do not treat another local
+process as trusted merely because it shares the same UID.
+
+Built-in provider inference must run through the current user's Herdr session.
+An unavailable Herdr runtime is an execution failure, not permission to launch
+an invisible headless process.
 
 The project does not consider provider quota bypass, account sharing, or
 credential extraction to be supported use cases.

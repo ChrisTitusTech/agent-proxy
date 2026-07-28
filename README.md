@@ -2,9 +2,11 @@
 
 [![CI](https://github.com/ChrisTitusTech/agent-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/ChrisTitusTech/agent-proxy/actions/workflows/ci.yml)
 
-`agent-proxy` is a Linux-first API gateway for installed and authenticated AI
-command-line tools. It exposes familiar OpenAI and Anthropic HTTP endpoints
-while routing requests to Claude Code, Codex, Google Antigravity, or Grok Build.
+`agent-proxy` is a single-user Linux desktop gateway for installed and
+authenticated AI command-line tools. Local applications use familiar OpenAI
+and Anthropic HTTP endpoints while the gateway launches Claude Code, Codex,
+Google Antigravity, or Grok Build as visible agents in the logged-in user's
+Herdr session.
 
 ## Project origin
 
@@ -16,13 +18,14 @@ server and credits the upstream project for that work.
 
 ## Status
 
-Status updated: 2026-07-26
+Status updated: 2026-07-27
 
-Phase 3 is complete for the Codex-only production profile. The Responses
-adapter, unmodified Codex live matrix, pinned Open WebUI matrix, and supported
-topologies pass. Claude and Grok remain implemented and offline-tested, but
-their live tests are explicitly waived and both providers are disabled because
-this installation has no usable subscription login for them.
+Phase 3 protocol and client compatibility is complete for the historical
+Codex-only profile. Phase 4 is ready to replace the superseded machine-wide
+service with a current-user runtime where every built-in provider invocation is
+managed and visible through Herdr. The existing direct headless execution and
+dedicated-service-user packaging remain implementation debt until Phase 4
+passes.
 
 See [SPEC.md](./SPEC.md) for the product contract and
 [ROADMAP.md](./ROADMAP.md) for implementation phases.
@@ -36,11 +39,11 @@ See [SPEC.md](./SPEC.md) for the product contract and
 | Google Antigravity | `agy` | Complete the normal Google login |
 | Grok Build | `grok` | Run `grok login` |
 
-The server invokes these tools as child processes under its service account.
-Provider credentials stay in the CLI-owned service-account state; agent-proxy
-does not return or store provider tokens in its database. Each operator is
-responsible for complying with the terms and usage limits of every configured
-provider.
+The target runtime invokes these tools in the current user's Herdr session.
+Provider credentials remain in that user's normal CLI-owned state;
+`agent-proxy` does not return or store provider tokens in its database. Each
+user is responsible for complying with the terms and usage limits of every
+configured provider.
 
 ## API surface
 
@@ -74,7 +77,8 @@ must be between 1 and 600 seconds, and redirects are rejected.
 - Linux
 - Node.js 24 or newer
 - npm
-- At least one supported CLI installed and authenticated for the service user
+- Herdr installed for the current user
+- At least one supported CLI installed and authenticated for the current user
 - A writable directory for SQLite data and logs
 
 ## Quick start
@@ -104,13 +108,9 @@ For development:
 
 The dashboard development server listens on `127.0.0.1:5300`.
 
-The dashboard's **Provider Login** page checks subscription authentication for
-the service account and starts or refreshes the official Claude, Codex, and
-Grok CLI login flows. It displays only verification URLs and one-time codes;
-provider tokens and account identifiers are never returned by the admin API.
-Desktop-user CLI sessions are separate from the hardened service account, so a
-provider may need one service-account device login even when the desktop CLI
-is already signed in.
+The Phase 4 dashboard will check the current user's provider authentication and
+Herdr readiness. Provider tokens and account identifiers must never be returned
+by the admin API.
 
 ## Containers
 
@@ -129,8 +129,10 @@ overrides:
 - `AGENT_PROXY_DATABASE_PATH`
 - `ADMIN_TOKEN`
 
-Mount an operator-owned `config.yaml`, persistent data directory, supported CLI
-binaries, and the authenticated service-user state required by those CLIs.
+The server container is a legacy build target and cannot satisfy the
+current-user Herdr execution contract. Containerized Open WebUI remains a
+supported API client topology; containerized `agent-proxy` is not a stable
+deployment target.
 
 Set `AGENT_PROXY_UPSTREAM` on the dashboard container to the server URL visible
 from its container network. Its standalone-safe default is
@@ -203,15 +205,16 @@ rules, strong tokens, and an upstream reverse proxy.
 npm run typecheck
 npm test
 npm run build
+npm run lint:dead-code
 bash -n start.sh
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the complete contributor workflow
 and [SECURITY.md](./SECURITY.md) for private vulnerability reporting.
 
-Production systemd installation, upgrades, rollback, backup, restore, and
-uninstall are documented in the
-[Linux service operations runbook](./docs/linux-service.md).
+The former machine-wide systemd runbook is retained only as historical Phase 1
+evidence in [docs/linux-service.md](./docs/linux-service.md). Phase 4 replaces
+it with a user-owned login-session runbook.
 
 ## References
 

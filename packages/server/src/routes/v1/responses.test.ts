@@ -1954,7 +1954,7 @@ describe('Responses cancellation, failures, and fallback', () => {
     });
 
     expect(response.statusCode).toBe(502);
-    expect(response.json().error.message).toContain('Codex service-account login expired');
+    expect(response.json().error.message).toContain('Codex login expired for the current user');
     expect(response.json().error.message).not.toContain('Grok');
   });
 

@@ -63,8 +63,8 @@ export const translations: Record<string, string> = {
     'auth.enterDashboard': 'Open Dashboard',
 
     'providerLogin.title': 'Provider Login',
-    'providerLogin.description': 'Manage subscription authentication owned by the agent-proxy service account.',
-    'providerLogin.securityNote': "The dashboard never reads or displays provider tokens or account identifiers. Login runs through each provider's official CLI and stores credentials only in the service account home.",
+    'providerLogin.description': "Manage the current user's provider subscription authentication.",
+    'providerLogin.securityNote': "The dashboard never reads or displays provider tokens or account identifiers. Login runs through each provider's official CLI and stores credentials only in the current user's normal provider state.",
     'providerLogin.lastChecked': 'Last checked',
     'providerLogin.startLogin': 'Start Login',
     'providerLogin.refreshLogin': 'Refresh Login',

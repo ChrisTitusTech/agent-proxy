@@ -56,7 +56,7 @@ afterEach(async () => {
 });
 
 describe('provider login admin routes', () => {
-  it('returns service-account status and supports a forced refresh', async () => {
+  it('returns current-user status and supports a forced refresh', async () => {
     const { app, manager } = await setup();
 
     const response = await app.inject({

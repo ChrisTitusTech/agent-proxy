@@ -1,6 +1,11 @@
 # Linux service operations
 
-This runbook covers the supported Phase 1 deployment: a versioned release
+> [!WARNING]
+> This is historical Phase 1 documentation. The dedicated system account and
+> machine-wide paths are superseded by the user-owned Herdr runtime specified
+> for Phase 4. Do not use this deployment for new installations.
+
+This runbook covers the former Phase 1 deployment: a versioned release
 under `/opt`, operator configuration under `/etc`, persistent state under
 `/var/lib`, and a dedicated `agent-proxy` systemd account.
 
