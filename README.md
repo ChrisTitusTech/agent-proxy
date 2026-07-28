@@ -73,16 +73,16 @@ network targets by default. Enable `allow_private_network` only when connecting
 to an operator-controlled local service such as Ollama. HTTP provider timeouts
 must be between 1 and 600 seconds, and redirects are rejected.
 
-## Requirements
+## Phase 4 target requirements
 
 - Linux
 - Node.js 24 or newer
 - npm
-- Herdr installed for the current user for the Phase 4 target runtime
+- Herdr installed for the current user
 - At least one supported CLI installed and authenticated for the current user
 - A writable directory for SQLite data and logs
 
-## Quick start
+## Historical Phase 3 quick start
 
 The following commands start the historical Phase 3 headless development
 baseline. They do not implement the target Herdr execution contract and must

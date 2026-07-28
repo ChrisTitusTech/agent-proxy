@@ -36,10 +36,11 @@ production service profile.
     `/v1/messages`; or the operator explicitly approves a live-validation
     waiver when no subscription is available, after offline tests pass and the
     provider is disabled in production.
-  - Validation: `scripts/test-client-compat.sh --client claude --require-live`.
-  - Waived: 2026-07-26. The implementation and offline tests passed; the
-    operator explicitly waived live authentication and inference because no
-    Claude subscription was available.
+  - Prescribed live validation:
+    `scripts/test-client-compat.sh --client claude --require-live`.
+  - Waived without a passing live run: 2026-07-26. The implementation and
+    offline tests passed; the operator explicitly waived live authentication
+    and inference because no Claude subscription was available.
 - [x] P3-03: Validate unmodified Codex as a proxy client.
   - Acceptance: a pinned Codex release uses a custom Responses provider and
     completes text, streaming, cancellation, continuation, isolation, and one
@@ -53,10 +54,11 @@ production service profile.
     and one coding tool loop; or the operator explicitly approves a
     live-validation waiver when subscription login cannot complete, after
     offline tests pass and the provider is disabled in production.
-  - Validation: `scripts/test-client-compat.sh --client grok --require-live`.
-  - Waived: 2026-07-26. Grok `0.2.112` was installed and offline-tested, but
-    the operator explicitly waived live authentication and inference after its
-    xAI device login repeatedly failed to complete.
+  - Prescribed live validation:
+    `scripts/test-client-compat.sh --client grok --require-live`.
+  - Waived without a passing live run: 2026-07-26. Grok `0.2.112` was installed
+    and offline-tested, but the operator explicitly waived live authentication
+    and inference after its xAI device login repeatedly failed to complete.
 - [x] P3-05: Validate subscription authentication as the production service
       account.
   - Acceptance: the dashboard reports and refreshes Claude, Codex, and Grok
