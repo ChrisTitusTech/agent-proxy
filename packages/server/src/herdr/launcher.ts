@@ -757,7 +757,10 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       }
     }
     if (!stateReported) {
-      if (state === 'idle' && await this.closeTrackedPane(paneId)) return;
+      if (state === 'idle') {
+        if (await this.closeTrackedPane(paneId)) return;
+        this.quarantinedSessionKeys.add(sessionKey);
+      }
       throw reportError instanceof Error
         ? reportError
         : new HerdrUnavailableError('Herdr pane state could not be reported.');

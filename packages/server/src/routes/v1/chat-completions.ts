@@ -842,6 +842,11 @@ export function registerChatCompletionsRoute(
             reply.raw.removeListener('close', onClientClose);
           }
 
+          if (abortController.signal.aborted) {
+            await finalizeCancellation();
+            return;
+          }
+
 
           let content = result.content;
           let reasoning = result.reasoning ?? '';

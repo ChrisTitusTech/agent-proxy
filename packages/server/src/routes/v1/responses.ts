@@ -806,6 +806,9 @@ async function executeNonStreaming(
         () => provider.execute(providerOptions(context, route, signal)),
         { signal },
       );
+      if (signal.aborted) {
+        throw new Error('Request cancelled');
+      }
       if (result.finishReason === 'error') {
         throw new Error('Provider reported an unsuccessful completion.');
       }

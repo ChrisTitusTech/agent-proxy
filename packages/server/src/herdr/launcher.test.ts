@@ -288,6 +288,38 @@ describe('Herdr pane lifecycle', () => {
     expect(internals.panes.has('session-a')).toBe(false);
   });
 
+  it('quarantines a pane when terminal reporting and close both fail', async () => {
+    const { internals } = launcherWithCommandFixture();
+    internals.panes.set('session-a', {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now(),
+    });
+    internals.command = async (args: string[]) => {
+      if (
+        (args[0] === 'pane' && args[1] === 'report-agent')
+        || (args[0] === 'tab' && args[1] === 'close')
+      ) {
+        throw new Error('Herdr unavailable');
+      }
+      return { type: 'ok' };
+    };
+
+    await expect(internals.reportPane(
+      'pane-1',
+      'session-a',
+      request(),
+      'idle',
+      'completed',
+    )).rejects.toThrow('Herdr unavailable');
+
+    expect(internals.quarantinedSessionKeys).toContain('session-a');
+    await expect(internals.ensurePane(
+      'session-a',
+      request(),
+    )).rejects.toThrow(/could not be confirmed stopped/);
+  });
+
   it('retains pane tracking when a prune close fails', async () => {
     const { internals } = launcherWithCommandFixture();
     internals.panes.set('session-a', {

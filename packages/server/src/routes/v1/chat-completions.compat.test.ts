@@ -8,6 +8,7 @@ import type {
   ValidationConfig,
 } from '@agent-proxy/shared';
 import type { BaseProvider } from '../../providers/base-provider.js';
+import { logRequest } from '../../middleware/request-logger.js';
 import {
   registerChatCompletionsRoute,
   type ChatCompletionDeps,
@@ -84,6 +85,7 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   await app?.close();
   app = undefined;
+  vi.mocked(logRequest).mockClear();
 });
 
 const tool = {
@@ -392,6 +394,55 @@ describe('Chat Completions tool compatibility', () => {
     await providerReleased;
 
     expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('records cancellation when non-streaming execution returns after disconnect', async () => {
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const execute = vi.fn(async (providerOptions: ExecuteOptions) => {
+      await new Promise<void>((resolve) => {
+        providerOptions.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      releaseProvider();
+      return result;
+    });
+    const deps = createDeps({
+      name: 'fixture',
+      execute,
+    } as unknown as BaseProvider);
+    app = await createApp(deps);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(
+      `http://127.0.0.1:${address.port}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'fixture',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+        signal: controller.signal,
+      },
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    await vi.waitFor(() => {
+      expect(logRequest).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(vi.mocked(logRequest).mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(deps.cache.set).not.toHaveBeenCalled();
   });
 
   it('finalizes a disconnect while the provider is still queued', async () => {

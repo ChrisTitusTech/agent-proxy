@@ -2142,6 +2142,58 @@ describe('Responses cancellation, failures, and fallback', () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it('does not persist success when non-streaming execution returns after disconnect', async () => {
+    let releaseProvider: (() => void) | undefined;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const provider = fakeProvider({
+      execute: async (options) => {
+        await new Promise<void>((resolve) => {
+          options.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        releaseProvider?.();
+        return defaultResult;
+      },
+    });
+    const store = new ResponsesStore();
+    const deps = createDeps({ codex: provider }, undefined, store);
+    const fixture = await createSdkClient(deps);
+    app = fixture.app;
+    const address = app.server.address() as AddressInfo;
+    const controller = new AbortController();
+    const request = fetch(`http://127.0.0.1:${address.port}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-test',
+        input: 'hello',
+      }),
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => {
+      expect(deps.activeRequests.start).toHaveBeenCalledOnce();
+    });
+    controller.abort();
+    await expect(request).rejects.toThrow();
+    await providerReleased;
+
+    const requestLogger = vi.mocked(deps.requestLogger!);
+    await vi.waitFor(() => {
+      expect(requestLogger).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'cancelled',
+        statusCode: 499,
+      }));
+    });
+    expect(requestLogger.mock.calls.some(
+      ([entry]) => entry.status === 'success',
+    )).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
   it.each([false, true])(
     'records a queued disconnect as cancelled (stream=%s)',
     async (stream) => {
