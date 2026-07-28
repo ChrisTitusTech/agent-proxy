@@ -249,7 +249,7 @@ install_release() (
 
 	[[ ! -L "$DATA_DIR/current" ]] || old_current=$(readlink "$DATA_DIR/current")
 	[[ ! -L "$DATA_DIR/previous" ]] || old_previous=$(readlink "$DATA_DIR/previous")
-	# shellcheck disable=SC2329 # Invoked indirectly by the ERR trap below.
+	# shellcheck disable=SC2317,SC2329 # Invoked indirectly by the ERR trap below.
 	rollback_activation() {
 		local status=$?
 		trap - ERR
