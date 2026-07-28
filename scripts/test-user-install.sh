@@ -20,7 +20,10 @@ make_archive() {
 	mkdir -p "$stage/agent-proxy/packages/server/dist/herdr" \
 		"$stage/agent-proxy/packaging/systemd"
 	printf '%s\n' "$release_id" >"$stage/agent-proxy/VERSION"
-	printf 'console.log("%s");\n' "$release_id" >"$stage/agent-proxy/packages/server/dist/index.js"
+	printf '%s\n' \
+		"if (process.argv.length !== 3 || process.argv[2] !== '--check-config') process.exit(2);" \
+		"console.log(\"$release_id\");" \
+		>"$stage/agent-proxy/packages/server/dist/index.js"
 	printf 'process.exit(0);\n' >"$stage/agent-proxy/packages/server/dist/herdr/server.js"
 	printf 'process.exit(0);\n' >"$stage/agent-proxy/packages/server/dist/herdr/worker.js"
 	cp "$PROJECT_DIR/packaging/systemd/"* "$stage/agent-proxy/packaging/systemd/"

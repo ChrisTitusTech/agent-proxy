@@ -6,6 +6,8 @@ export const API_KEY_PREFIX = 'sk-proxy-';
 export const API_KEY_PREFIX_LENGTH = 12;
 
 export const DEFAULT_MAX_CONCURRENT = 10;
+export const DEFAULT_MAX_QUEUE_SIZE = 32;
+export const DEFAULT_MAX_QUEUE_WAIT_MS = 30_000;
 export const DEFAULT_TIMEOUT_MS = 300_000;
 
 export const DEFAULT_CACHE_TTL_SECONDS = 3600;

@@ -218,6 +218,28 @@ model_providers.agent_proxy.base_url = "http://127.0.0.1:18300/v1"
     expect(backend.starts).toHaveLength(0);
   });
 
+  it('rejects quoted keys and inline TOML provider tables', async () => {
+    const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
+    temporaryDirectories.push(codexHome);
+    await writeFile(
+      resolve(codexHome, 'config.toml'),
+      `"model_provider" = "agent_proxy"
+"model_providers" = { "agent_proxy" = { "base_url" = "http://127.0.0.1:18300/v1" } }
+`,
+      'utf8',
+    );
+    process.env.CODEX_HOME = codexHome;
+    const backend = new RecordingBackend();
+    const provider = new CodexProvider(config(), backend, 18300);
+
+    await expect(provider.execute({
+      messages: [{ role: 'user', content: 'test' }],
+      model: 'gpt-5.6-sol',
+      stream: false,
+    })).rejects.toThrow(/routes provider traffic back/);
+    expect(backend.starts).toHaveLength(0);
+  });
+
   it('honors a Codex CLI provider override before creating a pane', async () => {
     const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
     temporaryDirectories.push(codexHome);

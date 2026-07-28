@@ -4,6 +4,10 @@ import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import type { AppConfig, RateLimitConfig, ValidationConfig, ProviderConfigYaml, GenericCliProviderConfig } from '@agent-proxy/shared';
 import { API_KEY_PREFIX, isReasoningEffort } from '@agent-proxy/shared';
+import {
+  DEFAULT_MAX_QUEUE_SIZE,
+  DEFAULT_MAX_QUEUE_WAIT_MS,
+} from '@agent-proxy/shared';
 import { GenericCliProvider } from '../../providers/generic-cli-provider.js';
 import { getDatabase } from '../../db/client.js';
 import { modelMappings, apiKeys, settings } from '../../db/schema.js';
@@ -75,6 +79,30 @@ interface ImportResult {
     providers: number;
   };
   skipped: string[];
+}
+
+export function hasValidGenericQueueLimits(
+  config: Pick<
+    GenericCliProviderConfig,
+    'max_concurrent' | 'max_queue_size' | 'max_queue_wait_ms'
+  >,
+): boolean {
+  return Number.isSafeInteger(config.max_concurrent)
+    && config.max_concurrent >= 1
+    && (
+      config.max_queue_size === undefined
+      || (
+        Number.isSafeInteger(config.max_queue_size)
+        && config.max_queue_size >= 0
+      )
+    )
+    && (
+      config.max_queue_wait_ms === undefined
+      || (
+        Number.isSafeInteger(config.max_queue_wait_ms)
+        && config.max_queue_wait_ms >= 0
+      )
+    );
 }
 
 
@@ -371,8 +399,8 @@ export function registerExportImportRoutes(
           const current = deps.registry.getProviderConfig(name);
           deps.queueManager.updateLimits(
             name,
-            current?.max_queue_size ?? 32,
-            current?.max_queue_wait_ms ?? 30_000,
+            current?.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+            current?.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
           );
         }
 
@@ -408,6 +436,10 @@ export function registerExportImportRoutes(
         }
         if (!genericConfig.cli_path) {
           skipped.push(`generic provider "${name}" (missing cli_path)`);
+          continue;
+        }
+        if (!hasValidGenericQueueLimits(genericConfig)) {
+          skipped.push(`generic provider "${name}" (invalid queue limits)`);
           continue;
         }
 

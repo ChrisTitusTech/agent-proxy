@@ -68,7 +68,25 @@ const request = (clientKey, marker) => ({
   model: 'echo',
   clientKey,
   command: process.execPath,
-  args: ['-e', `setTimeout(() => console.log(${JSON.stringify(marker)}), 250)`],
+  args: [
+    '-e',
+    `const fs = require('node:fs');
+const lock = process.argv[1];
+let descriptor;
+try {
+  descriptor = fs.openSync(lock, 'wx');
+} catch {
+  console.error('overlapping provider execution');
+  process.exit(73);
+}
+setTimeout(() => {
+  console.log(process.argv[2]);
+  fs.closeSync(descriptor);
+  fs.unlinkSync(lock);
+}, 250);`,
+    `${process.env.HERDR_RUNTIME_DIR}/${clientKey.includes('session:shared') ? 'shared' : marker}.lock`,
+    marker,
+  ],
   cwd: process.cwd(),
   env: process.env,
   timeoutMs: 5_000,
@@ -82,7 +100,6 @@ async function run(clientKey, marker) {
   return handle.paneId;
 }
 
-const serialStart = Date.now();
 const [sameA, sameB] = await Promise.all([
   run('key:test|session:shared', 'same-a'),
   run('key:test|session:shared', 'same-b'),
@@ -91,19 +108,16 @@ const tabsAfterStart = command('tab', 'list', '--workspace', workspaceId).tabs;
 if (tabsAfterStart.some((tab) => tab.tab_id === staleTab.tab_id)) {
   throw new Error('A stale API tab from the previous runtime was not pruned.');
 }
-const serialElapsed = Date.now() - serialStart;
-if (sameA !== sameB || serialElapsed < 450) {
-  throw new Error(`Shared session was not serialized: ${JSON.stringify({ sameA, sameB, serialElapsed })}`);
+if (sameA !== sameB) {
+  throw new Error(`Shared session was not serialized: ${JSON.stringify({ sameA, sameB })}`);
 }
 
-const parallelStart = Date.now();
 const [isolatedA, isolatedB] = await Promise.all([
   run('key:test|session:isolated-a', 'isolated-a'),
   run('key:test|session:isolated-b', 'isolated-b'),
 ]);
-const parallelElapsed = Date.now() - parallelStart;
-if (isolatedA === isolatedB || parallelElapsed >= serialElapsed) {
-  throw new Error(`Distinct sessions were not isolated: ${JSON.stringify({ isolatedA, isolatedB, parallelElapsed })}`);
+if (isolatedA === isolatedB) {
+  throw new Error(`Distinct sessions were not isolated: ${JSON.stringify({ isolatedA, isolatedB })}`);
 }
 
 const shutdownRequest = request('key:test|session:shutdown', 'never');

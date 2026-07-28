@@ -65,6 +65,10 @@ function start(socket: Socket, command: Extract<HerdrWorkerCommand, { type: 'sta
   });
   child.on('error', (error) => {
     send(socket, { type: 'error', message: error.message });
+    if (child?.pid === undefined) {
+      process.exitCode = 1;
+      socket.end();
+    }
   });
   child.on('close', (code, signal) => {
     if (killTimer) clearTimeout(killTimer);

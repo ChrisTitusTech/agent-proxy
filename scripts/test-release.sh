@@ -69,6 +69,7 @@ export XDG_DATA_HOME="$TEST_DIR/data"
 export XDG_STATE_HOME="$TEST_DIR/state"
 export XDG_RUNTIME_DIR="$TEST_DIR/runtime"
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$TEST_DIR/bin"
+chmod 0700 "$XDG_RUNTIME_DIR"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_DIR/bin/herdr"
 chmod 0700 "$TEST_DIR/bin/herdr"
 export HERDR_WRAPPER_LOG="$TEST_DIR/herdr-wrapper.log"
@@ -78,8 +79,14 @@ printf '%s\n' '#!/usr/bin/env bash' \
 chmod 0700 "$TEST_DIR/bin/configured-herdr"
 export PATH="$TEST_DIR/bin:$PATH"
 scripts/install.sh install --no-systemd --archive "$ARCHIVE"
+grep -q 'binary: "herdr"' "$XDG_CONFIG_HOME/agent-proxy/config.yaml" || {
+	printf 'Installed config.yaml no longer declares binary: "herdr".\n' >&2
+	exit 1
+}
 sed -i \
 	"s|binary: \"herdr\"|binary: \"$TEST_DIR/bin/configured-herdr\"|" \
+	"$XDG_CONFIG_HOME/agent-proxy/config.yaml"
+grep -Fq "binary: \"$TEST_DIR/bin/configured-herdr\"" \
 	"$XDG_CONFIG_HOME/agent-proxy/config.yaml"
 
 export CONFIG_PATH="$XDG_CONFIG_HOME/agent-proxy/config.yaml"

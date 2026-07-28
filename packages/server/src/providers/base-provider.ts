@@ -20,6 +20,7 @@ import type {
   StreamParser,
 } from '@agent-proxy/shared';
 import { streamChunkToEvents } from '@agent-proxy/shared';
+import { parse as parseToml } from 'smol-toml';
 import { getParserForProvider } from '../utils/stream-transformer.js';
 import { getProviderEnvironment } from '../utils/provider-env.js';
 import {
@@ -381,23 +382,14 @@ async function assertNoProxyRecursion(
     return;
   }
   const port = String(proxyPort);
-  const activeConfig = config
-    .split(/\r?\n/)
-    .map(stripTomlComment)
-    .join('\n');
   const baseUrls = provider === 'codex'
-    ? activeCodexBaseUrls(activeConfig, args)
-    : activeGrokBaseUrls(activeConfig, args);
+    ? activeCodexBaseUrls(config, args)
+    : activeGrokBaseUrls(config, args);
   for (const baseUrl of baseUrls) {
-    try {
-      if (isProxyLoopbackUrl(baseUrl, proxyPort)) {
-        throw new ProviderRecursionError(
-          `${provider} configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof ProviderRecursionError) throw error;
-      // Ignore unrelated malformed provider URLs; the provider reports those.
+    if (isProxyLoopbackUrl(baseUrl, proxyPort)) {
+      throw new ProviderRecursionError(
+        `${provider} configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
+      );
     }
   }
 }
@@ -421,55 +413,46 @@ function isProxyLoopbackUrl(value: string, proxyPort: number): boolean {
 }
 
 function activeCodexBaseUrls(config: string, args: string[]): string[] {
-  const sections = tomlSections(config);
+  const parsed = parseTomlConfig(config);
   if (args.includes('--oss') || optionValue(args, '', '--local-provider')) {
     return [];
   }
   const profile = optionValue(args, '-p', '--profile');
   const activeProvider = configOverride(args, 'model_provider')
-    ?? (profile ? sections.get(`profiles.${profile}`)?.get('model_provider') : undefined)
-    ?? sections.get('')?.get('model_provider');
+    ?? (profile ? nestedString(parsed, ['profiles', profile, 'model_provider']) : undefined)
+    ?? nestedString(parsed, ['model_provider']);
   if (!activeProvider) return [];
-  const baseUrl = sections.get(`model_providers.${activeProvider}`)?.get('base_url');
+  const baseUrl = nestedString(parsed, ['model_providers', activeProvider, 'base_url']);
   return baseUrl ? [baseUrl] : [];
 }
 
 function activeGrokBaseUrls(config: string, args: string[]): string[] {
-  const sections = tomlSections(config);
+  const parsed = parseTomlConfig(config);
   const selectedModel = optionValue(args, '-m', '--model')
-    ?? sections.get('models')?.get('default');
+    ?? nestedString(parsed, ['models', 'default']);
   if (!selectedModel) return [];
-  const baseUrl = sections.get(`model.${selectedModel}`)?.get('base_url');
+  const baseUrl = nestedString(parsed, ['model', selectedModel, 'base_url']);
   return baseUrl ? [baseUrl] : [];
 }
 
-function tomlSections(config: string): Map<string, Map<string, string>> {
-  const sections = new Map<string, Map<string, string>>([['', new Map()]]);
-  let currentName = '';
-  let current = sections.get('')!;
-  for (const rawLine of config.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const section = /^\[([A-Za-z0-9_.-]+)\]$/.exec(line);
-    if (section) {
-      currentName = section[1];
-      current = sections.get(currentName) ?? new Map<string, string>();
-      sections.set(currentName, current);
-      continue;
-    }
-    const assignment = /^([A-Za-z0-9_.-]+)\s*=\s*(["'])(.*?)\2$/.exec(line);
-    if (!assignment) continue;
-    const keyPath = assignment[1].split('.');
-    const key = keyPath.pop()!;
-    if (keyPath.length === 0) {
-      current.set(key, assignment[3]);
-      continue;
-    }
-    const targetName = [...(currentName ? [currentName] : []), ...keyPath].join('.');
-    const target = sections.get(targetName) ?? new Map<string, string>();
-    sections.set(targetName, target);
-    target.set(key, assignment[3]);
+function parseTomlConfig(config: string): Record<string, unknown> {
+  try {
+    return parseToml(config) as Record<string, unknown>;
+  } catch {
+    return {};
   }
-  return sections;
+}
+
+function nestedString(
+  root: Record<string, unknown>,
+  path: string[],
+): string | undefined {
+  let value: unknown = root;
+  for (const segment of path) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    value = (value as Record<string, unknown>)[segment];
+  }
+  return typeof value === 'string' ? value : undefined;
 }
 
 function configOverride(args: string[], key: string): string | undefined {
@@ -497,32 +480,6 @@ function optionValue(args: string[], shortName: string, longName: string): strin
   }
   return undefined;
 }
-
-function stripTomlComment(line: string): string {
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-  for (let index = 0; index < line.length; index++) {
-    const character = line[index];
-    if (quote === '"') {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === '"') quote = null;
-      continue;
-    }
-    if (quote === "'") {
-      if (character === "'") quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === '#') {
-      return line.slice(0, index);
-    }
-  }
-  return line;
-}
-
-
 
 export function gracefulKill(child: ChildProcess, timeoutMs = 3000): void {
   void terminateChildProcess(child, timeoutMs);

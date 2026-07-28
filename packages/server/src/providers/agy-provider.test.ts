@@ -54,7 +54,7 @@ function fakeBackend(output: string, error = '', exitCode = 0): ProviderExecutio
 }
 
 describe('AgyProvider.buildArgs', () => {
-  it('executes the Antigravity provider', () => {
+  it('passes the prompt after -p', () => {
     const provider = new AgyProvider(baseConfig());
     const args = (provider as unknown as { buildArgs(opts: ExecuteOptions): string[] }).buildArgs(
       baseOptions({ messages: [{ role: 'user', content: 'ping' }] }),
@@ -63,7 +63,7 @@ describe('AgyProvider.buildArgs', () => {
     expect(args[1]).toBe('ping');
   });
 
-  it('executes the Antigravity provider', () => {
+  it('omits the default Antigravity model flag', () => {
     const provider = new AgyProvider(baseConfig());
     const args = (provider as unknown as { buildArgs(opts: ExecuteOptions): string[] }).buildArgs(
       baseOptions({ model: 'antigravity' }),
@@ -71,7 +71,7 @@ describe('AgyProvider.buildArgs', () => {
     expect(args).not.toContain('--model');
   });
 
-  it('executes the Antigravity provider', () => {
+  it('passes an explicit non-default model before the prompt', () => {
     const provider = new AgyProvider(baseConfig());
     const args = (provider as unknown as { buildArgs(opts: ExecuteOptions): string[] }).buildArgs(
       baseOptions({ model: 'Gemini 3.5 Flash (Low)' }),
@@ -83,7 +83,7 @@ describe('AgyProvider.buildArgs', () => {
     expect(modelIdx).toBeLessThan(args.indexOf('-p'));
   });
 
-  it('executes the Antigravity provider', () => {
+  it('ignores a blank model override', () => {
     const provider = new AgyProvider(baseConfig());
     const args = (provider as unknown as { buildArgs(opts: ExecuteOptions): string[] }).buildArgs(
       baseOptions({ model: '   ' }),
@@ -91,7 +91,7 @@ describe('AgyProvider.buildArgs', () => {
     expect(args).not.toContain('--model');
   });
 
-  it('executes the Antigravity provider', () => {
+  it('does not duplicate a configured model argument', () => {
     const provider = new AgyProvider(baseConfig({
       extra_args: ['--model', 'Gemini 3.1 Pro (High)'],
     }));
@@ -103,7 +103,7 @@ describe('AgyProvider.buildArgs', () => {
     expect(args).not.toContain('Gemini 3.5 Flash (Low)');
   });
 
-  it('executes the Antigravity provider', () => {
+  it('preserves configured extra arguments', () => {
     const provider = new AgyProvider(baseConfig({
       extra_args: ['--dangerously-skip-permissions', '--sandbox'],
     }));
@@ -113,7 +113,7 @@ describe('AgyProvider.buildArgs', () => {
     expect(args).toEqual(['--dangerously-skip-permissions', '--sandbox', '-p', 'hello']);
   });
 
-  it('executes the Antigravity provider', () => {
+  it('rejects an oversized prompt', () => {
     const provider = new AgyProvider(baseConfig());
     const huge = 'x'.repeat(800_001);
     expect(() =>
@@ -124,26 +124,26 @@ describe('AgyProvider.buildArgs', () => {
   });
 });
 
-describe('executes the Antigravity provider', () => {
-  it('executes the Antigravity provider', async () => {
+describe('AgyProvider.execute', () => {
+  it('returns trimmed provider output', async () => {
     const provider = new AgyProvider(baseConfig(), fakeBackend('  Hello from agy.  \n'));
     const result = await provider.execute(baseOptions());
     expect(result.content).toBe('Hello from agy.');
     expect(result.finishReason).toBe('stop');
   });
 
-  it('executes the Antigravity provider', async () => {
+  it('strips ANSI formatting', async () => {
     const provider = new AgyProvider(baseConfig(), fakeBackend('\x1B[31mred\x1B[0m text'));
     const result = await provider.execute(baseOptions());
     expect(result.content).toBe('red text');
   });
 
-  it('executes the Antigravity provider', async () => {
+  it('reports provider process failures', async () => {
     const provider = new AgyProvider(baseConfig(), fakeBackend('', 'auth required', 1));
     await expect(provider.execute(baseOptions())).rejects.toThrow(/auth required/);
   });
 
-  it('executes the Antigravity provider', async () => {
+  it('estimates token usage', async () => {
     const provider = new AgyProvider(baseConfig(), fakeBackend('1234567890'));
     const result = await provider.execute(baseOptions());
     // 10 chars → ceil(10/4) = 3 completion tokens
@@ -152,8 +152,8 @@ describe('executes the Antigravity provider', () => {
   });
 });
 
-describe('executes the Antigravity provider', () => {
-  it('executes the Antigravity provider', async () => {
+describe('AgyProvider.executeStream', () => {
+  it('emits text, usage, and completion events', async () => {
     const provider = new AgyProvider(baseConfig(), fakeBackend('response body'));
     const events: ProviderEvent[] = [];
     for await (const ev of provider.executeStream(baseOptions({ stream: true }))) {
@@ -165,7 +165,7 @@ describe('executes the Antigravity provider', () => {
     expect((events[2] as { type: 'done'; finishReason: string }).finishReason).toBe('stop');
   });
 
-  it('executes the Antigravity provider', async () => {
+  it('emits usage and completion for empty output', async () => {
     const provider = new AgyProvider(baseConfig(), fakeBackend(''));
     const events: ProviderEvent[] = [];
     for await (const ev of provider.executeStream(baseOptions({ stream: true }))) {

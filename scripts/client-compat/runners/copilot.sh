@@ -165,7 +165,11 @@ process.stdin.on("end", () => {
 	wait "$cancel_pid"
 	cancel_status=$?
 	set -e
-	[[ "$cancel_status" -eq 124 || "$cancel_status" -eq 137 ]]
+	[[ "$cancel_status" -eq 124 || "$cancel_status" -eq 137 ]] || {
+		printf 'Copilot cancellation probe exited with unexpected status %s.\n' \
+			"$cancel_status" >&2
+		exit 1
+	}
 	[[ "$cancel_started" == true ]] || {
 		printf 'Copilot cancellation probe did not start provider work.\n' >&2
 		exit 1

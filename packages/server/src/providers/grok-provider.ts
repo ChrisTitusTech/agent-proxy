@@ -95,7 +95,7 @@ export class GrokProvider extends BaseProvider {
     const prepared = prepareExternalToolRequest(options);
     const effectiveOptions = prepared?.options ?? options;
     const args = this.buildArgs({ ...effectiveOptions, stream: false });
-    const { stdout, stderr, exitCode } = await this.runProcess(args, options);
+    const { stdout, stderr, exitCode } = await this.runProcess(args, effectiveOptions);
 
     if (exitCode !== 0) {
       options.onDebug?.({ cliArgs: [this.config.cli_path, ...args], stdout, stderr });

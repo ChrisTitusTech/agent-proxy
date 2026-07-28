@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, like } from 'drizzle-orm';
 import type { GenericCliProviderConfig } from '@agent-proxy/shared';
+import {
+  DEFAULT_MAX_QUEUE_SIZE,
+  DEFAULT_MAX_QUEUE_WAIT_MS,
+} from '@agent-proxy/shared';
 import { getDatabase } from '../../db/client.js';
 import { settings, providerHealth } from '../../db/schema.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
@@ -176,8 +180,8 @@ export function registerGenericProviderRoutes(
         cli_path: configData.cli_path,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 2,
-        max_queue_size: configData.max_queue_size ?? 32,
-        max_queue_wait_ms: configData.max_queue_wait_ms ?? 30_000,
+        max_queue_size: configData.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+        max_queue_wait_ms: configData.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
         timeout_ms: configData.timeout_ms ?? 120000,
         extra_args: configData.extra_args ?? [],
         prompt_mode: configData.prompt_mode ?? 'stdin',
@@ -292,8 +296,8 @@ export function registerGenericProviderRoutes(
       ) {
         deps.queueManager.updateLimits(
           name,
-          updated.max_queue_size ?? 32,
-          updated.max_queue_wait_ms ?? 30_000,
+          updated.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+          updated.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
         );
       }
 
@@ -369,8 +373,8 @@ export function registerGenericProviderRoutes(
         cli_path: configData.cli_path,
         default_model: configData.default_model ?? '',
         max_concurrent: configData.max_concurrent ?? 10,
-        max_queue_size: configData.max_queue_size ?? 32,
-        max_queue_wait_ms: configData.max_queue_wait_ms ?? 30_000,
+        max_queue_size: configData.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+        max_queue_wait_ms: configData.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
         timeout_ms: configData.timeout_ms ?? 300000,
         extra_args: configData.extra_args ?? [],
         prompt_mode: configData.prompt_mode ?? 'stdin',

@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import type { ProviderConfigYaml } from '@agent-proxy/shared';
+import {
+  DEFAULT_MAX_QUEUE_SIZE,
+  DEFAULT_MAX_QUEUE_WAIT_MS,
+} from '@agent-proxy/shared';
 import { getDatabase } from '../../db/client.js';
 import { providerHealth, settings } from '../../db/schema.js';
 
@@ -239,8 +243,8 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
         const current = deps.registry.getProviderConfig(name);
         deps.queueManager.updateLimits(
           name,
-          current?.max_queue_size ?? 32,
-          current?.max_queue_wait_ms ?? 30_000,
+          current?.max_queue_size ?? DEFAULT_MAX_QUEUE_SIZE,
+          current?.max_queue_wait_ms ?? DEFAULT_MAX_QUEUE_WAIT_MS,
         );
       }
 

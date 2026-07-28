@@ -97,6 +97,10 @@ interface SessionKeyRecord {
 
 class HerdrUnavailableError extends Error {
   readonly code = 'herdr_unavailable';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+  }
 }
 
 export class HerdrLauncher implements ProviderExecutionBackend {
@@ -110,12 +114,15 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private workspaceId: string | null = null;
   private staleTabsPruned = false;
   private shuttingDown = false;
+  private readinessCache?: { value: HerdrReadiness; expiresAt: number };
 
   constructor(config: HerdrLauncherConfig) {
     this.config = config;
   }
 
   async readiness(): Promise<HerdrReadiness> {
+    const cached = this.readinessCache;
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
     try {
       const { stdout } = await execFileAsync(this.config.binary, ['status', '--json'], {
         timeout: this.config.commandTimeoutMs,
@@ -134,11 +141,13 @@ export class HerdrLauncher implements ProviderExecutionBackend {
           message: 'Herdr client and server protocols are incompatible.',
         };
       }
-      return {
+      const ready = {
         ready: true,
         version: server.version,
         protocol: server.protocol,
       };
+      this.readinessCache = { value: ready, expiresAt: Date.now() + 1_000 };
+      return ready;
     } catch {
       return {
         ready: false,
@@ -523,6 +532,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
             stderr.write(Buffer.from(event.data, 'base64'));
           } else if (event.type === 'error') {
             finish(undefined, new Error(`Herdr worker failed: ${event.message}`));
+            return;
           } else if (event.type === 'exit') {
             if (cancellationError) finish(undefined, cancellationError);
             else {
@@ -533,6 +543,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
                 terminalState: event.code === 0 ? 'completed' : 'failed',
               });
             }
+            return;
           }
         }
       });
@@ -611,6 +622,11 @@ export class HerdrLauncher implements ProviderExecutionBackend {
         stateReported = true;
       } catch (error) {
         reportError = error;
+        if (attempt < 2) {
+          await new Promise((resolveDelay) => {
+            setTimeout(resolveDelay, 100 * (attempt + 1));
+          });
+        }
       }
     }
     if (!stateReported) {
@@ -633,21 +649,26 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   }
 
   private async closePaneAfterReportFailure(paneId: string): Promise<boolean> {
-    const entry = Array.from(this.panes.entries())
-      .find(([, pane]) => pane.paneId === paneId);
-    if (!entry) return false;
-    const [sessionKey, pane] = entry;
+    const release = await this.mutex.acquire('__pane_capacity__');
     try {
-      await this.command(['tab', 'close', pane.tabId]);
-    } catch {
-      return false;
+      const entry = Array.from(this.panes.entries())
+        .find(([, pane]) => pane.paneId === paneId);
+      if (!entry) return false;
+      const [sessionKey, pane] = entry;
+      try {
+        await this.command(['tab', 'close', pane.tabId]);
+      } catch {
+        return false;
+      }
+      this.panes.delete(sessionKey);
+      this.reservedPaneIds.delete(paneId);
+      for (const [identity, record] of this.sessionKeys) {
+        if (record.key === sessionKey) this.sessionKeys.delete(identity);
+      }
+      return true;
+    } finally {
+      release();
     }
-    this.panes.delete(sessionKey);
-    this.reservedPaneIds.delete(paneId);
-    for (const [identity, record] of this.sessionKeys) {
-      if (record.key === sessionKey) this.sessionKeys.delete(identity);
-    }
-    return true;
   }
 
   private async command<T = { type: string }>(args: string[]): Promise<T> {
@@ -659,9 +680,11 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       if (!stdout.trim()) return {} as T;
       const envelope = JSON.parse(stdout) as HerdrEnvelope<T>;
       return envelope.result;
-    } catch {
+    } catch (error) {
+      this.readinessCache = undefined;
       throw new HerdrUnavailableError(
         `Herdr command failed (${args.slice(0, 2).join(' ')}).`,
+        { cause: error },
       );
     }
   }
