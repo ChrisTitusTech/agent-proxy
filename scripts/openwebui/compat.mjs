@@ -85,7 +85,7 @@ const auth = await jsonRequest('/api/v1/auths/signup', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({
-    name: 'Phase 3 compatibility',
+    name: 'agent-proxy compatibility',
     email: `phase3-${unique}@example.invalid`,
     password: `Phase3-${unique}-local-only`,
   }),

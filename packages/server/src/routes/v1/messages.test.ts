@@ -619,7 +619,7 @@ describe('Anthropic Messages provider errors', () => {
       type: 'error',
       error: {
         type: 'authentication_error',
-        message: 'Fixture service-account login expired. Refresh it from Dashboard > Provider Login.',
+        message: "Fixture login expired. Refresh the logged-in user's provider session.",
       },
     });
     expect(response.body).not.toContain('person@example.test');

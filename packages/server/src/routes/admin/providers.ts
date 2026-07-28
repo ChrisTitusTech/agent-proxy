@@ -24,11 +24,9 @@ const BUILTIN_RUNTIME_MUTABLE_FIELDS = new Set([
   'enabled',
   'default_model',
   'max_concurrent',
+  'max_queue_size',
+  'max_queue_wait_ms',
   'timeout_ms',
-  'mode',
-  'sdk_options',
-  'channel_options',
-  'app_server_options',
   'cli_options',
 ]);
 
@@ -89,7 +87,7 @@ export function validateRuntimeProviderConfig(
 }
 
 
-export async function loadProviderConfigFromDb(
+async function loadProviderConfigFromDb(
   name: string,
 ): Promise<Partial<ProviderConfigYaml> | null> {
   const db = getDatabase();
@@ -132,15 +130,6 @@ export function mergeProviderConfigPartials(
   return {
     ...current,
     ...partial,
-    sdk_options: partial.sdk_options
-      ? { ...current.sdk_options, ...partial.sdk_options }
-      : current.sdk_options,
-    channel_options: partial.channel_options
-      ? { ...current.channel_options, ...partial.channel_options }
-      : current.channel_options,
-    app_server_options: partial.app_server_options
-      ? { ...current.app_server_options, ...partial.app_server_options }
-      : current.app_server_options,
     cli_options: partial.cli_options
       ? { ...current.cli_options, ...partial.cli_options }
       : current.cli_options,
@@ -242,6 +231,17 @@ export function registerProvidersRoutes(app: FastifyInstance, deps: ProviderDeps
 
       if (partial.max_concurrent !== undefined) {
         deps.queueManager.updateConcurrency(name, partial.max_concurrent);
+      }
+      if (
+        partial.max_queue_size !== undefined
+        || partial.max_queue_wait_ms !== undefined
+      ) {
+        const current = deps.registry.getProviderConfig(name);
+        deps.queueManager.updateLimits(
+          name,
+          current?.max_queue_size ?? 32,
+          current?.max_queue_wait_ms ?? 30_000,
+        );
       }
 
 

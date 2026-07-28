@@ -410,7 +410,12 @@ export function registerExportImportRoutes(
           deps.registry.unregister(name);
         }
         if (genericConfig.enabled !== false) {
-          const provider = new GenericCliProvider(name, genericConfig);
+          const provider = new GenericCliProvider(
+            name,
+            genericConfig,
+            deps.registry.executionBackend,
+            deps.registry.proxyPort,
+          );
           deps.registry.register(provider);
           deps.queueManager.addQueue(name, genericConfig.max_concurrent);
           deps.healthChecker.checkProvider(name).catch(() => {});

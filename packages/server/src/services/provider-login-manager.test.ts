@@ -51,7 +51,7 @@ describe('provider login error classification', () => {
 });
 
 describe('Grok credential readiness', () => {
-  it('requires an API key or the headless service credential file', () => {
+  it('requires an API key or the current-user credential file', () => {
     expect(hasGrokCredential({ HOME: '/service' }, () => false)).toBe(false);
     expect(hasGrokCredential({ HOME: '/service', XAI_API_KEY: 'configured' }, () => false))
       .toBe(true);

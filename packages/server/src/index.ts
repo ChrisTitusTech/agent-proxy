@@ -38,7 +38,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const drainTimeoutMs = shutdownTimeoutMs();
 
   if (argv.includes('--check')) {
-    const enabledProviders = Object.keys(preflight.executables);
+    const enabledProviders = Object.keys(preflight.executables)
+      .filter((name) => name !== 'herdr');
     console.log(
       `Preflight passed. State directory: ${preflight.stateDirectory}. Enabled providers: ${enabledProviders.join(', ') || 'none'}.`,
     );

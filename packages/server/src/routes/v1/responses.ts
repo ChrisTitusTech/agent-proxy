@@ -624,6 +624,7 @@ function providerOptions(
     clientKey: context.body.previous_response_id
       ? undefined
       : context.clientKey,
+    requestId: context.responseId,
     reasoningEffort: context.body.reasoning?.effort as ReasoningEffort | undefined
       ?? route.reasoningEffort,
     providerOverrides: route.providerOverrides,
@@ -858,7 +859,10 @@ async function executeNonStreaming(
         sanitizeProviderError(lastError.message),
       );
       await deps.healthChecker.onRequestFailure(route.provider);
-      if (isCancellationError(lastError)) break;
+      if (!classifyProviderError(
+        lastError,
+        route.provider,
+      ).fallbackEligible) break;
     } finally {
       deps.activeRequests.finish(context.responseId);
     }

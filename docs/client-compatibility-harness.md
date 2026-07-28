@@ -1,10 +1,10 @@
 # Live client compatibility harness
 
-`scripts/test-client-compat.sh` is the Phase 3 entrypoint for sanitized
-acceptance tests against unmodified Claude Code, Codex, and Grok Build clients.
-The harness owns isolation, prerequisite handling, evidence capture, and
-redaction. The included runner scripts implement the client-specific behavior
-validated by P3-02, P3-03, and P3-04.
+`scripts/test-client-compat.sh` is the sanitized acceptance entrypoint for
+unmodified Claude Code, Codex, GitHub Copilot CLI, and Grok Build clients. The
+harness owns isolation, prerequisite handling, evidence capture, and redaction.
+The current-user Phase 4 release gate requires the Codex and Copilot runners;
+Claude and Grok require an authenticated subscription before required-live use.
 
 ## Usage
 

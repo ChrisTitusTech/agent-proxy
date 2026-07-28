@@ -68,7 +68,12 @@ export async function loadGenericProviders(
 
     try {
 
-      const provider = new GenericCliProvider(name, config);
+      const provider = new GenericCliProvider(
+        name,
+        config,
+        registry.executionBackend,
+        registry.proxyPort,
+      );
       registry.register(provider);
 
 

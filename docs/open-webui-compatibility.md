@@ -1,6 +1,6 @@
 # Open WebUI compatibility
 
-Phase 3 pins Open WebUI `v0.9.5`. The compatibility scripts use a disposable
+Phase 4 pins Open WebUI `v0.9.5`. The compatibility scripts use a disposable
 local Open WebUI account and delete their containers and native data when the
 test completes. They never publish agent-proxy or Open WebUI beyond
 `127.0.0.1`.
@@ -49,17 +49,18 @@ Open WebUI `v0.9.5` accepts its browser Stop action and cancels the WebUI chat
 task, but its OpenAI relay does not consistently close the upstream HTTP
 stream. When that happens, agent-proxy safely detaches the browser and keeps
 the provider process tracked until it exits or reaches the configured provider
-timeout. The Phase 3 fixture reports whether cancellation terminated provider
+timeout. Keep that provider timeout finite; the live acceptance profile uses
+30 seconds. The fixture reports whether cancellation terminated provider
 work or used this bounded-detach fallback. Direct client disconnects from
 agent-proxy still abort the provider process.
 
 ## Optional capabilities
 
-agent-proxy Phase 3 supplies chat, Responses, and Anthropic Messages
+agent-proxy supplies chat, Responses, and Anthropic Messages
 compatibility. Open WebUI features outside that boundary need separate
 backends:
 
-| Capability | Phase 3 behavior |
+| Capability | Current behavior |
 | --- | --- |
 | Embeddings and RAG | Configure a dedicated embedding provider. Do not route embedding requests to Codex or Grok aliases. |
 | Speech-to-text and text-to-speech | Configure Open WebUI audio engines separately or leave them disabled. |

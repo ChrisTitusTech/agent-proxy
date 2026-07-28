@@ -2,13 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import {
-  isClaudePermissionMode,
-  type AppConfig,
-  type ProviderConfigYaml,
-  type ProviderOverrides,
-  type ReasoningEffort,
-} from '@agent-proxy/shared';
+import type { AppConfig, ProviderConfigYaml, ProviderOverrides, ReasoningEffort } from '@agent-proxy/shared';
 import { rawConfigSchema, type RawProviderConfig } from './schema.js';
 import {
   DEFAULT_SERVER_PORT,
@@ -46,11 +40,7 @@ function normalizeProviderOverrides(value: unknown, provider?: string): Provider
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const out: ProviderOverrides = {};
-  const isClaude = provider === 'claude';
   const isCodex = provider === 'codex';
-  if (isClaude && typeof raw.mode === 'string' && ['cli', 'sdk', 'channel-worker'].includes(raw.mode)) {
-    out.mode = raw.mode as ProviderOverrides['mode'];
-  }
   if (Array.isArray(raw.extra_args)) {
     out.extra_args = raw.extra_args.filter((a): a is string => typeof a === 'string');
   }
@@ -67,36 +57,6 @@ function normalizeProviderOverrides(value: unknown, provider?: string): Provider
     if (typeof rawCli.enable_session_reuse === 'boolean') cli.enable_session_reuse = rawCli.enable_session_reuse;
     if (typeof rawCli.session_ttl_ms === 'number' && rawCli.session_ttl_ms > 0) cli.session_ttl_ms = rawCli.session_ttl_ms;
     if (Object.keys(cli).length > 0) out.cli_options = cli;
-  }
-  if (isClaude && raw.sdk_options && typeof raw.sdk_options === 'object' && !Array.isArray(raw.sdk_options)) {
-    const rawSdk = raw.sdk_options as Record<string, unknown>;
-    const sdk: NonNullable<ProviderOverrides['sdk_options']> = {};
-    if (typeof rawSdk.max_turns === 'number' && rawSdk.max_turns > 0) sdk.max_turns = rawSdk.max_turns;
-    if (isClaudePermissionMode(rawSdk.permission_mode)) {
-      sdk.permission_mode = rawSdk.permission_mode;
-    }
-    if (Array.isArray(rawSdk.allowed_tools)) sdk.allowed_tools = rawSdk.allowed_tools.filter((a): a is string => typeof a === 'string');
-    if (Array.isArray(rawSdk.disallowed_tools)) sdk.disallowed_tools = rawSdk.disallowed_tools.filter((a): a is string => typeof a === 'string');
-    if (typeof rawSdk.max_budget_usd === 'number' && rawSdk.max_budget_usd > 0) sdk.max_budget_usd = rawSdk.max_budget_usd;
-    if (typeof rawSdk.session_ttl_ms === 'number' && rawSdk.session_ttl_ms > 0) sdk.session_ttl_ms = rawSdk.session_ttl_ms;
-    if (typeof rawSdk.enable_session_reuse === 'boolean') sdk.enable_session_reuse = rawSdk.enable_session_reuse;
-    if (typeof rawSdk.persist_session === 'boolean') sdk.persist_session = rawSdk.persist_session;
-    if (Object.keys(sdk).length > 0) out.sdk_options = sdk;
-  }
-  if (isClaude && raw.channel_options && typeof raw.channel_options === 'object' && !Array.isArray(raw.channel_options)) {
-    const rawChannel = raw.channel_options as Record<string, unknown>;
-    const channel: NonNullable<ProviderOverrides['channel_options']> = {};
-    if (typeof rawChannel.endpoint_url === 'string' && rawChannel.endpoint_url.trim()) channel.endpoint_url = rawChannel.endpoint_url;
-    if (typeof rawChannel.api_key === 'string' && rawChannel.api_key.trim()) channel.api_key = rawChannel.api_key;
-    if (typeof rawChannel.poll_interval_ms === 'number' && rawChannel.poll_interval_ms > 0) channel.poll_interval_ms = rawChannel.poll_interval_ms;
-    if (typeof rawChannel.result_timeout_ms === 'number' && rawChannel.result_timeout_ms > 0) channel.result_timeout_ms = rawChannel.result_timeout_ms;
-    if (rawChannel.response_schema && typeof rawChannel.response_schema === 'object' && !Array.isArray(rawChannel.response_schema)) {
-      channel.response_schema = rawChannel.response_schema as Record<string, unknown>;
-    }
-    if (typeof rawChannel.isolation === 'string' && ['external', 'one-job-per-worker', 'shared-session'].includes(rawChannel.isolation)) {
-      channel.isolation = rawChannel.isolation as NonNullable<ProviderOverrides['channel_options']>['isolation'];
-    }
-    if (Object.keys(channel).length > 0) out.channel_options = channel;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -128,6 +88,8 @@ function defaultProviderConfig(
     cli_path: cliPath,
     default_model: defaultModel,
     max_concurrent: maxConcurrent,
+    max_queue_size: 32,
+    max_queue_wait_ms: 30_000,
     timeout_ms: DEFAULT_TIMEOUT_MS,
     extra_args: [],
   };
@@ -168,6 +130,7 @@ export function loadConfig(configPath?: string): AppConfig {
     server,
     dashboard,
     database,
+    herdr,
     auth,
     providers,
     rate_limits: rateLimits,
@@ -222,6 +185,26 @@ export function loadConfig(configPath?: string): AppConfig {
         dirname(resolvedPath),
         process.env.AGENT_PROXY_DATABASE_PATH ?? database?.path ?? './data/agent-proxy.db',
       ),
+    },
+    herdr: {
+      binary: herdr?.binary ?? 'herdr',
+      runtimeDirectory: resolve(
+        herdr?.runtime_directory
+          ?? (process.env.XDG_RUNTIME_DIR
+            ? resolve(process.env.XDG_RUNTIME_DIR, 'agent-proxy')
+            : resolve(
+              process.env.XDG_STATE_HOME
+                ?? (process.env.HOME
+                  ? resolve(process.env.HOME, '.local', 'state')
+                  : resolve(dirname(resolvedPath), 'state')),
+              'agent-proxy',
+              'runtime',
+            )),
+      ),
+      workspaceLabel: herdr?.workspace_label ?? 'agent-proxy',
+      commandTimeoutMs: herdr?.command_timeout_ms ?? 10_000,
+      paneTtlMs: herdr?.pane_ttl_ms ?? 30 * 60 * 1000,
+      maxPanes: herdr?.max_panes ?? 32,
     },
     auth: {
       enabled: auth?.enabled ?? true,
@@ -281,22 +264,16 @@ function mergeProviderConfig(
   if (!raw) return defaults;
 
 
-  const appServerOptions = raw.app_server_options
-    ? { ...raw.app_server_options, transport: raw.app_server_options.transport ?? 'stdio' as const }
-    : undefined;
-
   return {
     enabled: raw.enabled ?? defaults.enabled,
     cli_path: raw.cli_path ?? defaults.cli_path,
     default_model: raw.default_model ?? defaults.default_model,
     max_concurrent: raw.max_concurrent ?? defaults.max_concurrent,
+    max_queue_size: raw.max_queue_size ?? defaults.max_queue_size,
+    max_queue_wait_ms: raw.max_queue_wait_ms ?? defaults.max_queue_wait_ms,
     timeout_ms: raw.timeout_ms ?? defaults.timeout_ms,
     extra_args: raw.extra_args ?? defaults.extra_args,
     working_dir: raw.working_dir ?? undefined,
-    mode: raw.mode ?? undefined,
-    sdk_options: raw.sdk_options,
-    channel_options: raw.channel_options,
-    app_server_options: appServerOptions,
     cli_options: raw.cli_options,
   };
 }

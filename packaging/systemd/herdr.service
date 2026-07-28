@@ -1,0 +1,13 @@
+[Unit]
+Description=Current-user Herdr server
+Documentation=https://github.com/Valkyrie00/herdr
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env herdr server
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

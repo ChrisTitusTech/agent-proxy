@@ -1954,7 +1954,7 @@ describe('Responses cancellation, failures, and fallback', () => {
     });
 
     expect(response.statusCode).toBe(502);
-    expect(response.json().error.message).toContain('Codex service-account login expired');
+    expect(response.json().error.message).toContain('Codex login expired');
     expect(response.json().error.message).not.toContain('Grok');
   });
 
@@ -1989,6 +1989,36 @@ describe('Responses cancellation, failures, and fallback', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['x-fallback-provider']).toBe('grok');
     expect(response.json().output[0].content[0].text).toBe('Fallback succeeded.');
+  });
+
+  it('does not fall back when the shared Herdr runtime is unavailable', async () => {
+    const fallback = vi.fn(async () => defaultResult);
+    const deps = createDeps(
+      {
+        codex: fakeProvider({
+          name: 'codex',
+          execute: async () => {
+            throw new Error('Herdr is unavailable');
+          },
+        }),
+        grok: fakeProvider({ name: 'grok', execute: fallback }),
+      },
+      [
+        { provider: 'codex', actualModel: 'codex-model' },
+        { provider: 'grok', actualModel: 'grok-model' },
+      ],
+    );
+    app = await createTestApp(deps);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      payload: { model: 'gpt-test', input: 'hello' },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('herdr_unavailable');
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it('emits exactly one failed terminal event after a stream error', async () => {

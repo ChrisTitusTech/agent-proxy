@@ -1,6 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { access, readFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
+import { delimiter, isAbsolute, resolve } from 'node:path';
 import type {
   ExecuteOptions,
   ExecuteResult,
@@ -18,6 +22,10 @@ import type {
 import { streamChunkToEvents } from '@agent-proxy/shared';
 import { getParserForProvider } from '../utils/stream-transformer.js';
 import { getProviderEnvironment } from '../utils/provider-env.js';
+import {
+  UnavailableExecutionBackend,
+  type ProviderExecutionBackend,
+} from '../herdr/launcher.js';
 
 
 const activeProcesses = new Set<ChildProcess>();
@@ -39,6 +47,15 @@ export function getActiveProcessCount(): number {
   return activeProcesses.size;
 }
 
+export function resolveProxyPort(
+  value = process.env.AGENT_PROXY_PORT,
+): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65_535
+    ? parsed
+    : 8300;
+}
+
 export abstract class BaseProvider {
   abstract readonly name: string;
 
@@ -47,10 +64,17 @@ export abstract class BaseProvider {
 
   protected config: ProviderConfigYaml;
   protected parser: StreamParser;
+  protected readonly executionBackend: ProviderExecutionBackend;
+  private readonly proxyPort: number;
 
-  constructor(config: ProviderConfigYaml) {
+  constructor(
+    config: ProviderConfigYaml,
+    executionBackend: ProviderExecutionBackend = new UnavailableExecutionBackend(),
+    proxyPort = resolveProxyPort(),
+  ) {
     this.config = config;
-
+    this.executionBackend = executionBackend;
+    this.proxyPort = resolveProxyPort(String(proxyPort));
     this.parser = null!;
   }
 
@@ -91,7 +115,7 @@ export abstract class BaseProvider {
   async execute(options: ExecuteOptions): Promise<ExecuteResult> {
     const args = this.buildArgs({ ...options, stream: false });
     const stdinData = this.getStdinData({ ...options, stream: false });
-    const { stdout, stderr, exitCode } = await this.runProcess(args, options.signal, undefined, stdinData);
+    const { stdout, stderr, exitCode } = await this.runProcess(args, options, stdinData);
 
     if (exitCode !== 0) {
       options.onDebug?.({ cliArgs: this.fullCommand(args), stdout, stderr });
@@ -106,38 +130,25 @@ export abstract class BaseProvider {
   async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
     const args = this.buildArgs({ ...options, stream: true });
     const stdinData = this.getStdinData({ ...options, stream: true });
-    const child = this.spawnProcess(args);
-
-    if (stdinData) {
-      child.stdin?.write(stdinData);
-    }
-    child.stdin?.end();
-
-    if (options.signal) {
-      options.signal.addEventListener('abort', () => {
-        gracefulKill(child);
-      }, { once: true });
-    }
-
-    const timeout = setTimeout(() => {
-      gracefulKill(child);
-    }, this.config.timeout_ms);
+    const handle = await this.startProcess(args, options, stdinData);
+    const stderrChunks: Buffer[] = [];
+    handle.stderr.on('data', (data: Buffer) => stderrChunks.push(data));
 
     const debugLines: string[] = [];
     const captureDebug = !!options.onDebug;
+    let terminalEventSeen = false;
 
     try {
-      const rl = createInterface({ input: child.stdout! });
+      const rl = createInterface({ input: handle.stdout });
 
       for await (const line of rl) {
         if (captureDebug) debugLines.push(line);
-
-
+        if (terminalEventSeen) continue;
         if (this.parser.parseEvents) {
           const events = this.parser.parseEvents(line);
           for (const event of events) {
             yield event;
-            if (event.type === 'done') return;
+            if (event.type === 'done') terminalEventSeen = true;
           }
         } else {
           const chunk = this.parser.parse(line);
@@ -146,13 +157,19 @@ export abstract class BaseProvider {
             for (const event of events) {
               yield event;
             }
-            if (chunk.type === 'done') return;
+            if (chunk.type === 'done') terminalEventSeen = true;
           }
         }
       }
+      const result = await handle.completion;
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `${this.name} CLI exited with code ${result.exitCode}: ${
+            Buffer.concat(stderrChunks).toString('utf8')
+          }`,
+        );
+      }
     } finally {
-      clearTimeout(timeout);
-      gracefulKill(child);
       if (captureDebug) {
         options.onDebug!({ cliArgs: this.fullCommand(args), streamLines: debugLines });
       }
@@ -171,12 +188,9 @@ export abstract class BaseProvider {
 
 
   async checkHealth(): Promise<HealthStatus> {
-    try {
-      const { exitCode } = await this.runProcess(['--version'], undefined, 10_000);
-      return exitCode === 0 ? 'healthy' : 'unhealthy';
-    } catch {
-      return 'unhealthy';
-    }
+    return await executableAvailable(this.config.cli_path, this.workingDir)
+      ? 'healthy'
+      : 'unhealthy';
   }
 
 
@@ -189,66 +203,55 @@ export abstract class BaseProvider {
     return this.config.working_dir ?? tmpdir();
   }
 
-  protected spawnProcess(args: string[]): ChildProcess {
-
-    const isWin = process.platform === 'win32';
-    const child = spawn(this.config.cli_path, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: this.getCleanEnv(),
-      cwd: this.workingDir,
-      shell: isWin,
-      detached: !isWin,
-    });
-    trackProcess(child, !isWin);
-    return child;
-  }
-
-  private async runProcess(
+  protected async runProcess(
     args: string[],
-    signal?: AbortSignal,
-    timeoutMs?: number,
+    options: ExecuteOptions,
     stdinData?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return new Promise((resolve, reject) => {
-      const child = this.spawnProcess(args);
+    const handle = await this.startProcess(args, options, stdinData);
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    handle.stdout.on('data', (data: Buffer) => stdoutChunks.push(data));
+    handle.stderr.on('data', (data: Buffer) => stderrChunks.push(data));
+    const result = await handle.completion;
+    return {
+      stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+      stderr: Buffer.concat(stderrChunks).toString('utf8'),
+      exitCode: result.exitCode,
+    };
+  }
 
-      if (stdinData) {
-        child.stdin?.write(stdinData);
-      }
-      child.stdin?.end();
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
+  private startProcess(
+    args: string[],
+    options: ExecuteOptions,
+    stdinData?: string,
+  ) {
+    const config = this.getExecutionConfig(options);
+    const environment = this.getCleanEnv();
+    const recursionCheck = assertNoProxyRecursion(
+      this.name,
+      environment,
+      this.proxyPort,
+    );
+    return recursionCheck.then(() => this.executionBackend.start({
+      provider: this.name,
+      model: options.model || config.default_model,
+      ...(options.requestId ? { requestId: options.requestId } : {}),
+      clientKey: options.clientKey?.includes('|session:')
+        ? options.clientKey
+        : `request:${randomUUID()}`,
+      command: config.cli_path,
+      args,
+      cwd: config.working_dir ?? tmpdir(),
+      env: environment,
+      ...(stdinData !== undefined ? { stdin: stdinData } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+      timeoutMs: config.timeout_ms,
+    }));
+  }
 
-      const timeout = setTimeout(() => {
-        gracefulKill(child);
-        reject(new Error(`${this.name} CLI timed out after ${timeoutMs ?? this.config.timeout_ms}ms`));
-      }, timeoutMs ?? this.config.timeout_ms);
-
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          clearTimeout(timeout);
-          gracefulKill(child);
-          reject(new Error('Request cancelled'));
-        }, { once: true });
-      }
-
-      child.stdout?.on('data', (data: Buffer) => stdoutChunks.push(data));
-      child.stderr?.on('data', (data: Buffer) => stderrChunks.push(data));
-
-      child.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`Failed to spawn ${this.name} CLI: ${err.message}`));
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timeout);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-          exitCode: code ?? 1,
-        });
-      });
-    });
+  protected getExecutionConfig(_options: ExecuteOptions): ProviderConfigYaml {
+    return this.config;
   }
 
 
@@ -291,6 +294,100 @@ export abstract class BaseProvider {
       finishReason: 'stop',
     };
   }
+}
+
+async function executableAvailable(command: string, workingDirectory: string): Promise<boolean> {
+  const pathValue = process.env.PATH ?? '';
+  const candidates = command.includes('/')
+    ? [isAbsolute(command) ? command : resolve(workingDirectory, command)]
+    : pathValue.split(delimiter).filter(Boolean).map((entry) => resolve(entry, command));
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (!info.isFile()) continue;
+      await access(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      // Try the next PATH entry.
+    }
+  }
+  return false;
+}
+
+class ProviderRecursionError extends Error {
+  readonly code = 'provider_recursion';
+}
+
+async function assertNoProxyRecursion(
+  provider: string,
+  environment: Record<string, string | undefined>,
+  proxyPort: number,
+): Promise<void> {
+  if (provider !== 'codex') return;
+  const home = environment.HOME;
+  if (!home) return;
+  const configPath = resolve(environment.CODEX_HOME ?? resolve(home, '.codex'), 'config.toml');
+  let config: string;
+  try {
+    config = await readFile(configPath, 'utf8');
+  } catch {
+    return;
+  }
+  const port = String(proxyPort);
+  const activeConfig = config
+    .split(/\r?\n/)
+    .map(stripTomlComment)
+    .join('\n');
+  const baseUrls = Array.from(
+    activeConfig.matchAll(/base_url\s*=\s*["']([^"']+)["']/gi),
+    (match) => match[1],
+  );
+  for (const baseUrl of baseUrls) {
+    try {
+      const url = new URL(baseUrl);
+      const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+      const isLoopback = hostname === 'localhost'
+        || hostname === 'localhost.localdomain'
+        || hostname === 'ip6-localhost'
+        || hostname === '::1'
+        || hostname === '0.0.0.0'
+        || hostname === '::'
+        || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+      const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
+      if (isLoopback && effectivePort === port) {
+        throw new ProviderRecursionError(
+          `Codex configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof ProviderRecursionError) throw error;
+      // Ignore unrelated malformed provider URLs; the provider reports those.
+    }
+  }
+}
+
+function stripTomlComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (quote === '"') {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quote = null;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '#') {
+      return line.slice(0, index);
+    }
+  }
+  return line;
 }
 
 

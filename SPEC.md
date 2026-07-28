@@ -1,6 +1,6 @@
 # agent-proxy specification
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## 1. Purpose
 
@@ -88,8 +88,9 @@ Secrets and generated state must use owner-only permissions.
 
 ### 4.1 Required behavior
 
-Every authenticated data-plane request that selects a built-in CLI provider
-must execute through the current user's Herdr server.
+Every authenticated data-plane request that selects a CLI provider, including a
+configured generic CLI provider, must execute through the current user's Herdr
+server.
 
 The launcher must:
 
@@ -111,7 +112,8 @@ Health, model discovery, and admin-only requests must not spawn agents.
 
 ### 4.2 Availability
 
-Herdr is a required runtime dependency for built-in CLI inference.
+Herdr is a required runtime dependency for all CLI-provider inference,
+including configured generic CLI providers.
 
 - The Herdr server must start with the user's login session.
 - `agent-proxy` must verify Herdr readiness before accepting inference work.
@@ -151,7 +153,8 @@ without printing credentials.
 | `POST /v1/chat/completions` | OpenAI Chat Completions subset | Copilot CLI, Open WebUI |
 | `POST /v1/messages` | Anthropic Messages subset | Claude Code, Anthropic SDKs |
 | `GET /v1/models` | OpenAI model list | Discovery and client validation |
-| `GET /health` | Minimal liveness; authenticated API and Herdr readiness | Probes and operators |
+| `GET /health` | Minimal unauthenticated liveness only | Probes |
+| `GET /admin/health` | Authenticated API, Herdr, and provider readiness | Operators |
 | `/admin/*` | Authenticated management API | Dashboard and automation |
 
 Unsupported embedding, retrieval, speech, image-generation, and reranking
@@ -246,6 +249,9 @@ Direct `child_process.spawn` execution is allowed only inside the
 Herdr-launched worker that owns the pane. Route handlers and provider adapters
 must not bypass the Herdr launcher.
 
+Generic CLI providers inherit the same Herdr execution, cancellation, queue,
+session-isolation, and recursion-prevention requirements.
+
 ## 8. Routing and accounting
 
 1. A public model alias maps to ordered provider/model targets.
@@ -331,7 +337,7 @@ scripts/validate-shell.sh
 git diff --check
 ```
 
-The user-owned Herdr phase additionally requires:
+The user-owned Herdr runtime additionally requires:
 
 - Installer lifecycle tests using isolated XDG directories.
 - systemd user-unit verification.
@@ -342,13 +348,11 @@ The user-owned Herdr phase additionally requires:
 - Proof that every provider attempt appears in Herdr.
 - Proof that no direct headless provider spawn remains.
 - A clean dead-code report with documented dynamic entry points.
+- Provider stress and live shared-pane load tests.
 
 ## 13. Open decisions
 
-1. Define the pane retention default after successful and failed requests.
-2. Define the client-session derivation used when a client cannot send
+1. Define the client-session derivation used when a client cannot send
    `X-Agent-Proxy-Session-Id`.
-3. Decide whether one pane represents a conversation or one provider attempt.
-4. Define the minimum supported Herdr and provider CLI versions.
-5. Confirm upstream licensing, attribution, and notice obligations.
-6. Decide whether any generic adapter belongs in the stable desktop release.
+2. Define the minimum supported Herdr and provider CLI versions.
+3. Confirm upstream licensing, attribution, and notice obligations.

@@ -6,7 +6,11 @@ server:
     origins: []
 
 database:
-  path: "/var/lib/agent-proxy/agent-proxy.db"
+  path: "${AGENT_PROXY_DATABASE_PATH}"
+
+herdr:
+  binary: "herdr"
+  workspace_label: "agent-proxy"
 
 auth:
   enabled: true
@@ -16,13 +20,15 @@ auth:
       key: "${PROXY_API_KEY}"
 
 # Enable a provider only after its CLI is installed and authenticated for the
-# agent-proxy service account.
+# logged-in user.
 providers:
   claude:
     enabled: false
     cli_path: "claude"
     default_model: "claude-sonnet-5"
     max_concurrent: 1
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args:
       - "--no-session-persistence"
@@ -35,6 +41,8 @@ providers:
     cli_path: "codex"
     default_model: "gpt-5.6-sol"
     max_concurrent: 1
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args:
       - "--skip-git-repo-check"
@@ -47,11 +55,15 @@ providers:
     enabled: false
     cli_path: "agy"
     default_model: "antigravity"
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
   grok:
     enabled: false
     cli_path: "grok"
     default_model: "grok-4.5"
     max_concurrent: 1
+    max_queue_size: 32
+    max_queue_wait_ms: 30000
     timeout_ms: 300000
     extra_args:
       - "--no-memory"

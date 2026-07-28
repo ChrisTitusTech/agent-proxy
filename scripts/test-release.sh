@@ -46,6 +46,8 @@ test -f "$ARCHIVE"
 tar -tzf "$ARCHIVE" >"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/VERSION$' "$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/packages/server/dist/index.js$' "$TEST_DIR/archive-manifest.txt"
+grep -q '^agent-proxy/packages/server/dist/herdr/worker.js$' \
+	"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/packaging/systemd/config.example.yaml$' \
 	"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/node_modules/' "$TEST_DIR/archive-manifest.txt"
@@ -59,15 +61,24 @@ if tar -tvzf "$ARCHIVE" |
 	printf 'Production archive contains an unsupported member type.\n' >&2
 	exit 1
 fi
-scripts/install.sh install --root "$TEST_DIR/root" --no-systemd --archive "$ARCHIVE"
+export HOME="$TEST_DIR/home"
+export XDG_CONFIG_HOME="$TEST_DIR/config"
+export XDG_DATA_HOME="$TEST_DIR/data"
+export XDG_STATE_HOME="$TEST_DIR/state"
+export XDG_RUNTIME_DIR="$TEST_DIR/runtime"
+mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$TEST_DIR/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_DIR/bin/herdr"
+chmod 0700 "$TEST_DIR/bin/herdr"
+export PATH="$TEST_DIR/bin:$PATH"
+scripts/install.sh install --no-systemd --archive "$ARCHIVE"
 
-export CONFIG_PATH="$TEST_DIR/root/etc/agent-proxy/config.yaml"
-export AGENT_PROXY_DATABASE_PATH="$TEST_DIR/root/var/lib/agent-proxy/agent-proxy.db"
+export CONFIG_PATH="$XDG_CONFIG_HOME/agent-proxy/config.yaml"
+export AGENT_PROXY_DATABASE_PATH="$XDG_STATE_HOME/agent-proxy/agent-proxy.db"
 export ADMIN_TOKEN=release-test-admin-token
 export PROXY_API_KEY=sk-proxy-release-test-key
 
 PREFLIGHT_OUTPUT=$(
-	node "$TEST_DIR/root/opt/agent-proxy/current/packages/server/dist/index.js" --check
+	node "$XDG_DATA_HOME/agent-proxy/current/packages/server/dist/index.js" --check
 )
 grep -q 'Preflight passed' <<<"$PREFLIGHT_OUTPUT"
 grep -q 'Enabled providers: none' <<<"$PREFLIGHT_OUTPUT"
@@ -83,7 +94,7 @@ server.listen(0, "127.0.0.1", () => {
 });
 ')
 		export AGENT_PROXY_PORT
-		node "$TEST_DIR/root/opt/agent-proxy/current/packages/server/dist/index.js" \
+		node "$XDG_DATA_HOME/agent-proxy/current/packages/server/dist/index.js" \
 			>"$TEST_DIR/release-server.log" 2>&1 &
 		SERVER_PID=$!
 		for _ in {1..100}; do

@@ -9,7 +9,7 @@ REDACTOR="$PROJECT_DIR/scripts/client-compat/redact.mjs"
 REQUIRE_LIVE=false
 ARTIFACT_ROOT=
 SELECTED_CLIENTS=()
-ALL_CLIENTS=(claude codex grok)
+ALL_CLIENTS=(claude codex grok copilot)
 TEMP_ROOT=
 TURN_TIMEOUT=${AGENT_PROXY_COMPAT_TURN_TIMEOUT:-180}
 
@@ -17,7 +17,7 @@ usage() {
 	cat <<EOF
 Usage: ${0##*/} (--client CLIENT | --all) [--require-live] [--artifacts-dir DIR]
 
-Clients: claude, codex, grok
+Clients: claude, codex, grok, copilot
 
 Without --require-live, unavailable clients and unfinished runners are reported
 as skips. With --require-live, every selected client must execute and pass.
@@ -145,6 +145,7 @@ client_command_name() {
 	claude) printf '%s' "${CLAUDE_BIN:-claude}" ;;
 	codex) printf '%s' "${CODEX_BIN:-codex}" ;;
 	grok) printf '%s' "${GROK_BIN:-grok}" ;;
+	copilot) printf '%s' "${COPILOT_BIN:-copilot}" ;;
 	esac
 }
 
@@ -318,17 +319,37 @@ run_client() {
 		return
 	fi
 
-	if ! server_version=$(
-		node -e '
+	if ! node -e '
 const { readFileSync } = require("node:fs");
 const health = JSON.parse(readFileSync(process.argv[1], "utf8"));
-if (health.status !== "ok" || typeof health.version !== "string" || health.version.length === 0) {
-  process.exit(1);
-}
+if (health.status !== "ok" || Object.keys(health).length !== 1) process.exit(1);
+' "$raw_dir/server-health.json"; then
+		printf 'FAIL [%s] server liveness exposed unexpected details.\n' "$client" >&2
+		return 1
+	fi
+	server_version=unavailable
+	if [[ -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+		if ! curl --silent --show-error --fail \
+			--connect-timeout 5 \
+			--max-time 10 \
+			-H "x-admin-token: $AGENT_PROXY_ADMIN_TOKEN" \
+			"$base_url/admin/health" >"$raw_dir/server-readiness.json"; then
+			report_unavailable "$client" 'authenticated server readiness failed'
+			return
+		fi
+		if ! server_version=$(
+			node -e '
+const { readFileSync } = require("node:fs");
+const health = JSON.parse(readFileSync(process.argv[1], "utf8"));
+if (typeof health.version !== "string" || health.version.length === 0) process.exit(1);
 process.stdout.write(health.version);
-' "$raw_dir/server-health.json"
-	); then
-		printf 'FAIL [%s] server health response has no valid version.\n' "$client" >&2
+' "$raw_dir/server-readiness.json"
+		); then
+			printf 'FAIL [%s] authenticated readiness has no version.\n' "$client" >&2
+			return 1
+		fi
+	elif [[ "$REQUIRE_LIVE" == true ]]; then
+		printf 'FAIL [%s] AGENT_PROXY_ADMIN_TOKEN is required for live evidence.\n' "$client" >&2
 		return 1
 	fi
 
@@ -349,7 +370,7 @@ process.stdout.write(health.version);
 		printf 'export COMPAT_CLIENT_BINARY=%q\n' "$client_binary"
 		printf 'export COMPAT_FIXTURE_DIR=%q\n' "$raw_dir/protocol"
 		printf 'export COMPAT_WORKSPACE=%q\n' "$state_dir/workspace"
-		if [[ -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
+		if [[ "$client" == codex && -n ${AGENT_PROXY_ADMIN_TOKEN:-} ]]; then
 			printf 'export AGENT_PROXY_ADMIN_TOKEN=%q\n' "$AGENT_PROXY_ADMIN_TOKEN"
 		fi
 	} >"$runner_environment_file"

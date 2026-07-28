@@ -1,99 +1,34 @@
-import type { ExecuteOptions, ExecuteResult, ProviderEvent, ProviderConfigYaml, HealthStatus } from '@agent-proxy/shared';
+import type { ExecuteOptions, ExecuteResult, ProviderEvent, ProviderConfigYaml } from '@agent-proxy/shared';
 import { BaseProvider } from './base-provider.js';
 import { convertMessages } from '../utils/message-converter.js';
-import { executeSdk, executeStreamSdk, type SdkExecutorConfig, type SdkMeta } from './claude-sdk-executor.js';
-import { ClaudeSdkSessionManager } from './claude-sdk-session-manager.js';
-import { executeChannel, executeStreamChannel, type ChannelExecutorConfig } from './claude-channel-executor.js';
 import { mergeProviderConfig } from './provider-override.js';
-import { channelBridgeManager } from '../channel-bridge/manager.js';
 import {
   adaptExternalToolResult,
   externalToolEvents,
   prepareExternalToolRequest,
 } from './external-tool-adapter.js';
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
 
-
-async function pingBridgeHealth(baseUrl: string, apiKey?: string): Promise<boolean> {
-  try {
-    const url = `${baseUrl.replace(/\/+$/, '')}/health`;
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(url, {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-      signal: controller.signal,
-    });
-    clearTimeout(t);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
 
 export class ClaudeProvider extends BaseProvider {
   readonly name = 'claude' as const;
 
-
-  private sessionManager: ClaudeSdkSessionManager | null = null;
-  private readonly shutdownController = new AbortController();
-
-  constructor(config: ProviderConfigYaml) {
-    super(config);
+  constructor(
+    config: ProviderConfigYaml,
+    executionBackend?: ProviderExecutionBackend,
+    proxyPort?: number,
+  ) {
+    super(config, executionBackend, proxyPort);
     this.initParser();
-
-
-    if (this.isSDKMode) {
-      const ttl = config.sdk_options?.session_ttl_ms;
-      this.sessionManager = new ClaudeSdkSessionManager(ttl);
-    }
-  }
-
-  private get isSDKMode(): boolean {
-    return this.config.mode === 'sdk';
   }
 
   private getEffectiveConfig(options: ExecuteOptions): ProviderConfigYaml {
     return mergeProviderConfig(this.config, options.providerOverrides, 'claude');
   }
 
-  private ensureSdkSessionManager(ttlMs?: number): ClaudeSdkSessionManager {
-    if (!this.sessionManager) {
-      this.sessionManager = new ClaudeSdkSessionManager(ttlMs);
-    }
-    return this.sessionManager;
+  protected override getExecutionConfig(options: ExecuteOptions): ProviderConfigYaml {
+    return this.getEffectiveConfig(options);
   }
-
-  private buildSdkConfig(
-    options: ExecuteOptions,
-    effective: ProviderConfigYaml,
-    clientKey?: string,
-  ): SdkExecutorConfig {
-    return {
-      model: options.model || effective.default_model,
-      sdkOptions: effective.sdk_options ?? {},
-      workingDir: effective.working_dir ?? this.workingDir,
-      timeoutMs: effective.timeout_ms,
-      cleanEnv: this.getCleanEnv(),
-      cliPath: effective.cli_path,
-      sessionManager: this.ensureSdkSessionManager(effective.sdk_options?.session_ttl_ms),
-      clientKey,
-      shutdownSignal: this.shutdownController.signal,
-    };
-  }
-
-  private buildChannelConfig(options: ExecuteOptions, effective: ProviderConfigYaml): ChannelExecutorConfig {
-    const channelOptions = { ...(effective.channel_options ?? {}) };
-
-    if (!channelOptions.endpoint_url && channelOptions.managed) {
-      channelOptions.endpoint_url = `http://127.0.0.1:${channelOptions.bridge_port ?? 8788}`;
-    }
-    return {
-      model: options.model || effective.default_model,
-      channelOptions,
-      timeoutMs: effective.timeout_ms,
-    };
-  }
-
-
 
   protected override getStdinData(options: ExecuteOptions): string {
     const { userPrompt } = convertMessages(options.messages);
@@ -187,31 +122,7 @@ export class ClaudeProvider extends BaseProvider {
 
 
 
-  private sdkDebugArgs(model: string, meta?: SdkMeta): string[] {
-    const args = ['[sdk-mode]', `model=${model}`];
-    if (meta) {
-      args.push(`session=${meta.sessionId ?? 'none'}`);
-      args.push(`reused=${meta.sessionReused}`);
-      if (meta.retried) args.push('retried=true');
-    }
-    return args;
-  }
-
   private async executeWithoutExternalTools(options: ExecuteOptions): Promise<ExecuteResult> {
-    const effective = this.getEffectiveConfig(options);
-    if (effective.mode === 'sdk') {
-      const result = await executeSdk(options, this.buildSdkConfig(options, effective, options.clientKey));
-      const model = options.model || effective.default_model;
-
-      options.onDebug?.({
-        cliArgs: this.sdkDebugArgs(model, result.sdkMeta),
-        stdout: result.content,
-      });
-      return result;
-    }
-    if (effective.mode === 'channel-worker') {
-      return executeChannel(options, this.buildChannelConfig(options, effective));
-    }
     return super.execute(options);
   }
 
@@ -231,72 +142,6 @@ export class ClaudeProvider extends BaseProvider {
       yield* externalToolEvents(result);
       return;
     }
-    const effective = this.getEffectiveConfig(options);
-    if (effective.mode === 'sdk') {
-      const sdkLines: string[] = [];
-      let streamMeta: SdkMeta | undefined;
-      const sdkConfig = this.buildSdkConfig(options, effective, options.clientKey);
-      sdkConfig.onSdkMeta = (meta) => { streamMeta = meta; };
-
-      for await (const event of executeStreamSdk(options, sdkConfig)) {
-        if (event.type === 'text_delta') {
-          sdkLines.push(event.text);
-        }
-        yield event;
-      }
-      const model = options.model || effective.default_model;
-
-      options.onDebug?.({
-        cliArgs: this.sdkDebugArgs(model, streamMeta),
-        streamLines: sdkLines,
-      });
-      return;
-    }
-    if (effective.mode === 'channel-worker') {
-      yield* executeStreamChannel(options, this.buildChannelConfig(options, effective));
-      return;
-    }
     yield* super.executeStream(options);
-  }
-
-  override async checkHealth(): Promise<HealthStatus> {
-
-    if (this.config.mode === 'channel-worker') {
-      const ch = this.config.channel_options ?? {};
-      if (ch.managed) {
-
-        const status = await channelBridgeManager.status();
-        return status.running && status.healthy ? 'healthy' : 'unhealthy';
-      }
-
-      const baseUrl = ch.endpoint_url ?? `http://127.0.0.1:${ch.bridge_port ?? 8788}`;
-      return (await pingBridgeHealth(baseUrl, ch.api_key)) ? 'healthy' : 'unhealthy';
-    }
-
-    return super.checkHealth();
-  }
-
-
-  override updateConfig(partial: Partial<ProviderConfigYaml>): void {
-    const wasSDKMode = this.isSDKMode;
-    super.updateConfig(partial);
-
-
-    if (!wasSDKMode && this.isSDKMode && !this.sessionManager) {
-      const ttl = this.config.sdk_options?.session_ttl_ms;
-      this.sessionManager = new ClaudeSdkSessionManager(ttl);
-    }
-
-
-    if (wasSDKMode && !this.isSDKMode && this.sessionManager) {
-      this.sessionManager.destroy();
-      this.sessionManager = null;
-    }
-  }
-
-  override async shutdown(): Promise<void> {
-    this.shutdownController.abort();
-    this.sessionManager?.destroy();
-    this.sessionManager = null;
   }
 }

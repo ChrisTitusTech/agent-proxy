@@ -1,21 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { ExecuteOptions, ProviderConfigYaml, ProviderEvent } from '@agent-proxy/shared';
-import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
-
-
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    spawn: vi.fn(),
-  };
-});
-
-import { spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { AgyProvider } from './agy-provider.js';
-
-const spawnMock = vi.mocked(spawn);
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
 
 function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml {
   return {
@@ -39,21 +26,32 @@ function baseOptions(extra: Partial<ExecuteOptions> = {}): ExecuteOptions {
 }
 
 
-function fakeChild(stdout: string, stderr = '', exitCode = 0) {
-  const child = new EventEmitter() as unknown as ReturnType<typeof spawn>;
-  (child as unknown as { stdout: Readable }).stdout = Readable.from([Buffer.from(stdout)]);
-  (child as unknown as { stderr: Readable }).stderr = Readable.from([Buffer.from(stderr)]);
-  (child as unknown as { kill: (sig?: string) => boolean }).kill = vi.fn(() => true);
-  (child as unknown as { killed: boolean }).killed = false;
-  (child as unknown as { stdin: { end: () => void; write: () => void } }).stdin = { end: vi.fn(), write: vi.fn() };
-
-  setImmediate(() => (child as unknown as EventEmitter).emit('close', exitCode));
-  return child;
+function fakeBackend(output: string, error = '', exitCode = 0): ProviderExecutionBackend {
+  return {
+    readiness: async () => ({ ready: true }),
+    shutdown: async () => undefined,
+    start: async () => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const completion = new Promise<{
+        exitCode: number;
+        paneId: string;
+        terminalState: 'completed' | 'failed';
+      }>((resolve) => {
+        setImmediate(() => {
+          stdout.end(output);
+          stderr.end(error);
+          resolve({
+            exitCode,
+            paneId: 'test:pane',
+            terminalState: exitCode === 0 ? 'completed' : 'failed',
+          });
+        });
+      });
+      return { stdout, stderr, completion, paneId: 'test:pane', cancel: () => undefined };
+    },
+  };
 }
-
-beforeEach(() => {
-  spawnMock.mockReset();
-});
 
 describe('AgyProvider.buildArgs', () => {
   it('executes the Antigravity provider', () => {
@@ -128,29 +126,25 @@ describe('AgyProvider.buildArgs', () => {
 
 describe('executes the Antigravity provider', () => {
   it('executes the Antigravity provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('  Hello from agy.  \n'));
-    const provider = new AgyProvider(baseConfig());
+    const provider = new AgyProvider(baseConfig(), fakeBackend('  Hello from agy.  \n'));
     const result = await provider.execute(baseOptions());
     expect(result.content).toBe('Hello from agy.');
     expect(result.finishReason).toBe('stop');
   });
 
   it('executes the Antigravity provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('\x1B[31mred\x1B[0m text'));
-    const provider = new AgyProvider(baseConfig());
+    const provider = new AgyProvider(baseConfig(), fakeBackend('\x1B[31mred\x1B[0m text'));
     const result = await provider.execute(baseOptions());
     expect(result.content).toBe('red text');
   });
 
   it('executes the Antigravity provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('', 'auth required', 1));
-    const provider = new AgyProvider(baseConfig());
+    const provider = new AgyProvider(baseConfig(), fakeBackend('', 'auth required', 1));
     await expect(provider.execute(baseOptions())).rejects.toThrow(/auth required/);
   });
 
   it('executes the Antigravity provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('1234567890'));
-    const provider = new AgyProvider(baseConfig());
+    const provider = new AgyProvider(baseConfig(), fakeBackend('1234567890'));
     const result = await provider.execute(baseOptions());
     // 10 chars → ceil(10/4) = 3 completion tokens
     expect(result.usage.completionTokens).toBe(3);
@@ -160,8 +154,7 @@ describe('executes the Antigravity provider', () => {
 
 describe('executes the Antigravity provider', () => {
   it('executes the Antigravity provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('response body'));
-    const provider = new AgyProvider(baseConfig());
+    const provider = new AgyProvider(baseConfig(), fakeBackend('response body'));
     const events: ProviderEvent[] = [];
     for await (const ev of provider.executeStream(baseOptions({ stream: true }))) {
       events.push(ev);
@@ -173,8 +166,7 @@ describe('executes the Antigravity provider', () => {
   });
 
   it('executes the Antigravity provider', async () => {
-    spawnMock.mockReturnValue(fakeChild(''));
-    const provider = new AgyProvider(baseConfig());
+    const provider = new AgyProvider(baseConfig(), fakeBackend(''));
     const events: ProviderEvent[] = [];
     for await (const ev of provider.executeStream(baseOptions({ stream: true }))) {
       events.push(ev);

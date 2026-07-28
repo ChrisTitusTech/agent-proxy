@@ -45,8 +45,8 @@ jobs:
       - name: Check for unused code and dependencies
         run: npm run lint:dead-code
 
-      - name: Verify Linux service restart and persistence
-        run: scripts/test-linux-service.sh
+      - name: Verify current-user service contract
+        run: scripts/test-user-service.sh
 
       - name: Verify production release archive
         run: scripts/test-release.sh
@@ -82,10 +82,8 @@ jobs:
         run: |
           scripts/validate-shell.sh
           scripts/test-client-compat-self-test.sh
-          scripts/test-linux-install.sh
-          systemd-analyze verify packaging/systemd/agent-proxy.service
-          systemd-analyze security --offline=yes \
-            packaging/systemd/agent-proxy.service
+          scripts/test-user-install.sh
+          scripts/test-user-service.sh
 
   container:
     name: Container build

@@ -308,7 +308,7 @@ app.post('/api/rooms', requireAuth, async (req, res) => {
 | ------ | -------------------- |
 | Stateless one-shot (current default) | Mapping without `provider_overrides` (e.g. `gpt-5.6-sol`) |
 | Session continuity per user / per room | Mapping with `enable_session_reuse: true` + `X-Agent-Proxy-Session-Id` header |
-| Highest throughput, single user | `mode: "app-server"` (experimental) |
+| Parallel independent work | Distinct `X-Agent-Proxy-Session-Id` values; Herdr assigns separate panes |
 
 ---
 

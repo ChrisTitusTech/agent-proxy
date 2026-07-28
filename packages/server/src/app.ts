@@ -25,8 +25,6 @@ import { registerModelMappingsRoutes } from './routes/admin/model-mappings.js';
 import { registerApiKeysRoutes } from './routes/admin/api-keys.js';
 import { registerStatsRoutes } from './routes/admin/stats.js';
 import { registerProvidersRoutes, loadEffectiveProviderConfigs } from './routes/admin/providers.js';
-import { registerChannelBridgeRoutes, maybeAutoStartBridge } from './routes/admin/channel-bridge.js';
-import { channelBridgeManager } from './channel-bridge/manager.js';
 import { registerTestModelRoute } from './routes/admin/test-model.js';
 import { registerRateLimitsRoutes, loadRateLimitsFromDb } from './routes/admin/rate-limits.js';
 import { registerDashboardRoute } from './routes/admin/dashboard.js';
@@ -44,6 +42,10 @@ import { loadHttpProviders } from './providers/http-provider-loader.js';
 import { seedDatabase } from './db/seed.js';
 import type { ValidationConfig } from '@agent-proxy/shared';
 import { ProviderLoginManager } from './services/provider-login-manager.js';
+import {
+  HerdrLauncher,
+  type ProviderExecutionBackend,
+} from './herdr/launcher.js';
 
 export type AgentProxyApp = FastifyInstance & {
   stopProviderProcesses: () => Promise<void>;
@@ -51,6 +53,7 @@ export type AgentProxyApp = FastifyInstance & {
 
 export interface CreateAppOptions {
   databaseInitialized?: boolean;
+  executionBackend?: ProviderExecutionBackend;
 }
 
 export async function createApp(
@@ -75,7 +78,19 @@ export async function createApp(
   await seedDatabase(config);
 
 
-  const registry = createProviderRegistry(config.providers);
+  const executionBackend = options.executionBackend ?? new HerdrLauncher({
+    binary: config.herdr.binary,
+    runtimeDirectory: config.herdr.runtimeDirectory,
+    workspaceLabel: config.herdr.workspaceLabel,
+    commandTimeoutMs: config.herdr.commandTimeoutMs,
+    paneTtlMs: config.herdr.paneTtlMs,
+    maxPanes: config.herdr.maxPanes,
+  });
+  const registry = createProviderRegistry(
+    config.providers,
+    executionBackend,
+    config.server.port,
+  );
 
 
   const savedRateLimits = await loadRateLimitsFromDb(config.rateLimits);
@@ -99,7 +114,12 @@ export async function createApp(
 
   for (const [name, providerConfig] of Object.entries(config.providers)) {
     if (providerConfig.enabled) {
-      queueManager.addQueue(name, providerConfig.max_concurrent);
+      queueManager.addQueue(
+        name,
+        providerConfig.max_concurrent,
+        providerConfig.max_queue_size,
+        providerConfig.max_queue_wait_ms,
+      );
     }
   }
 
@@ -140,11 +160,16 @@ export async function createApp(
 
 
   app.get('/health', async (_request, reply) => {
-    return reply.send({
-      status: 'ok',
+    return reply.send({ status: 'ok' });
+  });
+
+  app.get('/admin/health', async (_request, reply) => {
+    const herdr = await executionBackend.readiness();
+    return reply.status(herdr.ready ? 200 : 503).send({
+      status: herdr.ready ? 'ready' : 'unavailable',
       version: serverPackage.version,
-      timestamp: new Date().toISOString(),
-      providers: registry.getAll().map((p) => p.name),
+      herdr,
+      providers: registry.getAll().map((provider) => provider.name),
     });
   });
 
@@ -281,7 +306,6 @@ export async function createApp(
     defaultConfigs: config.providers,
   });
   registerProviderLoginRoutes(app, providerLoginManager);
-  registerChannelBridgeRoutes(app, { defaultConfigs: config.providers });
 
   registerTestModelRoute(app, registry);
   registerRateLimitsRoutes(app, rateLimiter, config.rateLimits);
@@ -331,7 +355,7 @@ export async function createApp(
   const stopProviderProcesses = (): Promise<void> => {
     providerStopPromise ??= Promise.all([
       registry.shutdownAll(),
-      channelBridgeManager.stop(),
+      executionBackend.shutdown(),
       providerLoginManager.stopAll(),
     ]).then(() => undefined);
     return providerStopPromise;
@@ -345,8 +369,6 @@ export async function createApp(
     clearInterval(cacheCleanupTimer);
     await stopProviderProcesses();
   });
-
-  await maybeAutoStartBridge({ defaultConfigs: config.providers });
 
   return lifecycleApp;
 }

@@ -3,12 +3,12 @@
 This roadmap implements [SPEC.md](./SPEC.md) in reviewable phases. A phase is
 complete only when its acceptance criteria and validation commands pass.
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## Current direction
 
 `agent-proxy` is a per-login-user desktop service. Local applications call its
-localhost API, and every inference request routed to a built-in CLI executes as
+localhost API, and every inference request routed to a CLI provider executes as
 a Herdr-managed agent owned by that same user.
 
 The former machine-wide installation under a dedicated `agent-proxy` account
@@ -96,12 +96,14 @@ available in [docs/phase-3-evidence.md](./docs/phase-3-evidence.md).
 
 ## Phase 4: User-owned Herdr execution
 
-Status: Ready to begin
+Status: Complete
+
+Completed: 2026-07-28
 
 Purpose:
 
 - Replace the machine-wide service with a per-user login service.
-- Ensure every built-in provider invocation is a Herdr-managed agent.
+- Ensure every CLI-provider invocation is a Herdr-managed agent.
 - Allow Copilot, Open WebUI, native clients, and SDKs to create visible agents
   through the localhost API.
 - Remove superseded headless, service-account, and unused extension paths.
@@ -130,7 +132,8 @@ Acceptance criteria:
 - `systemctl --user` starts Herdr before `agent-proxy` accepts inference.
 - All created files are owned by the current user with restrictive
   permissions.
-- Every built-in provider attempt appears in the expected Herdr session.
+- Every built-in or configured generic CLI-provider attempt appears in the
+  expected Herdr session.
 - Health, discovery, and admin-only calls create no agent panes.
 - If Herdr is unavailable, inference returns an actionable `503` and no
   headless provider starts.
@@ -160,6 +163,7 @@ scripts/test-herdr-launcher.sh
 scripts/test-client-compat.sh --client copilot --require-live
 scripts/test-client-compat.sh --client codex --require-live
 OPEN_WEBUI_MODELS=gpt-5.6-sol \
+OPEN_WEBUI_ALLOW_BOUNDED_DETACH=true \
   scripts/test-open-webui-compat.sh --all --require-live
 ```
 
@@ -177,12 +181,27 @@ Rollback:
   launcher cannot be restored.
 - Never roll back to invisible headless execution.
 
-Pause point: review the current-user trust boundary, Herdr pane lifecycle, and
-Copilot tool permissions before enabling tool-capable profiles by default.
+Completion evidence:
+
+- Herdr `0.7.5` protocol `17` passed structured worker, pane reuse,
+  cross-session parallelism, terminal-state, and live visibility checks.
+- GitHub Copilot CLI `1.0.75`, Codex, and Open WebUI `v0.9.5` passed their live
+  current-user compatibility matrices through the localhost API.
+- Open WebUI cancellation used the specified bounded-detach behavior because
+  `v0.9.5` did not close its upstream stream; the provider remained tracked
+  through its configured timeout and accounting completed exactly once.
+- The root installer, dedicated service user, direct inference spawn paths,
+  Claude SDK/channel bridge, Codex app-server, and their unused dependencies
+  were removed.
+- All built-in and generic CLI-provider inference now shares the typed Herdr
+  execution backend. Provider login probes remain current-user admin actions
+  and do not perform inference.
 
 ## Phase 5: Provider reliability
 
-Status: Planned
+Status: Complete
+
+Completed: 2026-07-28
 
 Scope:
 
@@ -214,6 +233,20 @@ npm test
 scripts/test-provider-stress.sh
 scripts/test-herdr-load.sh
 ```
+
+Completion evidence:
+
+- Queues enforce configured maximum depth and queue-wait duration before pane
+  creation.
+- Provider and pane results use one completed, failed, cancelled, or timed-out
+  terminal path with bounded cleanup.
+- Error responses classify Herdr, queue, executable, login, network, quota,
+  model, validation, timeout, cancellation, and recursion failures with
+  explicit retryability.
+- Explicit shared sessions serialize in one pane; independent sessions use
+  distinct panes and execute concurrently.
+- Provider stress, fallback/accounting, cancellation, and live Herdr load
+  suites leave no worker or pane falsely working.
 
 ## Phase 6: Desktop-user security and privacy
 

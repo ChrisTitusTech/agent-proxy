@@ -588,6 +588,7 @@ export function registerChatCompletionsRoute(
               signal: abortController.signal,
               onDebug,
               clientKey,
+              requestId,
               reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
               providerOverrides: route.providerOverrides,
               extraBody: route.extraBody,
@@ -743,6 +744,7 @@ export function registerChatCompletionsRoute(
               temperature: body.temperature,
               onDebug,
               clientKey,
+              requestId,
               reasoningEffort: bodyReasoningEffort ?? route.reasoningEffort,
               providerOverrides: route.providerOverrides,
               extraBody: route.extraBody,
@@ -899,6 +901,10 @@ export function registerChatCompletionsRoute(
 
           deps.activeRequests.finish(requestId);
           deps.healthChecker.onRequestFailure(route.provider);
+          if (!classifyProviderError(
+            lastError,
+            route.provider,
+          ).fallbackEligible) break;
           continue;
         }
       }

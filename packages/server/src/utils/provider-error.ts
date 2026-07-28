@@ -5,6 +5,12 @@ export type ProviderFailureKind =
   | 'unreachable'
   | 'timeout'
   | 'cancelled'
+  | 'herdr_unavailable'
+  | 'queue_overloaded'
+  | 'quota_exceeded'
+  | 'model_unavailable'
+  | 'validation_error'
+  | 'recursion'
   | 'provider_error';
 
 export interface ProviderFailure {
@@ -12,6 +18,8 @@ export interface ProviderFailure {
   code: string;
   statusCode: number;
   message: string;
+  retryable: boolean;
+  fallbackEligible: boolean;
 }
 
 function safeProviderName(provider?: string): string {
@@ -53,6 +61,36 @@ export function classifyProviderError(
   const normalized = raw.toLowerCase();
   const label = safeProviderName(provider);
 
+  if (/routes provider traffic back to agent-proxy|provider recursion/.test(normalized)) {
+    return {
+      kind: 'recursion',
+      code: 'provider_recursion',
+      statusCode: 400,
+      message: `${label} configuration recursively targets this agent-proxy listener.`,
+      retryable: false,
+      fallbackEligible: false,
+    };
+  }
+  if (/herdr.*(?:unavailable|not running|incompatible|failed)|no herdr execution backend/.test(normalized)) {
+    return {
+      kind: 'herdr_unavailable',
+      code: 'herdr_unavailable',
+      statusCode: 503,
+      message: 'Herdr is unavailable. Start the current-user Herdr session and retry.',
+      retryable: true,
+      fallbackEligible: false,
+    };
+  }
+  if (/queue is full|queue wait timed out/.test(normalized)) {
+    return {
+      kind: 'queue_overloaded',
+      code: 'provider_queue_overloaded',
+      statusCode: 503,
+      message: `${label} is at capacity. Retry later.`,
+      retryable: true,
+      fallbackEligible: true,
+    };
+  }
   if (
     /\benoent\b|command not found|executable .*not found|failed to spawn|spawn .* no such file/.test(normalized)
   ) {
@@ -60,7 +98,9 @@ export function classifyProviderError(
       kind: 'executable_missing',
       code: 'provider_executable_missing',
       statusCode: 503,
-      message: `${label} executable is unavailable. Install the configured CLI for the service account.`,
+      message: `${label} executable is unavailable for the logged-in user.`,
+      retryable: false,
+      fallbackEligible: true,
     };
   }
   if (
@@ -70,7 +110,9 @@ export function classifyProviderError(
       kind: 'login_expired',
       code: 'provider_login_expired',
       statusCode: 502,
-      message: `${label} service-account login expired. Refresh it from Dashboard > Provider Login.`,
+      message: `${label} login expired. Refresh the logged-in user's provider session.`,
+      retryable: false,
+      fallbackEligible: true,
     };
   }
   if (
@@ -80,7 +122,9 @@ export function classifyProviderError(
       kind: 'login_required',
       code: 'provider_login_required',
       statusCode: 502,
-      message: `${label} service account is not logged in. Start login from Dashboard > Provider Login.`,
+      message: `${label} is not logged in for the current user.`,
+      retryable: false,
+      fallbackEligible: true,
     };
   }
   if (
@@ -91,6 +135,38 @@ export function classifyProviderError(
       code: 'provider_unreachable',
       statusCode: 502,
       message: `${label} authentication or model service is unreachable. Check network access and retry.`,
+      retryable: true,
+      fallbackEligible: true,
+    };
+  }
+  if (/quota|rate limit|too many requests|insufficient credits|usage limit/.test(normalized)) {
+    return {
+      kind: 'quota_exceeded',
+      code: 'provider_quota_exceeded',
+      statusCode: 429,
+      message: `${label} quota is exhausted or rate limited.`,
+      retryable: true,
+      fallbackEligible: true,
+    };
+  }
+  if (/model .*not found|unknown model|unsupported model|model unavailable/.test(normalized)) {
+    return {
+      kind: 'model_unavailable',
+      code: 'provider_model_unavailable',
+      statusCode: 400,
+      message: `${label} does not provide the requested model.`,
+      retryable: false,
+      fallbackEligible: true,
+    };
+  }
+  if (/invalid (?:request|argument|prompt)|validation failed|bad request/.test(normalized)) {
+    return {
+      kind: 'validation_error',
+      code: 'provider_validation_error',
+      statusCode: 400,
+      message: `${label} rejected the request as invalid.`,
+      retryable: false,
+      fallbackEligible: false,
     };
   }
   if (/timed out|timeout/.test(normalized)) {
@@ -99,6 +175,8 @@ export function classifyProviderError(
       code: 'timeout',
       statusCode: 504,
       message: `${label} request timed out.`,
+      retryable: true,
+      fallbackEligible: true,
     };
   }
   if (/cancelled|canceled|aborted/.test(normalized)) {
@@ -107,6 +185,8 @@ export function classifyProviderError(
       code: 'request_cancelled',
       statusCode: 499,
       message: 'Request was cancelled.',
+      retryable: false,
+      fallbackEligible: false,
     };
   }
   return {
@@ -114,5 +194,7 @@ export function classifyProviderError(
     code: 'provider_error',
     statusCode: 502,
     message: sanitizeProviderError(raw) || `${label} request failed.`,
+    retryable: false,
+    fallbackEligible: true,
   };
 }

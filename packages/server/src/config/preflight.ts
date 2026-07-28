@@ -3,6 +3,7 @@ import {
   constants,
   existsSync,
   mkdirSync,
+  realpathSync,
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,8 +112,32 @@ export function runPreflightChecks(
   }
 
   const pathValue = options.path ?? process.env.PATH ?? '';
+  const herdrExecutable = findExecutable(config.herdr.binary, pathValue, process.cwd());
+  if (!herdrExecutable) {
+    errors.push(`herdr.binary is not an executable file or PATH command: ${config.herdr.binary}`);
+  } else {
+    executables.herdr = herdrExecutable;
+  }
+  try {
+    assertWritableDirectory(config.herdr.runtimeDirectory, 'Herdr runtime directory', true);
+    const runtimeStat = statSync(config.herdr.runtimeDirectory);
+    const currentUid = process.getuid?.();
+    if (currentUid !== undefined && runtimeStat.uid !== currentUid) {
+      errors.push(
+        `Herdr runtime directory must be owned by uid ${currentUid}: ${config.herdr.runtimeDirectory}`,
+      );
+    }
+  } catch (error) {
+    errors.push(
+      `Herdr runtime directory is not writable: ${config.herdr.runtimeDirectory} (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+
   for (const [name, provider] of Object.entries(config.providers)) {
     if (!provider.enabled) continue;
+    if (/(?:^|[/\\])agent-proxy(?:$|\.)/.test(provider.cli_path)) {
+      errors.push(`providers.${name}.cli_path must not recursively invoke agent-proxy.`);
+    }
     const executable = findExecutable(
       provider.cli_path,
       pathValue,
@@ -124,6 +149,12 @@ export function runPreflightChecks(
       );
     } else {
       executables[name] = executable;
+      const targetName = realpathSync(executable).split(/[/\\]/).at(-1) ?? '';
+      if (/^agent-proxy(?:$|\.)/.test(targetName)) {
+        errors.push(
+          `providers.${name}.cli_path resolves to agent-proxy and would recurse.`,
+        );
+      }
     }
 
     if (provider.working_dir) {

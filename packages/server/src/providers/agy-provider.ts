@@ -1,7 +1,7 @@
 import type { ExecuteOptions, ExecuteResult, ProviderConfigYaml, ProviderEvent, TokenUsage } from '@agent-proxy/shared';
-import { BaseProvider, gracefulKill, trackProcess } from './base-provider.js';
+import { BaseProvider } from './base-provider.js';
 import { convertMessagesToSinglePrompt } from '../utils/message-converter.js';
-import { spawn } from 'node:child_process';
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
 
 
 
@@ -28,8 +28,12 @@ const MODEL_PLACEHOLDER = 'antigravity';
 export class AgyProvider extends BaseProvider {
   readonly name = 'agy' as const;
 
-  constructor(config: ProviderConfigYaml) {
-    super(config);
+  constructor(
+    config: ProviderConfigYaml,
+    executionBackend?: ProviderExecutionBackend,
+    proxyPort?: number,
+  ) {
+    super(config, executionBackend, proxyPort);
     this.initParser();
   }
 
@@ -67,7 +71,7 @@ export class AgyProvider extends BaseProvider {
 
   override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
     const args = this.buildArgs({ ...options, stream: false });
-    const { stdout, stderr, exitCode } = await this.runOnce(args, options.signal);
+    const { stdout, stderr, exitCode } = await this.runProcess(args, options);
 
     if (exitCode !== 0) {
       options.onDebug?.({ cliArgs: [this.config.cli_path, ...args], stdout, stderr });
@@ -103,55 +107,4 @@ export class AgyProvider extends BaseProvider {
     };
   }
 
-
-
-  private runOnce(
-    args: string[],
-    signal?: AbortSignal,
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return new Promise((resolve, reject) => {
-      const isWin = process.platform === 'win32';
-      const child = spawn(this.config.cli_path, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: this.getCleanEnv(),
-        cwd: this.workingDir,
-        shell: isWin,
-        detached: !isWin,
-      });
-      trackProcess(child, !isWin);
-
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-
-      const timeout = setTimeout(() => {
-        gracefulKill(child);
-        reject(new Error(`agy CLI timed out after ${this.config.timeout_ms}ms`));
-      }, this.config.timeout_ms);
-
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          clearTimeout(timeout);
-          gracefulKill(child);
-          reject(new Error('Request cancelled'));
-        }, { once: true });
-      }
-
-      child.stdout?.on('data', (data: Buffer) => stdoutChunks.push(data));
-      child.stderr?.on('data', (data: Buffer) => stderrChunks.push(data));
-
-      child.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`Failed to spawn agy CLI: ${err.message}`));
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timeout);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-          exitCode: code ?? 1,
-        });
-      });
-    });
-  }
 }

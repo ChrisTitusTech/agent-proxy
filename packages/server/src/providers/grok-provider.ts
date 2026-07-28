@@ -1,7 +1,7 @@
 import type { ExecuteOptions, ExecuteResult, ProviderConfigYaml, ProviderEvent, TokenUsage } from '@agent-proxy/shared';
-import { BaseProvider, gracefulKill, trackProcess } from './base-provider.js';
+import { BaseProvider } from './base-provider.js';
 import { convertMessagesToSinglePrompt } from '../utils/message-converter.js';
-import { spawn } from 'node:child_process';
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
 import {
   adaptExternalToolResult,
   externalToolEvents,
@@ -28,8 +28,12 @@ function estimateTokens(text: string): TokenUsage {
 export class GrokProvider extends BaseProvider {
   readonly name = 'grok' as const;
 
-  constructor(config: ProviderConfigYaml) {
-    super(config);
+  constructor(
+    config: ProviderConfigYaml,
+    executionBackend?: ProviderExecutionBackend,
+    proxyPort?: number,
+  ) {
+    super(config, executionBackend, proxyPort);
     this.initParser();
   }
 
@@ -41,7 +45,7 @@ export class GrokProvider extends BaseProvider {
     if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_ARG_BYTES) {
       throw new Error(
         `grok: prompt exceeds ${MAX_PROMPT_ARG_BYTES} bytes ` +
-        `(actual ${Buffer.byteLength(prompt, 'utf8')}). Grok headless mode passes the prompt through ` +
+        `(actual ${Buffer.byteLength(prompt, 'utf8')}). Grok batch mode passes the prompt through ` +
         `the -p argument and is constrained by the macOS 1 MB ARG_MAX limit. Shorten or summarize the request.`
       );
     }
@@ -91,7 +95,7 @@ export class GrokProvider extends BaseProvider {
     const prepared = prepareExternalToolRequest(options);
     const effectiveOptions = prepared?.options ?? options;
     const args = this.buildArgs({ ...effectiveOptions, stream: false });
-    const { stdout, stderr, exitCode } = await this.runOnce(args, options.signal);
+    const { stdout, stderr, exitCode } = await this.runProcess(args, options);
 
     if (exitCode !== 0) {
       options.onDebug?.({ cliArgs: [this.config.cli_path, ...args], stdout, stderr });
@@ -114,56 +118,5 @@ export class GrokProvider extends BaseProvider {
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
     const result = await this.execute({ ...options, stream: false });
     yield* externalToolEvents(result);
-  }
-
-
-  private runOnce(
-    args: string[],
-    signal?: AbortSignal,
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return new Promise((resolve, reject) => {
-      const isWin = process.platform === 'win32';
-      const child = spawn(this.config.cli_path, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: this.getCleanEnv(),
-        cwd: this.workingDir,
-        shell: isWin,
-        detached: !isWin,
-      });
-      trackProcess(child, !isWin);
-
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-
-      const timeout = setTimeout(() => {
-        gracefulKill(child);
-        reject(new Error(`grok CLI timed out after ${this.config.timeout_ms}ms`));
-      }, this.config.timeout_ms);
-
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          clearTimeout(timeout);
-          gracefulKill(child);
-          reject(new Error('Request cancelled'));
-        }, { once: true });
-      }
-
-      child.stdout?.on('data', (data: Buffer) => stdoutChunks.push(data));
-      child.stderr?.on('data', (data: Buffer) => stderrChunks.push(data));
-
-      child.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`Failed to spawn grok CLI: ${err.message}`));
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timeout);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-          exitCode: code ?? 1,
-        });
-      });
-    });
   }
 }

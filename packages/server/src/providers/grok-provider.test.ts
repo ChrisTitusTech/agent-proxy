@@ -1,21 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { ExecuteOptions, ProviderConfigYaml, ProviderEvent } from '@agent-proxy/shared';
-import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
-
-
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    spawn: vi.fn(),
-  };
-});
-
-import { spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { GrokProvider } from './grok-provider.js';
-
-const spawnMock = vi.mocked(spawn);
+import type { ProviderExecutionBackend } from '../herdr/launcher.js';
 
 function baseConfig(extra: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml {
   return {
@@ -39,21 +26,32 @@ function baseOptions(extra: Partial<ExecuteOptions> = {}): ExecuteOptions {
 }
 
 
-function fakeChild(stdout: string, stderr = '', exitCode = 0) {
-  const child = new EventEmitter() as unknown as ReturnType<typeof spawn>;
-  (child as unknown as { stdout: Readable }).stdout = Readable.from([Buffer.from(stdout)]);
-  (child as unknown as { stderr: Readable }).stderr = Readable.from([Buffer.from(stderr)]);
-  (child as unknown as { kill: (sig?: string) => boolean }).kill = vi.fn(() => true);
-  (child as unknown as { killed: boolean }).killed = false;
-  (child as unknown as { stdin: { end: () => void; write: () => void } }).stdin = { end: vi.fn(), write: vi.fn() };
-
-  setImmediate(() => (child as unknown as EventEmitter).emit('close', exitCode));
-  return child;
+function fakeBackend(output: string, error = '', exitCode = 0): ProviderExecutionBackend {
+  return {
+    readiness: async () => ({ ready: true }),
+    shutdown: async () => undefined,
+    start: async () => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const completion = new Promise<{
+        exitCode: number;
+        paneId: string;
+        terminalState: 'completed' | 'failed';
+      }>((resolve) => {
+        setImmediate(() => {
+          stdout.end(output);
+          stderr.end(error);
+          resolve({
+            exitCode,
+            paneId: 'test:pane',
+            terminalState: exitCode === 0 ? 'completed' : 'failed',
+          });
+        });
+      });
+      return { stdout, stderr, completion, paneId: 'test:pane', cancel: () => undefined };
+    },
+  };
 }
-
-beforeEach(() => {
-  spawnMock.mockReset();
-});
 
 type BuildArgs = { buildArgs(opts: ExecuteOptions): string[] };
 
@@ -167,29 +165,25 @@ describe('GrokProvider.buildArgs', () => {
 
 describe('executes the Grok provider', () => {
   it('executes the Grok provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('  Hello from grok.  \n'));
-    const provider = new GrokProvider(baseConfig());
+    const provider = new GrokProvider(baseConfig(), fakeBackend('  Hello from grok.  \n'));
     const result = await provider.execute(baseOptions());
     expect(result.content).toBe('Hello from grok.');
     expect(result.finishReason).toBe('stop');
   });
 
   it('executes the Grok provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('\x1B[32mGreen\x1B[0m text'));
-    const provider = new GrokProvider(baseConfig());
+    const provider = new GrokProvider(baseConfig(), fakeBackend('\x1B[32mGreen\x1B[0m text'));
     const result = await provider.execute(baseOptions());
     expect(result.content).toBe('Green text');
   });
 
   it('executes the Grok provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('', 'auth required', 1));
-    const provider = new GrokProvider(baseConfig());
+    const provider = new GrokProvider(baseConfig(), fakeBackend('', 'auth required', 1));
     await expect(provider.execute(baseOptions())).rejects.toThrow(/auth required/);
   });
 
   it('executes the Grok provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('1234567890'));
-    const provider = new GrokProvider(baseConfig());
+    const provider = new GrokProvider(baseConfig(), fakeBackend('1234567890'));
     const result = await provider.execute(baseOptions());
     // 10 chars → ceil(10/4) = 3 completion tokens
     expect(result.usage.completionTokens).toBe(3);
@@ -199,8 +193,7 @@ describe('executes the Grok provider', () => {
 
 describe('executes the Grok provider', () => {
   it('executes the Grok provider', async () => {
-    spawnMock.mockReturnValue(fakeChild('response body'));
-    const provider = new GrokProvider(baseConfig());
+    const provider = new GrokProvider(baseConfig(), fakeBackend('response body'));
     const events: ProviderEvent[] = [];
     for await (const ev of provider.executeStream(baseOptions({ stream: true }))) {
       events.push(ev);
@@ -211,8 +204,7 @@ describe('executes the Grok provider', () => {
   });
 
   it('executes the Grok provider', async () => {
-    spawnMock.mockReturnValue(fakeChild(''));
-    const provider = new GrokProvider(baseConfig());
+    const provider = new GrokProvider(baseConfig(), fakeBackend(''));
     const events: ProviderEvent[] = [];
     for await (const ev of provider.executeStream(baseOptions({ stream: true }))) {
       events.push(ev);

@@ -1,13 +1,19 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Fastify from 'fastify';
 import type { ProviderConfigYaml } from '@agent-proxy/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { BaseProvider } from '../../providers/base-provider.js';
+import { ProviderRegistry } from '../../providers/provider-registry.js';
+import type { HealthChecker } from '../../services/health-checker.js';
+import { QueueManager } from '../../services/queue.js';
 import { closeDatabase, getDatabase, initDatabase } from '../../db/client.js';
 import { settings } from '../../db/schema.js';
 import {
   loadEffectiveProviderConfigs,
   mergeProviderConfigPartials,
+  registerProvidersRoutes,
   validateRuntimeProviderConfig,
 } from './providers.js';
 
@@ -52,6 +58,55 @@ describe('loadEffectiveProviderConfigs', () => {
       ephemeral: true,
       enable_session_reuse: true,
     });
+  });
+
+  it('applies queue limit updates without a restart', async () => {
+    const app = Fastify();
+    const providerConfig: ProviderConfigYaml = {
+      enabled: true,
+      cli_path: 'codex',
+      default_model: 'gpt-5.6-sol',
+      max_concurrent: 1,
+      max_queue_size: 2,
+      max_queue_wait_ms: 100,
+      timeout_ms: 30_000,
+      extra_args: [],
+    };
+    const provider = {
+      name: 'codex',
+      getConfig: () => ({ ...providerConfig }),
+      updateConfig: (partial: Partial<ProviderConfigYaml>) => {
+        Object.assign(providerConfig, partial);
+      },
+    } as unknown as BaseProvider;
+    const registry = new ProviderRegistry();
+    registry.register(provider);
+    const queueManager = new QueueManager();
+    queueManager.addQueue('codex', 1, 2, 100);
+    registerProvidersRoutes(app, {
+      registry,
+      queueManager,
+      healthChecker: {
+        checkProvider: async () => 'healthy',
+      } as unknown as HealthChecker,
+      defaultConfigs: { codex: providerConfig },
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/admin/providers/codex',
+      payload: {
+        max_queue_size: 7,
+        max_queue_wait_ms: 250,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(queueManager.getStatus('codex')).toMatchObject({
+      maxQueueSize: 7,
+      maxQueueWaitMs: 250,
+    });
+    await app.close();
   });
 
   it('discards invalid persisted overrides and rejects invalid writes', async () => {

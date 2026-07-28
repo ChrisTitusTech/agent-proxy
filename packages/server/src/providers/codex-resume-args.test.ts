@@ -92,30 +92,6 @@ describe('CodexProvider buildArgs (resume branch)', () => {
     ]));
   });
 
-  it('rejects external tool selection in app-server mode', async () => {
-    provider = new CodexProvider(baseConfig());
-    (provider as unknown as { config: ProviderConfigYaml }).config.mode = 'app-server';
-    const options = baseOptions({
-      tools: [{
-        type: 'function',
-        function: {
-          name: 'lookup',
-          parameters: { type: 'object' },
-        },
-      }],
-      toolChoice: 'required',
-    });
-
-    await expect(provider.execute(options)).rejects.toThrow(
-      'External tool selection is not supported in Codex app-server mode; use cli mode.',
-    );
-    await expect(
-      provider.executeStream(options)[Symbol.asyncIterator]().next(),
-    ).rejects.toThrow(
-      'External tool selection is not supported in Codex app-server mode; use cli mode.',
-    );
-  });
-
   it('builds Codex resume arguments', () => {
     provider = new CodexProvider(baseConfig());
     const args = (provider as any).buildArgs(baseOptions({

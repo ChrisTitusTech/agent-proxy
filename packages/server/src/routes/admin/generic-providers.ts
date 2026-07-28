@@ -197,7 +197,12 @@ export function registerGenericProviderRoutes(
       await saveGenericProviderToDb(name, config);
 
 
-      const provider = new GenericCliProvider(name, config);
+      const provider = new GenericCliProvider(
+        name,
+        config,
+        deps.registry.executionBackend,
+        deps.registry.proxyPort,
+      );
       deps.registry.register(provider);
       deps.queueManager.addQueue(name, config.max_concurrent);
 
@@ -258,7 +263,12 @@ export function registerGenericProviderRoutes(
       if (hasStructuralChange && deps.registry.has(name)) {
 
         deps.registry.unregister(name);
-        const newProvider = new GenericCliProvider(name, updated);
+        const newProvider = new GenericCliProvider(
+          name,
+          updated,
+          deps.registry.executionBackend,
+          deps.registry.proxyPort,
+        );
         deps.registry.register(newProvider);
       } else if (deps.registry.has(name)) {
 
@@ -359,7 +369,12 @@ export function registerGenericProviderRoutes(
       };
 
 
-      const testProvider = new GenericCliProvider(providerName, config);
+      const testProvider = new GenericCliProvider(
+        providerName,
+        config,
+        deps.registry.executionBackend,
+        deps.registry.proxyPort,
+      );
       const model = config.default_model || '';
       const startTime = Date.now();
 

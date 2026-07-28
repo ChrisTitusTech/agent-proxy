@@ -4,7 +4,7 @@ This file tracks work derived from [SPEC.md](./SPEC.md) and
 [ROADMAP.md](./ROADMAP.md). A task is complete only when its acceptance and
 validation evidence pass.
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## Historical phases
 
@@ -53,32 +53,33 @@ and sanitized evidence locations are preserved in
 
 ## Phase 4: User-owned Herdr execution
 
-Status: Ready to begin
+Status: Complete
 
-- [ ] P4-01: Replace the machine-wide deployment with a user-owned XDG layout.
+- [x] P4-01: Replace the machine-wide deployment with a user-owned XDG layout.
   - Acceptance: releases, configuration, data, state, backups, logs, and
     runtime jobs live in the paths defined by `SPEC.md`; install, upgrade,
     rollback, backup, and uninstall require no root and preserve ownership.
   - Validation: `scripts/test-user-install.sh` using isolated `HOME` and XDG
     directories, including spaces and shell metacharacters in paths.
-- [ ] P4-02: Start Herdr and `agent-proxy` with the user login session.
+- [x] P4-02: Start Herdr and `agent-proxy` with the user login session.
   - Acceptance: systemd user units use no `User=` or `Group=`, Herdr becomes
     ready before inference is accepted, logout performs bounded shutdown, and
     the next login restores both services.
   - Validation: user-unit verification plus `scripts/test-user-service.sh`.
-- [ ] P4-03: Add a typed Herdr launcher and worker protocol.
+- [x] P4-03: Add a typed Herdr launcher and worker protocol.
   - Acceptance: the proxy creates or reuses the designated workspace, tab, and
     pane; request arguments and results use owner-only structured IPC rather
     than terminal scraping or shell interpolation.
   - Validation: fake Herdr socket and fake provider contract tests.
-- [ ] P4-04: Route every built-in provider attempt through Herdr.
-  - Acceptance: Claude, Codex, Antigravity, and Grok non-streaming and
-    streaming executions cannot bypass the launcher; health, model discovery,
-    and admin-only requests neither spawn agents nor create panes.
+- [x] P4-04: Route every CLI-provider attempt through Herdr.
+  - Acceptance: Claude, Codex, Antigravity, Grok, and configured generic CLI
+    non-streaming and streaming executions cannot bypass the launcher; health,
+    model discovery, and admin-only requests neither spawn agents nor create
+    panes.
   - Validation: provider matrix covering inference, health, model discovery,
     and admin-only requests, with a direct-spawn canary that fails if inference
     launches outside Herdr or a non-inference request spawns an agent.
-- [ ] P4-05: Correlate API clients, sessions, and Herdr panes.
+- [x] P4-05: Correlate API clients, sessions, and Herdr panes.
   - Acceptance: explicit client session IDs reuse only compatible panes;
     requests without an explicit ID remain isolated; model, provider,
     directory, and permission changes invalidate reuse. Overlapping turns that
@@ -86,43 +87,45 @@ Status: Ready to begin
     output cannot interleave.
   - Validation: session reuse, expiration, collision, cross-client, and
     overlapping shared-pane turn tests.
-- [ ] P4-06: Preserve structured streaming and tool calls through the worker.
+- [x] P4-06: Preserve structured streaming and tool calls through the worker.
   - Acceptance: the proxy consumes raw structured output over IPC, not rendered
     terminal content; text deltas and tool events retain order, IDs, arguments,
     and terminal status.
   - Validation: Chat Completions, Responses, and Messages streaming/tool
     contract suites through a fake Herdr worker.
-- [ ] P4-07: Implement cancellation, timeout, fallback, and shutdown cleanup.
-  - Acceptance: aborting an API request stops its provider process and updates
-    the pane exactly once; fallback starts only after the failed attempt is
-    terminal; proxy shutdown leaves no orphaned worker or false working pane.
+- [x] P4-07: Implement cancellation, timeout, fallback, and shutdown cleanup.
+  - Acceptance: direct cancellation stops the provider process and updates the
+    pane exactly once. When an intermediary requires bounded detach, provider
+    work remains tracked until exit or timeout and accounting still occurs
+    once. Fallback starts only after the failed attempt is terminal; proxy
+    shutdown leaves no orphaned worker or false working pane.
   - Validation: process-tree, timeout, fallback, and shutdown integration tests.
-- [ ] P4-08: Fail closed when Herdr is unavailable.
+- [x] P4-08: Fail closed when Herdr is unavailable.
   - Acceptance: incompatible or unavailable Herdr returns a sanitized `503`;
     no hidden headless provider process starts; health distinguishes API and
     Herdr readiness. Unauthenticated health exposes only generic liveness;
     detailed readiness requires authentication.
   - Validation: unavailable, stale-socket, protocol-mismatch, and reconnect
     tests plus authenticated and unauthenticated health-response fixtures.
-- [ ] P4-09: Prevent provider recursion through the localhost proxy.
+- [x] P4-09: Prevent provider recursion through the localhost proxy.
   - Acceptance: Codex, Copilot, Grok, and other supported client
     configurations that point the child provider back at the same listener are
     rejected before a pane starts.
   - Validation: configuration fixtures for direct, symlinked, hostname, IPv4,
     and IPv6 loopback endpoints.
-- [ ] P4-10: Validate GitHub Copilot as a localhost API client.
+- [x] P4-10: Validate GitHub Copilot as a localhost API client.
   - Acceptance: pinned Copilot CLI discovers or selects the configured model
     and completes streaming text, cancellation, isolation, and one tool loop;
     every provider attempt is visible in Herdr.
   - Validation:
     `scripts/test-client-compat.sh --client copilot --require-live`.
-- [ ] P4-11: Rerun Codex and Open WebUI under the current-user runtime.
+- [x] P4-11: Rerun Codex and Open WebUI under the current-user runtime.
   - Acceptance: enabled clients pass their Phase 3 matrix with current-user
     authentication and Herdr pane assertions.
   - Validation:
     `scripts/test-client-compat.sh --client codex --require-live` and
     `scripts/test-open-webui-compat.sh --all --require-live`.
-- [ ] P4-12: Remove superseded execution and deployment code.
+- [x] P4-12: Remove superseded execution and deployment code.
   - Acceptance: the root installer, dedicated-user unit, service-account
     wording in active code, configuration, and current runbooks, direct
     headless provider path, unsupported extension paths, and unused
@@ -149,8 +152,23 @@ scripts/test-herdr-launcher.sh
 scripts/test-client-compat.sh --client copilot --require-live
 scripts/test-client-compat.sh --client codex --require-live
 OPEN_WEBUI_MODELS=gpt-5.6-sol \
+OPEN_WEBUI_ALLOW_BOUNDED_DETACH=true \
   scripts/test-open-webui-compat.sh --all --require-live
 ```
+
+Completion evidence:
+
+- Current-user install and systemd-user lifecycle suites pass in isolated XDG
+  directories with owner-only configuration, credentials, and runtime files.
+- Herdr `0.7.5` protocol `17` passes structured worker, fail-closed readiness,
+  pane reuse, same-pane serialization, cross-session parallelism, and live pane
+  metadata checks.
+- Copilot CLI `1.0.75`, Codex, and Open WebUI `v0.9.5` pass live current-user
+  text, streaming, isolation, tool, visibility, and accounting checks. Open
+  WebUI cancellation uses the allowed bounded-detach outcome.
+- Dead-code analysis is clean after removing the legacy service deployment,
+  direct inference paths, Claude SDK/channel bridge, Codex app-server, unused
+  UI, and obsolete dependencies.
 
 Rollback:
 
@@ -167,18 +185,18 @@ Rollback:
 
 ## Phase 5: Provider reliability
 
-Status: Planned
+Status: Complete
 
-- [ ] P5-01: Normalize request, pane, worker, and provider terminal states.
-- [ ] P5-02: Add bounded queues and backpressure before pane creation.
-- [ ] P5-03: Classify failures and retryability.
-- [ ] P5-04: Make fallback and accounting idempotent.
-- [ ] P5-05: Harden Codex resume and persistent-session concurrency.
-- [ ] P5-06: Harden Claude session and tool isolation.
-- [ ] P5-07: Validate Antigravity labels and buffered behavior.
-- [ ] P5-08: Harden Grok execution and streaming.
-- [ ] P5-09: Recover from subscription expiry and reauthentication.
-- [ ] P5-10: Stress Copilot and Open WebUI request patterns.
+- [x] P5-01: Normalize request, pane, worker, and provider terminal states.
+- [x] P5-02: Add bounded queues and backpressure before pane creation.
+- [x] P5-03: Classify failures and retryability.
+- [x] P5-04: Make fallback and accounting idempotent.
+- [x] P5-05: Harden Codex resume and persistent-session concurrency.
+- [x] P5-06: Harden Claude session and tool isolation.
+- [x] P5-07: Validate Antigravity labels and buffered behavior.
+- [x] P5-08: Harden Grok execution and streaming.
+- [x] P5-09: Recover from subscription expiry and reauthentication.
+- [x] P5-10: Stress Copilot and Open WebUI request patterns.
 
 Phase exit gate:
 
@@ -188,6 +206,16 @@ npm test
 scripts/test-provider-stress.sh
 scripts/test-herdr-load.sh
 ```
+
+Completion evidence:
+
+- Bounded queue-depth and queue-wait tests reject overload before pane creation.
+- Failure classification covers Herdr, executable, login, network, quota,
+  model, validation, timeout, cancellation, recursion, and provider failures.
+- Codex shared sessions serialize safely; Claude request sessions remain
+  isolated; Antigravity and Grok buffered paths preserve terminal state.
+- Provider stress, retry/accounting, cancellation, and live Herdr load suites
+  complete without stale workers or falsely working panes.
 
 ## Phase 6: Desktop-user security and privacy
 
@@ -242,8 +270,8 @@ scripts/acceptance-check.sh --require-live
 Status: Planned
 
 - [ ] P8-01: Confirm upstream licensing and attribution obligations.
-- [ ] P8-02: Remove or freeze the provider-side generic CLI and HTTP adapter
-      boundary while retaining the reusable Phase 2 protocol adapters.
+- [ ] P8-02: Freeze the supported generic CLI and HTTP adapter boundaries while
+      retaining the reusable Phase 2 protocol adapters.
 - [ ] P8-03: Freeze Linux, Herdr, client, provider, and capability versions.
 - [ ] P8-04: Make user-owned release artifacts reproducible.
 - [ ] P8-05: Rehearse clean installation and login startup.

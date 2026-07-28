@@ -53,8 +53,7 @@ machine-wide deployment.
 
 Static dead-code tools must retain these dynamically launched files:
 
-- `packages/server/src/channel-bridge/start.ts`
-- `packages/server/src/channel-bridge/mcp-reporter.ts`
+- `packages/server/src/herdr/worker.ts`
 - `scripts/client-compat/redact.mjs`
 - `scripts/openwebui/compat.mjs`
 

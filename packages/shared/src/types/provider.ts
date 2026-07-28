@@ -83,6 +83,7 @@ export interface ExecuteOptions {
   signal?: AbortSignal;
   onDebug?: (info: DebugCaptureInfo) => void;
   clientKey?: string;
+  requestId?: string;
 
   reasoningEffort?: ReasoningEffort;
 

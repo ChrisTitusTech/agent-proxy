@@ -57,10 +57,10 @@ describe('external CLI tool adapter', () => {
       role: 'system',
     });
     expect(prepared?.options.messages[0].content).toContain('Never disclose secrets.');
-    expect(prepared?.options.messages[0].content).toContain(
+    expect(prepared?.options.messages.at(-1)?.content).toContain(
       'External client tool-selection mode is active.',
     );
-    expect(prepared?.options.messages).toHaveLength(2);
+    expect(prepared?.options.messages).toHaveLength(3);
   });
 
   it('turns a valid envelope into a stable function-call result and stream events', () => {

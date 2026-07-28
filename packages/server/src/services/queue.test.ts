@@ -6,22 +6,30 @@ describe('QueueManager', () => {
     vi.useRealTimers();
   });
 
-  it('rejects work that exceeds its per-task timeout', async () => {
+  it('rejects work that exceeds its queue wait limit', async () => {
     vi.useFakeTimers();
     const manager = new QueueManager();
-    manager.addQueue('codex', 1);
+    manager.addQueue('codex', 1, 2, 10);
+    let release!: () => void;
+    const blocker = manager.enqueue(
+      'codex',
+      () => new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
 
     const result = manager.enqueue(
       'codex',
-      () => new Promise<string>((resolve) => {
-        setTimeout(() => resolve('late'), 100);
-      }),
-      10,
+      async () => 'late',
     );
-    const assertion = expect(result).rejects.toMatchObject({ name: 'TimeoutError' });
+    const rejection = expect(result).rejects.toMatchObject({
+      code: 'provider_queue_wait_timeout',
+    });
 
     await vi.advanceTimersByTimeAsync(11);
+    await rejection;
 
-    await assertion;
+    release();
+    await blocker;
   });
 });
