@@ -23,6 +23,10 @@ child.once('error', (error) => {
   process.exitCode = 1;
 });
 child.once('exit', (code, signal) => {
+  if (stopping) {
+    process.exitCode = 0;
+    return;
+  }
   if (signal) {
     console.error(`Configured Herdr server exited after ${signal}.`);
   }

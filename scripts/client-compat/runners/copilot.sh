@@ -78,9 +78,13 @@ else
 		printf 'Herdr is required to verify Copilot pane cancellation.\n' >&2
 		exit 1
 	}
-	ADMIN_HEADER_FILE="$COMPAT_WORKSPACE/.admin-header"
-	printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" >"$ADMIN_HEADER_FILE"
-	chmod 0600 "$ADMIN_HEADER_FILE"
+	ADMIN_HEADER_DIR=$(mktemp -d)
+	trap 'rm -rf -- "$ADMIN_HEADER_DIR"' EXIT
+	ADMIN_HEADER_FILE="$ADMIN_HEADER_DIR/admin-header"
+	(
+		umask 077
+		printf 'x-admin-token: %s\n' "$AGENT_PROXY_ADMIN_TOKEN" >"$ADMIN_HEADER_FILE"
+	)
 
 	active_request_count() {
 		curl --silent --show-error --fail \

@@ -121,6 +121,12 @@ export function runPreflightChecks(
   try {
     assertWritableDirectory(config.herdr.runtimeDirectory, 'Herdr runtime directory', true);
     const runtimeStat = statSync(config.herdr.runtimeDirectory);
+    const runtimeMode = runtimeStat.mode & 0o777;
+    if (runtimeMode !== 0o700) {
+      errors.push(
+        `Herdr runtime directory must have mode 0700: ${config.herdr.runtimeDirectory}`,
+      );
+    }
     const currentUid = process.getuid?.();
     if (currentUid !== undefined && runtimeStat.uid !== currentUid) {
       errors.push(

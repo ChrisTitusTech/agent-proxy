@@ -403,7 +403,7 @@ export const translations: Record<string, string> = {
     'providers.editGuideTitle': 'Custom Provider Settings',
     'providers.editGuideDesc': 'Changes to CLI arguments, prompt mode, or output mode will re-register the provider.',
     'providers.genericSettings': 'Generic CLI Settings',
-    'providers.runtimeRestricted': 'Built-in providers only allow runtime updates for enabled state, default model, concurrency, timeout, and Codex CLI session options.',
+    'providers.runtimeRestricted': 'Built-in providers only allow runtime updates for enabled state, default model, concurrency, queue size and wait time, timeout, and Codex CLI session options.',
 
 
     'providers.httpSection': 'HTTP Providers',

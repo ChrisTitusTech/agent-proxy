@@ -237,7 +237,10 @@ export async function createApp(
     }));
     const providersReady = providerStatuses.every(
       (provider) => provider.health === 'healthy'
-        && (!provider.login || provider.login.state === 'authenticated'),
+        && (
+          !LOGIN_PROVIDERS.includes(provider.name as typeof LOGIN_PROVIDERS[number])
+          || provider.login?.authenticated === true
+        ),
     );
     const ready = herdr.ready && providersReady;
     return reply.status(ready ? 200 : 503).send({

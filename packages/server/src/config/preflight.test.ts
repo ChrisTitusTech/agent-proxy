@@ -114,6 +114,16 @@ describe('runPreflightChecks', () => {
     expect(result.executables.codex).toBe(executable);
   });
 
+  it('rejects a Herdr runtime directory that is not owner-only', () => {
+    const appConfig = config();
+    mkdirSync(appConfig.herdr.runtimeDirectory, { mode: 0o755 });
+
+    expect(() => runPreflightChecks(appConfig, {
+      configPath: join(tempDir, 'config.yaml'),
+      path: tempDir,
+    })).toThrow(/Herdr runtime directory must have mode 0700/);
+  });
+
   it('reports every actionable startup problem', () => {
     const appConfig = config({
       auth: {

@@ -210,6 +210,7 @@ write_metadata() {
 	revision=$(git -C "$PROJECT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf 'source')
 	recorded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+	install -m 0600 /dev/null "$runner_environment_file" || return 1
 	{
 		printf '{\n'
 		printf '  "schema_version": 1,\n'
@@ -391,7 +392,6 @@ process.stdout.write(health.version);
 			printf 'export AGENT_PROXY_HERDR_RUNTIME_DIR=%q\n' "$HOST_XDG_RUNTIME_DIR"
 		fi
 	} >"$runner_environment_file"
-	chmod 0600 "$runner_environment_file"
 
 	set +e
 	# shellcheck disable=SC2016 # Positional parameters expand in the isolated child shell.

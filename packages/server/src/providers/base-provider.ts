@@ -445,17 +445,29 @@ function activeGrokBaseUrls(config: string, args: string[]): string[] {
 
 function tomlSections(config: string): Map<string, Map<string, string>> {
   const sections = new Map<string, Map<string, string>>([['', new Map()]]);
+  let currentName = '';
   let current = sections.get('')!;
   for (const rawLine of config.split(/\r?\n/)) {
     const line = rawLine.trim();
     const section = /^\[([A-Za-z0-9_.-]+)\]$/.exec(line);
     if (section) {
-      current = sections.get(section[1]) ?? new Map<string, string>();
-      sections.set(section[1], current);
+      currentName = section[1];
+      current = sections.get(currentName) ?? new Map<string, string>();
+      sections.set(currentName, current);
       continue;
     }
     const assignment = /^([A-Za-z0-9_.-]+)\s*=\s*(["'])(.*?)\2$/.exec(line);
-    if (assignment) current.set(assignment[1], assignment[3]);
+    if (!assignment) continue;
+    const keyPath = assignment[1].split('.');
+    const key = keyPath.pop()!;
+    if (keyPath.length === 0) {
+      current.set(key, assignment[3]);
+      continue;
+    }
+    const targetName = [...(currentName ? [currentName] : []), ...keyPath].join('.');
+    const target = sections.get(targetName) ?? new Map<string, string>();
+    sections.set(targetName, target);
+    target.set(key, assignment[3]);
   }
   return sections;
 }
