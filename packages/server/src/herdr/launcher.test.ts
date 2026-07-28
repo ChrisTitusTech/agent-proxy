@@ -392,6 +392,7 @@ socket.on('data', (chunk) => {
         return fixtureCommand(args);
       }
       await new Promise<void>((resolveExit, rejectExit) => {
+        // pane run args contain the worker executable at 3 and socket path at 5.
         const worker = spawn(args[3], [workerPath, args[5]], {
           stdio: 'ignore',
         });

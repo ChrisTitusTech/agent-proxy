@@ -21,6 +21,21 @@ describe('CodexCliSessionManager', () => {
     expect(session?.model).toBe('gpt-5.6-sol');
   });
 
+  it('resumes a session when its execution identity matches', () => {
+    manager.set(
+      'client-1',
+      'thread-abc',
+      'gpt-5.6-sol',
+      'sandbox-workspace-write',
+    );
+
+    expect(manager.get(
+      'client-1',
+      'gpt-5.6-sol',
+      'sandbox-workspace-write',
+    )?.threadId).toBe('thread-abc');
+  });
+
   it('invalidates a session when its execution identity changes', () => {
     manager.set(
       'client-1',
@@ -33,11 +48,6 @@ describe('CodexCliSessionManager', () => {
       'client-1',
       'gpt-5.6-sol',
       'sandbox-read-only',
-    )).toBeNull();
-    expect(manager.get(
-      'client-1',
-      'gpt-5.6-sol',
-      'sandbox-workspace-write',
     )).toBeNull();
   });
 
