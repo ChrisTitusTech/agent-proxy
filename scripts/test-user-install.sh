@@ -54,7 +54,14 @@ grep -Fq "ExecStart=/usr/bin/env node \"${XDG_DATA_HOME//%/%%}/agent-proxy/curre
 grep -Fq "ExecStart=/usr/bin/env node \"${XDG_DATA_HOME//%/%%}/agent-proxy/current/packages/server/dist/herdr/server.js\"" \
 	"$XDG_CONFIG_HOME/systemd/user/herdr.service"
 [[ $(stat -c '%a' "$XDG_CONFIG_HOME/agent-proxy/agent-proxy.env") == 600 ]]
+[[ $(stat -c '%a' "$XDG_CONFIG_HOME/agent-proxy/herdr.env") == 600 ]]
 grep -Fq "PATH=$USER_PATH_BIN:" "$XDG_CONFIG_HOME/agent-proxy/agent-proxy.env"
+grep -Fq "PATH=$USER_PATH_BIN:" "$XDG_CONFIG_HOME/agent-proxy/herdr.env"
+if grep -Eq '^(ADMIN_TOKEN|PROXY_API_KEY)=' \
+	"$XDG_CONFIG_HOME/agent-proxy/herdr.env"; then
+	printf 'Herdr environment unexpectedly contains proxy credentials.\n' >&2
+	exit 1
+fi
 if find "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" ! -user "$(id -un)" -print -quit |
 	grep -q .; then
 	printf 'Installer created a file not owned by the current user.\n' >&2
@@ -125,6 +132,15 @@ if tar -tzf "$second_backup" | grep -q '^state/backups/'; then
 	printf 'Backup archive recursively included prior backups.\n' >&2
 	exit 1
 fi
+
+: >"$SYSTEMCTL_LOG"
+if PATH="$FAKE_BIN:$PATH" "$PROJECT_DIR/scripts/install.sh" \
+	upgrade --archive "$ARCHIVE_V2"; then
+	printf 'Upgrade unexpectedly reinstalled the active release.\n' >&2
+	exit 1
+fi
+[[ $(<"$SYSTEMCTL_STATE") == active ]]
+[[ ! -s "$SYSTEMCTL_LOG" ]]
 
 touch "$SYSTEMCTL_FAIL_ONCE"
 if PATH="$FAKE_BIN:$PATH" "$PROJECT_DIR/scripts/install.sh" upgrade --archive "$ARCHIVE_V3"; then

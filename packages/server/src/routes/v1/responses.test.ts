@@ -2141,6 +2141,63 @@ describe('Responses cancellation, failures, and fallback', () => {
     ]);
     expect(observedSignal?.aborted).toBe(true);
   });
+
+  it.each([false, true])(
+    'records a queued disconnect as cancelled (stream=%s)',
+    async (stream) => {
+      const provider = fakeProvider();
+      const deps = createDeps({ codex: provider });
+      deps.queue.enqueue = vi.fn((
+        _provider: string,
+        _run: () => Promise<unknown>,
+        options: { signal?: AbortSignal } = {},
+      ) => new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          reject(new Error('fixture queue wait cancelled with request'));
+        }, { once: true });
+      })) as unknown as ResponsesDeps['queue']['enqueue'];
+      const fixture = await createSdkClient(deps);
+      app = fixture.app;
+      const address = app.server.address() as AddressInfo;
+      const controller = new AbortController();
+      const request = fetch(`http://127.0.0.1:${address.port}/v1/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer test',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-test',
+          input: 'hello',
+          stream,
+        }),
+        signal: controller.signal,
+      });
+
+      if (stream) {
+        const response = await request;
+        await response.body!.getReader().read();
+      } else {
+        await vi.waitFor(() => {
+          expect(deps.queue.enqueue).toHaveBeenCalledOnce();
+        });
+      }
+      controller.abort();
+      if (!stream) await expect(request).rejects.toThrow();
+
+      const requestLogger = vi.mocked(deps.requestLogger!);
+      await vi.waitFor(() => {
+        expect(requestLogger).toHaveBeenCalledWith(expect.objectContaining({
+          status: 'cancelled',
+          statusCode: 499,
+        }));
+      });
+      expect(requestLogger.mock.calls.some(
+        ([entry]) => entry.status === 'error',
+      )).toBe(false);
+      expect(deps.healthChecker.onRequestFailure).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe.each(['codex', 'grok'])('provider-independent Responses contract: %s', (name) => {

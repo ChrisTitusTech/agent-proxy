@@ -112,6 +112,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private readonly starting = new Set<Promise<ProviderExecutionHandle>>();
   private readonly startingSessionKeys = new Map<string, number>();
   private readonly reservedPaneIds = new Set<string>();
+  private readonly quarantinedSessionKeys = new Set<string>();
   private readonly sessionKeys = new Map<string, SessionKeyRecord>();
   private workspaceId: string | null = null;
   private staleTabsPruned = false;
@@ -311,6 +312,11 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   ): Promise<PaneRecord> {
     const release = await this.mutex.acquire('__pane_capacity__');
     try {
+      if (this.quarantinedSessionKeys.has(sessionKey)) {
+        throw new HerdrUnavailableError(
+          'The prior provider process could not be confirmed stopped. Restart Herdr before reusing this session.',
+        );
+      }
       const existing = this.panes.get(sessionKey);
       if (existing && Date.now() - existing.lastUsedAt <= this.config.paneTtlMs) {
         this.reservedPaneIds.add(existing.paneId);
@@ -433,6 +439,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
         continue;
       }
       this.panes.delete(key);
+      this.quarantinedSessionKeys.delete(key);
       for (const [identity, record] of this.sessionKeys) {
         if (record.key === key) this.sessionKeys.delete(identity);
       }
@@ -542,9 +549,9 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       }
       workerSocket.write(`${JSON.stringify({ type: 'cancel' })}\n`);
       forceCancelTimeout = setTimeout(() => {
-        void this.closeTrackedPane(paneId).then((closed) => {
-          if (closed) finish(undefined, cancellationError);
-        }).catch(() => undefined);
+        void this.containCancelledPane(paneId).finally(() => {
+          finish(undefined, cancellationError);
+        });
       }, 4_000);
     };
 
@@ -680,11 +687,10 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     state: 'working' | 'idle',
     terminalState?: 'completed' | 'failed' | 'timed_out' | 'cancelled',
   ): Promise<void> {
-    if (
-      state === 'idle'
-      && !Array.from(this.panes.values()).some((pane) => pane.paneId === paneId)
-    ) {
-      return;
+    if (state === 'idle') {
+      const entry = Array.from(this.panes.entries())
+        .find(([, pane]) => pane.paneId === paneId);
+      if (!entry || this.quarantinedSessionKeys.has(entry[0])) return;
     }
     const message = state === 'working'
       ? `${request.model}`
@@ -742,11 +748,36 @@ export class HerdrLauncher implements ProviderExecutionBackend {
         return false;
       }
       this.panes.delete(sessionKey);
+      this.quarantinedSessionKeys.delete(sessionKey);
       this.reservedPaneIds.delete(paneId);
       for (const [identity, record] of this.sessionKeys) {
         if (record.key === sessionKey) this.sessionKeys.delete(identity);
       }
       return true;
+    } finally {
+      release();
+    }
+  }
+
+  private async containCancelledPane(paneId: string): Promise<void> {
+    const release = await this.mutex.acquire('__pane_capacity__');
+    try {
+      const entry = Array.from(this.panes.entries())
+        .find(([, pane]) => pane.paneId === paneId);
+      if (!entry) return;
+      const [sessionKey, pane] = entry;
+      try {
+        await this.command(['tab', 'close', pane.tabId]);
+      } catch {
+        this.quarantinedSessionKeys.add(sessionKey);
+        return;
+      }
+      this.panes.delete(sessionKey);
+      this.quarantinedSessionKeys.delete(sessionKey);
+      this.reservedPaneIds.delete(paneId);
+      for (const [identity, record] of this.sessionKeys) {
+        if (record.key === sessionKey) this.sessionKeys.delete(identity);
+      }
     } finally {
       release();
     }

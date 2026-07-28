@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ExecuteOptions, ProviderConfigYaml } from '@agent-proxy/shared';
 import { providerExecutionIdentity } from './base-provider.js';
 import { CodexProvider, filterResumeUnsupportedArgs } from './codex-provider.js';
@@ -218,5 +218,52 @@ describe('CodexProvider buildArgs (resume branch)', () => {
 
     expect(restrictedArgs).not.toContain('resume');
     expect(restrictedArgs).toContain('read-only');
+  });
+
+  it('serializes thread selection for concurrent reusable-session turns', async () => {
+    provider = new CodexProvider(baseConfig());
+    const options = baseOptions({
+      clientKey: 'shared-session',
+      providerOverrides: { cli_options: { enable_session_reuse: true } },
+    });
+    const builtArgs: string[][] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    (provider as any).executeWithoutExternalTools = async (
+      current: ExecuteOptions,
+    ) => {
+      const args = (provider as any).buildArgs(current) as string[];
+      builtArgs.push(args);
+      if (builtArgs.length === 1) {
+        await firstBlocked;
+        provider!.getCliSessionManager()!.set(
+          current.clientKey!,
+          'tid-first',
+          current.model,
+          providerExecutionIdentity(provider!.getEffectiveConfig(current)),
+        );
+      }
+      return {
+        content: 'done',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        finishReason: 'stop',
+      };
+    };
+
+    const first = provider.execute(options);
+    await vi.waitFor(() => expect(builtArgs).toHaveLength(1));
+    const second = provider.execute(options);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(builtArgs).toHaveLength(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(builtArgs[1].slice(0, 3)).toEqual([
+      'exec',
+      'resume',
+      'tid-first',
+    ]);
   });
 });

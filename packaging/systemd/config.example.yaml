@@ -46,6 +46,8 @@ providers:
     timeout_ms: 300000
     extra_args:
       - "--skip-git-repo-check"
+      - "--profile"
+      - "agent_proxy_upstream"
       - "--sandbox"
       - "read-only"
     cli_options:

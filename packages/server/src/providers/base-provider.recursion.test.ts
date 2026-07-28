@@ -302,6 +302,37 @@ model_provider = "openai"
     expect(backend.starts).toHaveLength(1);
   });
 
+  it('separates the native proxy provider from the child upstream profile', async () => {
+    const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
+    temporaryDirectories.push(codexHome);
+    await writeFile(
+      resolve(codexHome, 'config.toml'),
+      `model_provider = "agent_proxy"
+[model_providers.agent_proxy]
+base_url = "http://127.0.0.1:18300/v1"
+[profiles.agent_proxy_upstream]
+model_provider = "openai"
+`,
+      'utf8',
+    );
+    process.env.CODEX_HOME = codexHome;
+    const backend = new RecordingBackend();
+    const provider = new CodexProvider(
+      config({
+        extra_args: ['--profile', 'agent_proxy_upstream'],
+      }),
+      backend,
+      18300,
+    );
+
+    await expect(provider.execute({
+      messages: [{ role: 'user', content: 'test' }],
+      model: 'gpt-5.6-sol',
+      stream: false,
+    })).rejects.toThrow('backend should not start');
+    expect(backend.starts).toHaveLength(1);
+  });
+
   it('rejects an active Grok custom model before creating a pane', async () => {
     const home = await mkdtemp(resolve(tmpdir(), 'agent-proxy-grok-recursion-'));
     temporaryDirectories.push(home);

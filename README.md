@@ -163,12 +163,23 @@ name = "agent-proxy"
 base_url = "http://127.0.0.1:8300/v1"
 env_key = "AGENT_PROXY_API_KEY"
 wire_api = "responses"
+
+# agent-proxy child Codex processes must bypass the localhost proxy.
+[profiles.agent_proxy_upstream]
+model_provider = "openai"
 ```
 
 ```bash
 export AGENT_PROXY_API_KEY=sk-proxy-replace-me
 codex
 ```
+
+Keep the `agent_proxy_upstream` profile selected in the agent-proxy Codex
+provider's `extra_args` (the packaged current-user config does this by
+default). Native Codex uses the root `agent_proxy` provider, while Codex
+children launched through Herdr use the upstream profile. Reusing the root
+provider for both would recursively call agent-proxy and is rejected before a
+pane is created.
 
 Grok Build supports custom models in `~/.grok/config.toml`:
 

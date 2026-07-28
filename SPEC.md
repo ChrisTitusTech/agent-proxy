@@ -148,6 +148,11 @@ child CLI would route its own model traffic back to the same `agent-proxy`
 listener. Diagnostics must identify the conflicting provider configuration
 without printing credentials.
 
+When native Codex targets agent-proxy through the root Codex provider, Codex
+children must select a distinct upstream profile. The current-user example
+uses `agent_proxy_upstream`; child execution must never inherit the native
+client's localhost provider selection.
+
 ## 5. API contract
 
 ### 5.1 Required endpoints

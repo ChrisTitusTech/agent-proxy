@@ -60,7 +60,8 @@ export class QueueManager {
     }
 
     const { queue, maxQueueSize, maxQueueWaitMs } = managed;
-    if (queue.size >= maxQueueSize) {
+    const mustWait = queue.pending >= queue.concurrency;
+    if (mustWait && queue.size >= maxQueueSize) {
       throw new ProviderQueueFullError(
         `${provider} queue is full (${maxQueueSize} waiting requests).`,
       );

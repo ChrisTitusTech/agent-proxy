@@ -60,4 +60,29 @@ describe('QueueManager', () => {
     release();
     await blocker;
   });
+
+  it('allows active work while a zero-capacity queue rejects waiting work', async () => {
+    const manager = new QueueManager();
+    manager.addQueue('codex', 1, 0, 30_000);
+    let release!: () => void;
+    const active = manager.enqueue(
+      'codex',
+      () => new Promise<string>((resolve) => {
+        release = () => resolve('active');
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(manager.getStatus('codex')?.pending).toBe(1);
+    });
+    await expect(manager.enqueue(
+      'codex',
+      async () => 'queued',
+    )).rejects.toMatchObject({
+      code: 'provider_queue_full',
+    });
+
+    release();
+    await expect(active).resolves.toBe('active');
+  });
 });

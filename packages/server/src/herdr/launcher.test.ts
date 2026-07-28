@@ -118,6 +118,8 @@ interface LauncherInternals {
     sessionKey: string,
     request: ProviderExecutionRequest,
   ) => Promise<ProviderExecutionHandle>;
+  containCancelledPane: (paneId: string) => Promise<void>;
+  quarantinedSessionKeys: Set<string>;
 }
 
 function request(clientKey = 'client'): ProviderExecutionRequest {
@@ -296,6 +298,29 @@ describe('Herdr pane lifecycle', () => {
     await internals.prunePanes('');
 
     expect(internals.panes.has('session-a')).toBe(true);
+  });
+
+  it('quarantines a session when forced cancellation cannot close its pane', async () => {
+    const { internals } = launcherWithCommandFixture();
+    internals.panes.set('session-a', {
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      lastUsedAt: Date.now(),
+    });
+    internals.command = async (args: string[]) => {
+      if (args[0] === 'tab' && args[1] === 'close') {
+        throw new Error('pane close failed');
+      }
+      return { type: 'ok' };
+    };
+
+    await internals.containCancelledPane('pane-1');
+
+    expect(internals.quarantinedSessionKeys).toContain('session-a');
+    await expect(internals.ensurePane(
+      'session-a',
+      request(),
+    )).rejects.toThrow(/could not be confirmed stopped/);
   });
 
   it('continues stale-tab cleanup when one tab cannot be closed', async () => {

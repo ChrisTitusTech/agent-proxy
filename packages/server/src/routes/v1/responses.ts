@@ -163,10 +163,6 @@ function createItemId(prefix: 'msg' | 'fc' | 'ctc' | 'rs'): string {
   return `${prefix}_${nanoid(24)}`;
 }
 
-function isTimeoutError(error: Error): boolean {
-  return /timed out|timeout/i.test(error.message);
-}
-
 function isCancellationError(error: Error): boolean {
   return /cancelled|canceled|aborted/i.test(error.message);
 }
@@ -739,7 +735,7 @@ function logExecution(
   deps: ResponsesDeps,
   context: ExecutionContext,
   route: ResolvedRoute,
-  status: 'success' | 'error' | 'timeout',
+  status: 'success' | 'error' | 'timeout' | 'cancelled',
   usage?: TokenUsage,
   errorMessage?: string,
 ): void {
@@ -752,7 +748,13 @@ function logExecution(
     reasoningEffort: context.body.reasoning?.effort as ReasoningEffort | undefined
       ?? route.reasoningEffort,
     status,
-    statusCode: status === 'success' ? 200 : status === 'timeout' ? 504 : 502,
+    statusCode: status === 'success'
+      ? 200
+      : status === 'cancelled'
+        ? 499
+        : status === 'timeout'
+          ? 504
+          : 502,
     promptTokens: usage?.promptTokens,
     completionTokens: usage?.completionTokens,
     totalTokens: usage?.totalTokens,
@@ -852,18 +854,21 @@ async function executeNonStreaming(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       lastErrorProvider = route.provider;
-      const timeout = isTimeoutError(lastError);
+      const failure = classifyProviderError(
+        lastError,
+        route.provider,
+      );
       logExecution(
         deps,
         context,
         route,
-        timeout ? 'timeout' : 'error',
+        failure.kind === 'cancelled'
+          ? 'cancelled'
+          : failure.kind === 'timeout'
+            ? 'timeout'
+            : 'error',
         undefined,
         sanitizeProviderError(lastError.message),
-      );
-      const failure = classifyProviderError(
-        lastError,
-        route.provider,
       );
       if (shouldDegradeProviderHealth(failure)) {
         await deps.healthChecker.onRequestFailure(route.provider);
@@ -1413,6 +1418,7 @@ async function executeStreaming(
     logExecution(deps, context, route, 'success', state.usage);
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
+    const classified = classifyProviderError(failure, route.provider);
     if (!state.terminal && !reply.raw.destroyed) {
       const failed = baseResponse(
         context.responseId,
@@ -1421,7 +1427,6 @@ async function executeStreaming(
         createdAt,
       );
       failed.output = state.output;
-      const classified = classifyProviderError(failure, route.provider);
       failed.error = {
         code: classified.code,
         message: classified.message,
@@ -1436,11 +1441,14 @@ async function executeStreaming(
       deps,
       context,
       route,
-      isTimeoutError(failure) ? 'timeout' : 'error',
+      classified.kind === 'cancelled'
+        ? 'cancelled'
+        : classified.kind === 'timeout'
+          ? 'timeout'
+          : 'error',
       undefined,
       sanitizeProviderError(failure.message),
     );
-    const classified = classifyProviderError(failure, route.provider);
     if (shouldDegradeProviderHealth(classified)) {
       await deps.healthChecker.onRequestFailure(route.provider);
     }

@@ -115,6 +115,7 @@ validate_archive() {
 		agent-proxy/packaging/systemd/agent-proxy.service
 		agent-proxy/packaging/systemd/herdr.service
 		agent-proxy/packaging/systemd/agent-proxy.env
+		agent-proxy/packaging/systemd/herdr.env
 		agent-proxy/packaging/systemd/config.example.yaml
 	)
 	listing=$(tar -tzf "$ARCHIVE") || {
@@ -144,6 +145,20 @@ validate_archive() {
 			exit 1
 		}
 	done
+}
+
+validate_upgrade_candidate() {
+	validate_archive
+	local release_id
+	release_id=$(tar -xOf "$ARCHIVE" agent-proxy/VERSION)
+	[[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || {
+		printf 'Invalid release identifier in archive.\n' >&2
+		exit 1
+	}
+	[[ ! -e "$DATA_DIR/releases/$release_id" ]] || {
+		printf 'Release is already installed: %s\n' "$release_id" >&2
+		exit 1
+	}
 }
 
 generate_secret() {
@@ -326,6 +341,8 @@ install_release() (
 	if ! grep -q '^PATH=' "$CONFIG_DIR/agent-proxy.env"; then
 		printf 'PATH=%s\n' "$(safe_user_path)" >>"$CONFIG_DIR/agent-proxy.env"
 	fi
+	install -m 0600 /dev/null "$CONFIG_DIR/herdr.env"
+	printf 'PATH=%s\n' "$(safe_user_path)" >"$CONFIG_DIR/herdr.env"
 
 	validate_release_config "$release_dir"
 	[[ -z "$old_current" ]] || ln -sfn "$old_current" "$DATA_DIR/previous"
@@ -350,6 +367,7 @@ upgrade)
 		printf -- '--archive is required for upgrade.\n' >&2
 		exit 2
 	}
+	validate_upgrade_candidate
 	was_active=false
 	if service_is_active; then
 		was_active=true

@@ -41,10 +41,11 @@ if grep -q '^ProtectSystem=strict$' "$PROXY_UNIT" "$HERDR_UNIT"; then
 	exit 1
 fi
 grep -q '^Documentation=https://herdr.dev$' "$HERDR_UNIT"
-if grep -q '^EnvironmentFile=' "$HERDR_UNIT"; then
+if grep -q '^EnvironmentFile="@CONFIG_DIR@/agent-proxy.env"$' "$HERDR_UNIT"; then
 	printf 'Herdr must not inherit the proxy credential environment file.\n' >&2
 	exit 1
 fi
+grep -q '^EnvironmentFile="@CONFIG_DIR@/herdr.env"$' "$HERDR_UNIT"
 grep -q '^Environment=CONFIG_PATH="@CONFIG_DIR@/config.yaml"$' "$HERDR_UNIT"
 grep -q '^Environment=AGENT_PROXY_DATABASE_PATH="@STATE_DIR@/agent-proxy.db"$' "$HERDR_UNIT"
 grep -q '^ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/herdr/server.js"$' \

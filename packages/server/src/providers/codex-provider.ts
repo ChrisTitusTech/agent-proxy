@@ -11,6 +11,7 @@ import {
   prepareExternalToolRequest,
 } from './external-tool-adapter.js';
 import type { ProviderExecutionBackend } from '../herdr/launcher.js';
+import { KeyedMutex } from '../utils/keyed-mutex.js';
 
 interface CodexExecuteContext {
   text: string;
@@ -91,6 +92,7 @@ export class CodexProvider extends BaseProvider {
   readonly name = 'codex' as const;
 
   private cliSessionManager: CodexCliSessionManager | null = null;
+  private readonly cliSessionMutex = new KeyedMutex();
 
   private warnedEphemeralForceAlias = new Set<string>();
 
@@ -134,6 +136,13 @@ export class CodexProvider extends BaseProvider {
     return this.cliSessionManager;
   }
 
+  private sessionLockKey(options: ExecuteOptions): string | undefined {
+    if (!options.clientKey) return undefined;
+    const effective = this.getEffectiveConfig(options);
+    return effective.cli_options?.enable_session_reuse === true
+      ? options.clientKey
+      : undefined;
+  }
 
   getCliSessionManager(): CodexCliSessionManager | null {
     return this.cliSessionManager;
@@ -322,12 +331,38 @@ export class CodexProvider extends BaseProvider {
   }
 
   override async execute(options: ExecuteOptions): Promise<ExecuteResult> {
-    const prepared = prepareExternalToolRequest(options);
-    const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
-    return prepared ? adaptExternalToolResult(result, prepared) : result;
+    const lockKey = this.sessionLockKey(options);
+    const release = lockKey
+      ? await this.cliSessionMutex.acquire(lockKey, {
+        ...(options.signal ? { signal: options.signal } : {}),
+      })
+      : undefined;
+    try {
+      const prepared = prepareExternalToolRequest(options);
+      const result = await this.executeWithoutExternalTools(prepared?.options ?? options);
+      return prepared ? adaptExternalToolResult(result, prepared) : result;
+    } finally {
+      release?.();
+    }
   }
 
   override async *executeStream(options: ExecuteOptions): AsyncIterable<ProviderEvent> {
+    const lockKey = this.sessionLockKey(options);
+    const release = lockKey
+      ? await this.cliSessionMutex.acquire(lockKey, {
+        ...(options.signal ? { signal: options.signal } : {}),
+      })
+      : undefined;
+    try {
+      yield* this.executeStreamUnlocked(options);
+    } finally {
+      release?.();
+    }
+  }
+
+  private async *executeStreamUnlocked(
+    options: ExecuteOptions,
+  ): AsyncIterable<ProviderEvent> {
     const prepared = prepareExternalToolRequest(options);
     if (prepared) {
       const result = adaptExternalToolResult(

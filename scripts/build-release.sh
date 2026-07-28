@@ -125,6 +125,7 @@ cp -a packages/server/dist "$STAGE_DIR/agent-proxy/packages/server/"
 cp packaging/systemd/agent-proxy.service \
 	packaging/systemd/herdr.service \
 	packaging/systemd/agent-proxy.env \
+	packaging/systemd/herdr.env \
 	packaging/systemd/config.example.yaml \
 	"$STAGE_DIR/agent-proxy/packaging/systemd/"
 printf '%s\n' "$RELEASE_ID" >"$STAGE_DIR/agent-proxy/VERSION"
