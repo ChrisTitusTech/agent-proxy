@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { readFile, stat, unlink } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, readFile, rm, stat, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import type { ChatMessage } from '@agent-proxy/shared';
 import { prepareCodexPrompt } from './image-extractor.js';
 
@@ -8,12 +10,22 @@ const PNG_BASE64 =
 
 describe('prepareCodexPrompt', () => {
   const tempFiles: string[] = [];
+  let runtimeDirectory: string;
+  const originalRuntimeDirectory = process.env.XDG_RUNTIME_DIR;
+
+  beforeEach(async () => {
+    runtimeDirectory = await mkdtemp(resolve(tmpdir(), 'agent-proxy-images-'));
+    process.env.XDG_RUNTIME_DIR = runtimeDirectory;
+  });
 
   afterEach(async () => {
     while (tempFiles.length > 0) {
       const file = tempFiles.pop()!;
       await unlink(file).catch(() => undefined);
     }
+    if (originalRuntimeDirectory === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = originalRuntimeDirectory;
+    await rm(runtimeDirectory, { recursive: true, force: true });
   });
 
   it('serializes messages without images as a text prompt', async () => {
@@ -52,6 +64,7 @@ describe('prepareCodexPrompt', () => {
     expect(result.failures).toHaveLength(0);
 
     const filePath = result.tempFiles[0];
+    expect(filePath).toContain(resolve(runtimeDirectory, 'agent-proxy', 'images'));
     expect(filePath).toMatch(/agent-proxy-img-[a-f0-9]+\.png$/);
     expect(result.prompt).toContain('describe');
     expect(result.prompt).toContain(`[image attached: ${filePath}]`);
@@ -62,6 +75,9 @@ describe('prepareCodexPrompt', () => {
 
     const metadata = await stat(filePath);
     expect(metadata.size).toBe(Buffer.from(PNG_BASE64, 'base64').length);
+    expect(metadata.mode & 0o777).toBe(0o600);
+    const directoryMetadata = await stat(resolve(runtimeDirectory, 'agent-proxy', 'images'));
+    expect(directoryMetadata.mode & 0o777).toBe(0o700);
   });
 
   it('accepts Anthropic base64 image sources', async () => {

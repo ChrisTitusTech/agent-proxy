@@ -83,4 +83,72 @@ describe('application health authentication', () => {
       herdr: { ready: true, version: 'fixture', protocol: 17 },
     });
   });
+
+  it('reports an enabled provider executable failure without starting an agent', async () => {
+    directory = await mkdtemp(resolve(tmpdir(), 'agent-proxy-app-'));
+    const config: AppConfig = {
+      server: { host: '127.0.0.1', port: 8300, cors: { origins: [] } },
+      dashboard: { host: '127.0.0.1', port: 5300 },
+      database: { path: resolve(directory, 'agent-proxy.db') },
+      herdr: {
+        binary: 'herdr',
+        runtimeDirectory: resolve(directory, 'runtime'),
+        workspaceLabel: 'agent-proxy',
+        commandTimeoutMs: 1_000,
+        paneTtlMs: 30_000,
+        maxPanes: 4,
+      },
+      auth: {
+        enabled: true,
+        adminToken: 'admin-token-for-app-test',
+        initialKeys: [],
+      },
+      providers: {
+        codex: {
+          enabled: true,
+          cli_path: resolve(directory, 'missing-codex'),
+          default_model: 'gpt-test',
+          max_concurrent: 1,
+          max_queue_size: 1,
+          max_queue_wait_ms: 1_000,
+          timeout_ms: 1_000,
+          extra_args: [],
+        },
+      },
+      rateLimits: { global: { rpm: 60, rpd: 1_000 }, perProvider: { codex: { rpm: 20 } } },
+      cache: { enabled: false, ttlSeconds: 60, maxEntries: 10 },
+      responses: { retentionTtlMs: 60_000, maxEntries: 10 },
+      validation: {
+        maxMessageCount: 10,
+        maxMessageLength: 1_000,
+        maxPromptLength: 10_000,
+        maxResponseLength: 10_000,
+        bodyLimitBytes: 1_000_000,
+      },
+      modelMappings: [],
+    };
+    let starts = 0;
+    const executionBackend: ProviderExecutionBackend = {
+      readiness: async () => ({ ready: true }),
+      start: async () => {
+        starts++;
+        throw new Error('Health checks must not start providers.');
+      },
+      shutdown: async () => undefined,
+    };
+    app = await createApp(config, { executionBackend });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/admin/health',
+      headers: { 'x-admin-token': config.auth.adminToken },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      status: 'unavailable',
+      providers: [{ name: 'codex', health: 'unhealthy' }],
+    });
+    expect(starts).toBe(0);
+  });
 });

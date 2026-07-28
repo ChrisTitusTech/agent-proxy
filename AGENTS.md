@@ -28,10 +28,10 @@ Read these files before changing product behavior:
 2. `ROADMAP.md` defines phase boundaries and acceptance criteria.
 3. `TASKS.md` defines implementation tasks and validation.
 
-The active implementation phase is Phase 4, user-owned Herdr execution. Do not
-mark a task complete until its listed validation passes. Preserve completed
-Phase 2 and Phase 3 protocol behavior while replacing the superseded
-machine-wide deployment.
+Phases 4 and 5 are complete. New work must preserve the user-owned Herdr
+execution and provider-reliability exit gates while following the next planned
+phase in `ROADMAP.md`. Do not mark a task complete until its listed validation
+passes.
 
 ## Implementation guidance
 
@@ -54,6 +54,7 @@ machine-wide deployment.
 Static dead-code tools must retain these dynamically launched files:
 
 - `packages/server/src/herdr/worker.ts`
+- `packages/server/src/herdr/server.ts`
 - `scripts/client-compat/redact.mjs`
 - `scripts/openwebui/compat.mjs`
 

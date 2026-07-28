@@ -80,6 +80,12 @@ service_stop() {
 	fi
 }
 
+service_stop_all() {
+	if use_systemd; then
+		systemctl --user stop agent-proxy.service herdr.service 2>/dev/null || true
+	fi
+}
+
 service_enable() {
 	local start_now=${1:-true}
 	if use_systemd; then
@@ -104,6 +110,7 @@ validate_archive() {
 	local required=(
 		agent-proxy/VERSION
 		agent-proxy/packages/server/dist/index.js
+		agent-proxy/packages/server/dist/herdr/server.js
 		agent-proxy/packages/server/dist/herdr/worker.js
 		agent-proxy/packaging/systemd/agent-proxy.service
 		agent-proxy/packaging/systemd/herdr.service
@@ -166,8 +173,19 @@ install_units() {
 		-e "s|@CONFIG_DIR@|$config_escaped|g" \
 		-e "s|@STATE_DIR@|$state_escaped|g" \
 		"$release_dir/packaging/systemd/agent-proxy.service" >"$PROXY_UNIT"
-	install -m 0644 "$release_dir/packaging/systemd/herdr.service" "$HERDR_UNIT"
-	chmod 0644 "$PROXY_UNIT"
+	sed \
+		-e "s|@DATA_DIR@|$data_escaped|g" \
+		-e "s|@CONFIG_DIR@|$config_escaped|g" \
+		-e "s|@STATE_DIR@|$state_escaped|g" \
+		"$release_dir/packaging/systemd/herdr.service" >"$HERDR_UNIT"
+	chmod 0644 "$PROXY_UNIT" "$HERDR_UNIT"
+}
+
+validate_release_config() {
+	local release_dir=$1
+	CONFIG_PATH="$CONFIG_DIR/config.yaml" \
+		AGENT_PROXY_DATABASE_PATH="$STATE_DIR/agent-proxy.db" \
+		/usr/bin/env node "$release_dir/packages/server/dist/index.js" --check-config
 }
 
 create_backup() (
@@ -210,9 +228,11 @@ backup_consistently() {
 }
 
 install_release() (
+	set -E
 	local start_service=${1:-true}
 	validate_archive
-	local extract_dir release_id release_dir old_current=
+	local extract_dir release_id release_dir old_current='' old_previous=''
+	local activation_started=false
 	extract_dir=$(mktemp -d)
 	trap 'rm -rf "$extract_dir"' EXIT
 	tar -C "$extract_dir" -xzf "$ARCHIVE"
@@ -227,13 +247,47 @@ install_release() (
 		exit 1
 	}
 
-	service_stop
+	[[ ! -L "$DATA_DIR/current" ]] || old_current=$(readlink "$DATA_DIR/current")
+	[[ ! -L "$DATA_DIR/previous" ]] || old_previous=$(readlink "$DATA_DIR/previous")
+	# shellcheck disable=SC2329 # Invoked indirectly by the ERR trap below.
+	rollback_activation() {
+		local status=$?
+		trap - ERR
+		set +e
+		service_stop_all
+		if [[ "$activation_started" == true ]]; then
+			if [[ -n "$old_current" ]]; then
+				ln -sfn "$old_current" "$DATA_DIR/current"
+			else
+				rm -f "$DATA_DIR/current"
+			fi
+			if [[ -n "$old_previous" ]]; then
+				ln -sfn "$old_previous" "$DATA_DIR/previous"
+			else
+				rm -f "$DATA_DIR/previous"
+			fi
+		fi
+		if [[ -n "$old_current" ]]; then
+			install_units "$old_current"
+		else
+			rm -f "$PROXY_UNIT" "$HERDR_UNIT"
+		fi
+		if use_systemd; then
+			systemctl --user daemon-reload
+			if [[ "$start_service" == true && -n "$old_current" ]]; then
+				systemctl --user start herdr.service agent-proxy.service
+			fi
+		fi
+		rm -rf "$release_dir"
+		printf 'Release activation failed; restored the previous current-user release.\n' >&2
+		exit "$status"
+	}
+	trap rollback_activation ERR
+
+	service_stop_all
 	mkdir -p "$CONFIG_DIR" "$DATA_DIR/releases" "$STATE_DIR"
 	chmod 0700 "$CONFIG_DIR" "$DATA_DIR" "$DATA_DIR/releases" "$STATE_DIR"
 	cp -a "$extract_dir/agent-proxy" "$release_dir"
-	[[ ! -L "$DATA_DIR/current" ]] || old_current=$(readlink "$DATA_DIR/current")
-	[[ -z "$old_current" ]] || ln -sfn "$old_current" "$DATA_DIR/previous"
-	ln -sfn "$release_dir" "$DATA_DIR/current"
 
 	if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
 		install -m 0600 "$release_dir/packaging/systemd/config.example.yaml" \
@@ -250,8 +304,14 @@ install_release() (
 		} >"$CONFIG_DIR/agent-proxy.env"
 		chmod 0600 "$CONFIG_DIR/agent-proxy.env"
 	fi
+
+	validate_release_config "$release_dir"
+	[[ -z "$old_current" ]] || ln -sfn "$old_current" "$DATA_DIR/previous"
+	ln -sfn "$release_dir" "$DATA_DIR/current"
+	activation_started=true
 	install_units "$release_dir"
 	service_enable "$start_service"
+	trap - ERR
 	printf 'Activated current-user agent-proxy release %s\n' "$release_id"
 )
 

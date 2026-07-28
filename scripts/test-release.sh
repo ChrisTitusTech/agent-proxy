@@ -48,6 +48,8 @@ grep -q '^agent-proxy/VERSION$' "$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/packages/server/dist/index.js$' "$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/packages/server/dist/herdr/worker.js$' \
 	"$TEST_DIR/archive-manifest.txt"
+grep -q '^agent-proxy/packages/server/dist/herdr/server.js$' \
+	"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/packaging/systemd/config.example.yaml$' \
 	"$TEST_DIR/archive-manifest.txt"
 grep -q '^agent-proxy/node_modules/' "$TEST_DIR/archive-manifest.txt"
@@ -69,8 +71,16 @@ export XDG_RUNTIME_DIR="$TEST_DIR/runtime"
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$TEST_DIR/bin"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_DIR/bin/herdr"
 chmod 0700 "$TEST_DIR/bin/herdr"
+export HERDR_WRAPPER_LOG="$TEST_DIR/herdr-wrapper.log"
+printf '%s\n' '#!/usr/bin/env bash' \
+	"printf '%s\\n' \"\$*\" >\"\$HERDR_WRAPPER_LOG\"" \
+	>"$TEST_DIR/bin/configured-herdr"
+chmod 0700 "$TEST_DIR/bin/configured-herdr"
 export PATH="$TEST_DIR/bin:$PATH"
 scripts/install.sh install --no-systemd --archive "$ARCHIVE"
+sed -i \
+	"s|binary: \"herdr\"|binary: \"$TEST_DIR/bin/configured-herdr\"|" \
+	"$XDG_CONFIG_HOME/agent-proxy/config.yaml"
 
 export CONFIG_PATH="$XDG_CONFIG_HOME/agent-proxy/config.yaml"
 export AGENT_PROXY_DATABASE_PATH="$XDG_STATE_HOME/agent-proxy/agent-proxy.db"
@@ -82,6 +92,8 @@ PREFLIGHT_OUTPUT=$(
 )
 grep -q 'Preflight passed' <<<"$PREFLIGHT_OUTPUT"
 grep -q 'Enabled providers: none' <<<"$PREFLIGHT_OUTPUT"
+node "$XDG_DATA_HOME/agent-proxy/current/packages/server/dist/herdr/server.js"
+[[ $(<"$HERDR_WRAPPER_LOG") == server ]]
 
 start_release_server() {
 	for _ in {1..5}; do

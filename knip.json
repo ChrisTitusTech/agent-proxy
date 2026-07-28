@@ -9,7 +9,8 @@
     },
     "packages/server": {
       "entry": [
-        "src/herdr/worker.ts"
+        "src/herdr/worker.ts",
+        "src/herdr/server.ts"
       ],
       "ignoreDependencies": [
         "pino-pretty"

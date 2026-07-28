@@ -2,9 +2,8 @@
 
 
 
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { ChatMessage, ChatMessageContent, ChatMessageContentPart } from '@agent-proxy/shared';
 import { convertMessagesToSinglePrompt, isImagePart } from './message-converter.js';
@@ -150,9 +149,24 @@ async function imageRefToTempFile(ref: ImageRef): Promise<string> {
   }
 
   const ext = extensionFromMediaType(mediaType);
-  const filePath = join(tmpdir(), `agent-proxy-img-${randomBytes(8).toString('hex')}.${ext}`);
-  await writeFile(filePath, buf, { mode: 0o600 });
+  const stagingDirectory = imageStagingDirectory();
+  await mkdir(stagingDirectory, { recursive: true, mode: 0o700 });
+  await chmod(stagingDirectory, 0o700);
+  const filePath = join(
+    stagingDirectory,
+    `agent-proxy-img-${randomBytes(8).toString('hex')}.${ext}`,
+  );
+  await writeFile(filePath, buf, { mode: 0o600, flag: 'wx' });
   return filePath;
+}
+
+function imageStagingDirectory(): string {
+  if (process.env.XDG_RUNTIME_DIR) {
+    return resolve(process.env.XDG_RUNTIME_DIR, 'agent-proxy', 'images');
+  }
+  const stateHome = process.env.XDG_STATE_HOME
+    ?? (process.env.HOME ? resolve(process.env.HOME, '.local', 'state') : process.cwd());
+  return resolve(stateHome, 'agent-proxy', 'runtime', 'images');
 }
 
 export interface PreparedCodexPrompt {

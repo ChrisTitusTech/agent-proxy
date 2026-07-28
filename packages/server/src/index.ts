@@ -29,6 +29,10 @@ function shutdownTimeoutMs(): number {
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const configPath = process.env.CONFIG_PATH ?? resolve(PROJECT_ROOT, 'config.yaml');
   let config = loadConfig(configPath);
+  if (argv.includes('--check-config')) {
+    console.log(`Configuration passed schema migration and validation: ${configPath}`);
+    return;
+  }
   await initDatabase(config.database.path);
   config = {
     ...config,

@@ -41,7 +41,10 @@ import { loadGenericProviders } from './providers/generic-provider-loader.js';
 import { loadHttpProviders } from './providers/http-provider-loader.js';
 import { seedDatabase } from './db/seed.js';
 import type { ValidationConfig } from '@agent-proxy/shared';
-import { ProviderLoginManager } from './services/provider-login-manager.js';
+import {
+  LOGIN_PROVIDERS,
+  ProviderLoginManager,
+} from './services/provider-login-manager.js';
 import {
   HerdrLauncher,
   type ProviderExecutionBackend,
@@ -110,6 +113,12 @@ export async function createApp(
   const providerLoginManager = new ProviderLoginManager(config.providers);
   const apiAuthLimiter = new RequestRateLimiter(600);
   const adminAuthLimiter = new RequestRateLimiter(300);
+
+  for (const provider of LOGIN_PROVIDERS) {
+    if (config.providers[provider]?.enabled) {
+      void providerLoginManager.getStatus(provider).catch(() => undefined);
+    }
+  }
 
 
   for (const [name, providerConfig] of Object.entries(config.providers)) {
@@ -201,11 +210,41 @@ export async function createApp(
 
   app.get('/admin/health', async (_request, reply) => {
     const herdr = await executionBackend.readiness();
-    return reply.status(herdr.ready ? 200 : 503).send({
-      status: herdr.ready ? 'ready' : 'unavailable',
+    const enabledProviders = registry.getAll()
+      .filter((provider) => provider.getConfig().enabled !== false);
+    const providerStatuses = await Promise.all(enabledProviders.map(async (provider) => {
+      const health = await provider.checkHealth();
+      const trackedLogin = LOGIN_PROVIDERS.includes(
+        provider.name as typeof LOGIN_PROVIDERS[number],
+      )
+        ? providerLoginManager.getTracked(
+          provider.name as typeof LOGIN_PROVIDERS[number],
+        )
+        : undefined;
+      const login = trackedLogin
+        ? {
+          state: trackedLogin.state,
+          authenticated: trackedLogin.authenticated,
+          message: trackedLogin.message,
+          lastCheckedAt: trackedLogin.lastCheckedAt,
+        }
+        : undefined;
+      return {
+        name: provider.name,
+        health,
+        ...(login ? { login } : {}),
+      };
+    }));
+    const providersReady = providerStatuses.every(
+      (provider) => provider.health === 'healthy'
+        && (!provider.login || provider.login.state === 'authenticated'),
+    );
+    const ready = herdr.ready && providersReady;
+    return reply.status(ready ? 200 : 503).send({
+      status: ready ? 'ready' : 'unavailable',
       version: serverPackage.version,
       herdr,
-      providers: registry.getAll().map((provider) => provider.name),
+      providers: providerStatuses,
     });
   });
 

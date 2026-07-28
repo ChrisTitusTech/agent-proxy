@@ -119,7 +119,7 @@ export function loadConfig(configPath?: string): AppConfig {
   }
 
 
-  const parsed = rawConfigSchema.safeParse(rawConfig);
+  const parsed = rawConfigSchema.safeParse(stripLegacyProviderModeKeys(rawConfig));
   if (!parsed.success) {
     throw new Error(
       `Config validation failed (${resolvedPath}):\n${z.prettifyError(parsed.error)}`,
@@ -252,6 +252,35 @@ export function loadConfig(configPath?: string): AppConfig {
       { alias: 'grok-build', provider: 'grok', actual_model: 'grok-4.5' },
     ],
   };
+}
+
+function stripLegacyProviderModeKeys(rawConfig: unknown): unknown {
+  if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+    return rawConfig;
+  }
+  const root = rawConfig as Record<string, unknown>;
+  const providers = root.providers;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    return rawConfig;
+  }
+  const removed: string[] = [];
+  for (const [provider, value] of Object.entries(providers)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const providerConfig = value as Record<string, unknown>;
+    for (const key of ['mode', 'sdk_options', 'channel_options', 'app_server_options']) {
+      if (!(key in providerConfig)) continue;
+      delete providerConfig[key];
+      removed.push(`providers.${provider}.${key}`);
+    }
+  }
+  if (removed.length > 0) {
+    console.warn(
+      `[config] Ignoring removed provider execution settings: ${removed.join(', ')}. `
+      + 'All built-in CLI providers now run through the current-user Herdr service; '
+      + 'remove these legacy keys from config.yaml.',
+    );
+  }
+  return rawConfig;
 }
 
 function mergeProviderConfig(

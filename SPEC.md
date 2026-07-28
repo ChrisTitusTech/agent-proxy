@@ -79,7 +79,7 @@ The supported locations are:
 | Configuration | `${XDG_CONFIG_HOME:-$HOME/.config}/agent-proxy` |
 | Releases and durable data | `${XDG_DATA_HOME:-$HOME/.local/share}/agent-proxy` |
 | Operational state | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-proxy` |
-| Runtime sockets and jobs | `${XDG_RUNTIME_DIR}/agent-proxy` |
+| Runtime sockets, jobs, and staged provider inputs | `${XDG_RUNTIME_DIR}/agent-proxy` |
 | User service unit | `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user` |
 
 Secrets and generated state must use owner-only permissions.
@@ -121,6 +121,8 @@ including configured generic CLI providers.
   `503` error.
 - The proxy must not silently fall back to a direct headless spawn.
 - Health output must distinguish API health from Herdr execution readiness.
+- Authenticated readiness must include non-spawning executable checks for
+  enabled providers and any already-tracked subscription-login state.
 
 ### 4.3 Sessions and panes
 
@@ -135,6 +137,9 @@ including configured generic CLI providers.
 - Different client sessions must never observe each other's terminal output,
   provider thread, tool results, or retained prompt state.
 - Pane/session storage must have bounded size and configurable expiration.
+- A pane created for a starting request is reserved until its worker is active
+  or the start fails; concurrent capacity cleanup must not close it.
+- Expired panes are closed and recreated rather than silently revived.
 
 ### 4.4 Recursion prevention
 
@@ -302,6 +307,11 @@ login-session supervisor.
 - Logging out may stop the proxy and its agents after bounded cleanup.
 - Upgrade and rollback preserve user configuration, proxy keys, mappings,
   provider authentication, and SQLite state.
+- The Herdr user service starts the executable selected by `herdr.binary`.
+- Upgrade validates legacy configuration before switching `current`; removed
+  execution-mode keys are ignored with an actionable migration warning.
+- If unit installation, reload, enablement, or startup fails after activation,
+  the installer restores the prior release, units, and running state.
 - Shutdown stops new work, cancels or drains active panes within a bound,
   closes SQLite, and exits without orphaned workers.
 - The operator can inspect both services with `systemctl --user` and

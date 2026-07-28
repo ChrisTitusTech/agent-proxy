@@ -105,6 +105,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private readonly panes = new Map<string, PaneRecord>();
   private readonly active = new Set<ProviderExecutionHandle>();
   private readonly starting = new Set<Promise<ProviderExecutionHandle>>();
+  private readonly reservedPaneIds = new Set<string>();
   private readonly sessionKeys = new Map<string, SessionKeyRecord>();
   private workspaceId: string | null = null;
   private staleTabsPruned = false;
@@ -171,28 +172,33 @@ export class HerdrLauncher implements ProviderExecutionBackend {
 
     const sessionKey = this.sessionKey(request);
     const release = await this.mutex.acquire(sessionKey);
+    let pane: PaneRecord | undefined;
     try {
       if (this.shuttingDown) {
         throw new HerdrUnavailableError('Herdr launcher is shutting down.');
       }
-      const pane = await this.ensurePane(sessionKey, request);
+      pane = await this.ensurePane(sessionKey, request);
       if (this.shuttingDown) {
         throw new HerdrUnavailableError('Herdr launcher is shutting down.');
       }
-      const handle = await this.startWorker(pane.paneId, request);
+      const handle = await this.startWorker(pane.paneId, sessionKey, request);
       this.active.add(handle);
+      this.reservedPaneIds.delete(pane.paneId);
       if (this.shuttingDown) handle.cancel();
       void handle.completion.then(() => {
         this.active.delete(handle);
-        pane.lastUsedAt = Date.now();
+        pane!.lastUsedAt = Date.now();
         release();
+        void this.prunePanesWithLock().catch(() => undefined);
       }, () => {
         this.active.delete(handle);
-        pane.lastUsedAt = Date.now();
+        pane!.lastUsedAt = Date.now();
         release();
+        void this.prunePanesWithLock().catch(() => undefined);
       });
       return handle;
     } catch (error) {
+      if (pane) this.reservedPaneIds.delete(pane.paneId);
       release();
       throw error;
     }
@@ -241,48 +247,59 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     sessionKey: string,
     request: ProviderExecutionRequest,
   ): Promise<PaneRecord> {
-    const existing = this.panes.get(sessionKey);
-    if (existing && Date.now() - existing.lastUsedAt <= this.config.paneTtlMs) {
-      return existing;
-    }
+    const release = await this.mutex.acquire('__pane_capacity__');
+    try {
+      const existing = this.panes.get(sessionKey);
+      if (existing && Date.now() - existing.lastUsedAt <= this.config.paneTtlMs) {
+        this.reservedPaneIds.add(existing.paneId);
+        return existing;
+      }
+      if (existing) {
+        await this.command(['tab', 'close', existing.tabId]);
+        this.panes.delete(sessionKey);
+      }
 
-    const workspaceId = await this.ensureWorkspace(request.cwd);
-    const label = `api-${request.provider}-${sessionKey}`;
-    const tabs = await this.command<{ type: string; tabs: Tab[] }>([
-      'tab', 'list', '--workspace', workspaceId,
-    ]);
-    const existingTab = tabs.tabs.find((tab) => tab.label === label);
-    let paneId: string;
-    let tabId: string;
-
-    if (existingTab) {
-      const panes = await this.command<{ type: string; panes: Pane[] }>([
-        'pane', 'list', '--workspace', workspaceId,
+      const workspaceId = await this.ensureWorkspace(request.cwd);
+      const label = `api-${request.provider}-${sessionKey}`;
+      const tabs = await this.command<{ type: string; tabs: Tab[] }>([
+        'tab', 'list', '--workspace', workspaceId,
       ]);
-      const pane = panes.panes.find((candidate) => candidate.tab_id === existingTab.tab_id);
-      if (!pane) throw new Error(`Herdr tab ${existingTab.tab_id} has no pane.`);
-      paneId = pane.pane_id;
-      tabId = existingTab.tab_id;
-    } else {
-      const created = await this.command<{
-        type: string;
-        tab: Tab;
-        root_pane: Pane;
-      }>([
-        'tab', 'create',
-        '--workspace', workspaceId,
-        '--cwd', request.cwd,
-        '--label', label,
-        '--no-focus',
-      ]);
-      paneId = created.root_pane.pane_id;
-      tabId = created.tab.tab_id;
-    }
+      const existingTab = tabs.tabs.find((tab) => tab.label === label);
+      let paneId: string;
+      let tabId: string;
 
-    const record = { paneId, tabId, lastUsedAt: Date.now() };
-    this.panes.set(sessionKey, record);
-    await this.prunePanes(sessionKey);
-    return record;
+      if (existingTab) {
+        const panes = await this.command<{ type: string; panes: Pane[] }>([
+          'pane', 'list', '--workspace', workspaceId,
+        ]);
+        const pane = panes.panes.find((candidate) => candidate.tab_id === existingTab.tab_id);
+        if (!pane) throw new Error(`Herdr tab ${existingTab.tab_id} has no pane.`);
+        paneId = pane.pane_id;
+        tabId = existingTab.tab_id;
+      } else {
+        const created = await this.command<{
+          type: string;
+          tab: Tab;
+          root_pane: Pane;
+        }>([
+          'tab', 'create',
+          '--workspace', workspaceId,
+          '--cwd', request.cwd,
+          '--label', label,
+          '--no-focus',
+        ]);
+        paneId = created.root_pane.pane_id;
+        tabId = created.tab.tab_id;
+      }
+
+      const record = { paneId, tabId, lastUsedAt: Date.now() };
+      this.panes.set(sessionKey, record);
+      this.reservedPaneIds.add(paneId);
+      await this.prunePanes(sessionKey);
+      return record;
+    } finally {
+      release();
+    }
   }
 
   private async ensureWorkspace(cwd: string): Promise<string> {
@@ -338,7 +355,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
   private async prunePanes(currentKey: string): Promise<void> {
     const now = Date.now();
     const candidates = Array.from(this.panes.entries())
-      .filter(([key, pane]) => key !== currentKey && !this.isPaneActive(pane.paneId))
+      .filter(([key, pane]) => key !== currentKey && !this.isPaneInUse(pane.paneId))
       .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
     for (const [key, pane] of candidates) {
       const expired = now - pane.lastUsedAt > this.config.paneTtlMs;
@@ -352,12 +369,23 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     }
   }
 
-  private isPaneActive(paneId: string): boolean {
-    return Array.from(this.active).some((handle) => handle.paneId === paneId);
+  private async prunePanesWithLock(): Promise<void> {
+    const release = await this.mutex.acquire('__pane_capacity__');
+    try {
+      await this.prunePanes('');
+    } finally {
+      release();
+    }
+  }
+
+  private isPaneInUse(paneId: string): boolean {
+    return this.reservedPaneIds.has(paneId)
+      || Array.from(this.active).some((handle) => handle.paneId === paneId);
   }
 
   private async startWorker(
     paneId: string,
+    sessionKey: string,
     request: ProviderExecutionRequest,
   ): Promise<ProviderExecutionHandle> {
     const jobId = randomUUID();
@@ -399,11 +427,17 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     });
     const completion = workerCompletion.then(
       async (result) => {
-        await this.reportPane(paneId, request, 'idle', result.terminalState);
+        await this.reportPane(paneId, sessionKey, request, 'idle', result.terminalState);
         return result;
       },
       async (error: Error) => {
-        await this.reportPane(paneId, request, 'idle', terminalStateForError(error));
+        await this.reportPane(
+          paneId,
+          sessionKey,
+          request,
+          'idle',
+          terminalStateForError(error),
+        );
         throw error;
       },
     );
@@ -524,7 +558,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       cancel(new HerdrUnavailableError('Herdr worker did not connect before the startup deadline.'));
     }, this.config.commandTimeoutMs);
     try {
-      await this.reportPane(paneId, request, 'working');
+      await this.reportPane(paneId, sessionKey, request, 'working');
       await this.command([
         'pane', 'run', paneId, process.execPath, workerPath, socketPath,
       ]);
@@ -551,6 +585,7 @@ export class HerdrLauncher implements ProviderExecutionBackend {
 
   private async reportPane(
     paneId: string,
+    sessionKey: string,
     request: ProviderExecutionRequest,
     state: 'working' | 'idle',
     terminalState?: 'completed' | 'failed' | 'timed_out' | 'cancelled',
@@ -558,13 +593,28 @@ export class HerdrLauncher implements ProviderExecutionBackend {
     const message = state === 'working'
       ? `${request.model}`
       : `${request.model} complete`;
-    await this.command([
-      'pane', 'report-agent', paneId,
-      '--source', 'agent-proxy',
-      '--agent', request.provider,
-      '--state', state,
-      '--message', message,
-    ]).catch(() => undefined);
+    let stateReported = false;
+    let reportError: unknown;
+    for (let attempt = 0; attempt < 3 && !stateReported; attempt++) {
+      try {
+        await this.command([
+          'pane', 'report-agent', paneId,
+          '--source', 'agent-proxy',
+          '--agent', request.provider,
+          '--state', state,
+          '--message', message,
+        ]);
+        stateReported = true;
+      } catch (error) {
+        reportError = error;
+      }
+    }
+    if (!stateReported) {
+      if (state === 'idle' && await this.closePaneAfterReportFailure(paneId)) return;
+      throw reportError instanceof Error
+        ? reportError
+        : new HerdrUnavailableError('Herdr pane state could not be reported.');
+    }
     await this.command([
       'pane', 'report-metadata', paneId,
       '--source', 'agent-proxy',
@@ -572,9 +622,28 @@ export class HerdrLauncher implements ProviderExecutionBackend {
       '--title', `${request.provider}: ${request.model}`,
       '--token', `provider=${request.provider}`,
       '--token', `model=${request.model}`,
+      '--token', `session=${sessionKey}`,
       ...(request.requestId ? ['--token', `request=${request.requestId}`] : []),
       ...(terminalState ? ['--token', `terminal=${terminalState}`] : []),
     ]).catch(() => undefined);
+  }
+
+  private async closePaneAfterReportFailure(paneId: string): Promise<boolean> {
+    const entry = Array.from(this.panes.entries())
+      .find(([, pane]) => pane.paneId === paneId);
+    if (!entry) return false;
+    const [sessionKey, pane] = entry;
+    try {
+      await this.command(['tab', 'close', pane.tabId]);
+    } catch {
+      return false;
+    }
+    this.panes.delete(sessionKey);
+    this.reservedPaneIds.delete(paneId);
+    for (const [identity, record] of this.sessionKeys) {
+      if (record.key === sessionKey) this.sessionKeys.delete(identity);
+    }
+    return true;
   }
 
   private async command<T = { type: string }>(args: string[]): Promise<T> {

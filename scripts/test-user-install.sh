@@ -21,6 +21,7 @@ make_archive() {
 		"$stage/agent-proxy/packaging/systemd"
 	printf '%s\n' "$release_id" >"$stage/agent-proxy/VERSION"
 	printf 'console.log("%s");\n' "$release_id" >"$stage/agent-proxy/packages/server/dist/index.js"
+	printf 'process.exit(0);\n' >"$stage/agent-proxy/packages/server/dist/herdr/server.js"
 	printf 'process.exit(0);\n' >"$stage/agent-proxy/packages/server/dist/herdr/worker.js"
 	cp "$PROJECT_DIR/packaging/systemd/"* "$stage/agent-proxy/packaging/systemd/"
 	printf '# release %s\n' "$release_id" \
@@ -35,6 +36,7 @@ run_installer() {
 
 ARCHIVE_V1=$(make_archive 1.0.0-test1)
 ARCHIVE_V2=$(make_archive 1.0.0-test2)
+ARCHIVE_V3=$(make_archive 1.0.0-test3)
 
 run_installer install --archive "$ARCHIVE_V1"
 [[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test1 ]]
@@ -44,6 +46,8 @@ grep -Fq "WorkingDirectory=\"${XDG_STATE_HOME//%/%%}/agent-proxy\"" \
 	"$XDG_CONFIG_HOME/systemd/user/agent-proxy.service"
 grep -Fq "ExecStart=/usr/bin/env node \"${XDG_DATA_HOME//%/%%}/agent-proxy/current/packages/server/dist/index.js\"" \
 	"$XDG_CONFIG_HOME/systemd/user/agent-proxy.service"
+grep -Fq "ExecStart=/usr/bin/env node \"${XDG_DATA_HOME//%/%%}/agent-proxy/current/packages/server/dist/herdr/server.js\"" \
+	"$XDG_CONFIG_HOME/systemd/user/herdr.service"
 [[ $(stat -c '%a' "$XDG_CONFIG_HOME/agent-proxy/agent-proxy.env") == 600 ]]
 if find "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" ! -user "$(id -un)" -print -quit |
 	grep -q .; then
@@ -63,7 +67,8 @@ first_backup=$(find "$XDG_STATE_HOME/agent-proxy/backups" -type f -name '*.tar.g
 FAKE_BIN="$TEST_DIR/fake-bin"
 SYSTEMCTL_LOG="$TEST_DIR/systemctl.log"
 SYSTEMCTL_STATE="$TEST_DIR/systemctl.state"
-export SYSTEMCTL_LOG SYSTEMCTL_STATE
+SYSTEMCTL_FAIL_ONCE="$TEST_DIR/systemctl.fail-once"
+export SYSTEMCTL_LOG SYSTEMCTL_STATE SYSTEMCTL_FAIL_ONCE
 mkdir -p "$FAKE_BIN"
 printf 'active\n' >"$SYSTEMCTL_STATE"
 cat >"$FAKE_BIN/systemctl" <<'EOF'
@@ -80,8 +85,20 @@ case "$*" in
 	printf 'stop\n' >>"$SYSTEMCTL_LOG"
 	printf 'inactive\n' >"$SYSTEMCTL_STATE"
 	;;
+"--user stop agent-proxy.service herdr.service")
+	printf 'stop-both\n' >>"$SYSTEMCTL_LOG"
+	printf 'inactive\n' >"$SYSTEMCTL_STATE"
+	;;
 "--user start agent-proxy.service")
 	printf 'start\n' >>"$SYSTEMCTL_LOG"
+	printf 'active\n' >"$SYSTEMCTL_STATE"
+	;;
+"--user start herdr.service agent-proxy.service")
+	printf 'start-both\n' >>"$SYSTEMCTL_LOG"
+	if [[ -f "$SYSTEMCTL_FAIL_ONCE" ]]; then
+		rm -f "$SYSTEMCTL_FAIL_ONCE"
+		exit 1
+	fi
 	printf 'active\n' >"$SYSTEMCTL_STATE"
 	;;
 *)
@@ -99,6 +116,16 @@ if tar -tzf "$second_backup" | grep -q '^state/backups/'; then
 	printf 'Backup archive recursively included prior backups.\n' >&2
 	exit 1
 fi
+
+touch "$SYSTEMCTL_FAIL_ONCE"
+if PATH="$FAKE_BIN:$PATH" "$PROJECT_DIR/scripts/install.sh" upgrade --archive "$ARCHIVE_V3"; then
+	printf 'Upgrade unexpectedly succeeded after a service activation failure.\n' >&2
+	exit 1
+fi
+[[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test2 ]]
+grep -q '# release 1.0.0-test2' "$XDG_CONFIG_HOME/systemd/user/agent-proxy.service"
+[[ $(<"$SYSTEMCTL_STATE") == active ]]
+[[ ! -e "$XDG_DATA_HOME/agent-proxy/releases/1.0.0-test3" ]]
 
 run_installer rollback
 [[ $(<"$XDG_DATA_HOME/agent-proxy/current/VERSION") == 1.0.0-test1 ]]

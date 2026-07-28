@@ -163,6 +163,12 @@ Completion evidence:
 - Herdr `0.7.5` protocol `17` passes structured worker, fail-closed readiness,
   pane reuse, same-pane serialization, cross-session parallelism, and live pane
   metadata checks.
+- Starting panes are capacity-reserved, expired panes are recreated, terminal
+  report failures retry then close the pane, and opaque session IDs are
+  included in metadata.
+- Codex image staging is shared through the owner-only XDG runtime directory;
+  the Herdr service honors `herdr.binary`; failed upgrade activation restores
+  the prior release and running state.
 - Copilot CLI `1.0.75`, Codex, and Open WebUI `v0.9.5` pass live current-user
   text, streaming, isolation, tool, visibility, and accounting checks.
   Copilot disconnect cancellation returns both the request tracker and Herdr
@@ -214,6 +220,9 @@ Completion evidence:
 - Bounded queue-depth and queue-wait tests reject overload before pane creation.
 - Failure classification covers Herdr, executable, login, network, quota,
   model, validation, timeout, cancellation, recursion, and provider failures.
+- Authenticated readiness checks enabled CLI executables without inference and
+  includes tracked login state; active Codex and Grok localhost targets are
+  rejected while dormant configurations remain usable.
 - Codex shared sessions serialize safely; Claude request sessions remain
   isolated; Antigravity and Grok buffered paths preserve terminal state.
 - Provider stress, retry/accounting, cancellation, and live Herdr load suites

@@ -256,6 +256,7 @@ export abstract class BaseProvider {
       this.name,
       environment,
       this.proxyPort,
+      args,
     );
     return recursionCheck.then(() => this.executionBackend.start({
       provider: this.name,
@@ -346,11 +347,16 @@ async function assertNoProxyRecursion(
   provider: string,
   environment: Record<string, string | undefined>,
   proxyPort: number,
+  args: string[],
 ): Promise<void> {
-  if (provider !== 'codex') return;
   const home = environment.HOME;
   if (!home) return;
-  const configPath = resolve(environment.CODEX_HOME ?? resolve(home, '.codex'), 'config.toml');
+  const configPath = provider === 'codex'
+    ? resolve(environment.CODEX_HOME ?? resolve(home, '.codex'), 'config.toml')
+    : provider === 'grok'
+      ? resolve(home, '.grok', 'config.toml')
+      : undefined;
+  if (!configPath) return;
   let config: string;
   try {
     config = await readFile(configPath, 'utf8');
@@ -362,10 +368,9 @@ async function assertNoProxyRecursion(
     .split(/\r?\n/)
     .map(stripTomlComment)
     .join('\n');
-  const baseUrls = Array.from(
-    activeConfig.matchAll(/base_url\s*=\s*["']([^"']+)["']/gi),
-    (match) => match[1],
-  );
+  const baseUrls = provider === 'codex'
+    ? activeCodexBaseUrls(activeConfig, args)
+    : activeGrokBaseUrls(activeConfig, args);
   for (const baseUrl of baseUrls) {
     try {
       const url = new URL(baseUrl);
@@ -380,7 +385,7 @@ async function assertNoProxyRecursion(
       const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80');
       if (isLoopback && effectivePort === port) {
         throw new ProviderRecursionError(
-          `Codex configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
+          `${provider} configuration routes provider traffic back to agent-proxy on loopback port ${port}.`,
         );
       }
     } catch (error) {
@@ -388,6 +393,72 @@ async function assertNoProxyRecursion(
       // Ignore unrelated malformed provider URLs; the provider reports those.
     }
   }
+}
+
+function activeCodexBaseUrls(config: string, args: string[]): string[] {
+  const sections = tomlSections(config);
+  if (args.includes('--oss') || optionValue(args, '', '--local-provider')) {
+    return [];
+  }
+  const profile = optionValue(args, '-p', '--profile');
+  const activeProvider = configOverride(args, 'model_provider')
+    ?? (profile ? sections.get(`profiles.${profile}`)?.get('model_provider') : undefined)
+    ?? sections.get('')?.get('model_provider');
+  if (!activeProvider) return [];
+  const baseUrl = sections.get(`model_providers.${activeProvider}`)?.get('base_url');
+  return baseUrl ? [baseUrl] : [];
+}
+
+function activeGrokBaseUrls(config: string, args: string[]): string[] {
+  const sections = tomlSections(config);
+  const selectedModel = optionValue(args, '-m', '--model')
+    ?? sections.get('models')?.get('default');
+  if (!selectedModel) return [];
+  const baseUrl = sections.get(`model.${selectedModel}`)?.get('base_url');
+  return baseUrl ? [baseUrl] : [];
+}
+
+function tomlSections(config: string): Map<string, Map<string, string>> {
+  const sections = new Map<string, Map<string, string>>([['', new Map()]]);
+  let current = sections.get('')!;
+  for (const rawLine of config.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const section = /^\[([A-Za-z0-9_.-]+)\]$/.exec(line);
+    if (section) {
+      current = sections.get(section[1]) ?? new Map<string, string>();
+      sections.set(section[1], current);
+      continue;
+    }
+    const assignment = /^([A-Za-z0-9_.-]+)\s*=\s*(["'])(.*?)\2$/.exec(line);
+    if (assignment) current.set(assignment[1], assignment[3]);
+  }
+  return sections;
+}
+
+function configOverride(args: string[], key: string): string | undefined {
+  for (let index = args.length - 1; index >= 0; index--) {
+    const argument = args[index];
+    const candidate = (argument === '-c' || argument === '--config')
+      ? args[index + 1]
+      : argument.startsWith('-c=')
+        ? argument.slice(3)
+        : argument.startsWith('--config=')
+          ? argument.slice('--config='.length)
+          : undefined;
+    if (!candidate) continue;
+    const match = new RegExp(`^${key}\\s*=\\s*["']?([^"']+)["']?$`).exec(candidate);
+    if (match) return match[1].trim();
+  }
+  return undefined;
+}
+
+function optionValue(args: string[], shortName: string, longName: string): string | undefined {
+  for (let index = args.length - 1; index >= 0; index--) {
+    const argument = args[index];
+    if (argument === shortName || argument === longName) return args[index + 1];
+    if (argument.startsWith(`${longName}=`)) return argument.slice(longName.length + 1);
+  }
+  return undefined;
 }
 
 function stripTomlComment(line: string): string {

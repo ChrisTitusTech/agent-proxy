@@ -5,9 +5,20 @@ After=graphical-session-pre.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/env herdr server
+Environment=XDG_RUNTIME_DIR=%t
+EnvironmentFile="@CONFIG_DIR@/agent-proxy.env"
+ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/herdr/server.js"
 Restart=on-failure
 RestartSec=3s
+TimeoutStopSec=45s
+KillMode=mixed
+UMask=0077
+RuntimeDirectory=agent-proxy
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths="@CONFIG_DIR@" "@DATA_DIR@" "@STATE_DIR@" "%t/agent-proxy"
 
 [Install]
 WantedBy=default.target

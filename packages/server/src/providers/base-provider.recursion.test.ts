@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import type {
 } from '../herdr/launcher.js';
 import { resolveProxyPort } from './base-provider.js';
 import { CodexProvider } from './codex-provider.js';
+import { GrokProvider } from './grok-provider.js';
 
 const temporaryDirectories: string[] = [];
 const originalCodexHome = process.env.CODEX_HOME;
@@ -55,7 +56,7 @@ function config(overrides: Partial<ProviderConfigYaml> = {}): ProviderConfigYaml
   };
 }
 
-describe('Codex provider recursion prevention', () => {
+describe('built-in provider recursion prevention', () => {
   it.each([
     'http://localhost:18300/v1',
     'http://localhost.localdomain:18300',
@@ -69,7 +70,10 @@ describe('Codex provider recursion prevention', () => {
     temporaryDirectories.push(codexHome);
     await writeFile(
       resolve(codexHome, 'config.toml'),
-      `base_url = "${baseUrl}"\n`,
+      `model_provider = "agent_proxy"
+[model_providers.agent_proxy]
+base_url = "${baseUrl}"
+`,
       'utf8',
     );
     process.env.CODEX_HOME = codexHome;
@@ -101,7 +105,9 @@ describe('Codex provider recursion prevention', () => {
     temporaryDirectories.push(codexHome);
     await writeFile(
       resolve(codexHome, 'config.toml'),
-      '# base_url = "http://127.0.0.1:18300/v1"\n'
+      'model_provider = "openai"\n'
+        + '# base_url = "http://127.0.0.1:18300/v1"\n'
+        + '[model_providers.openai]\n'
         + 'name = "safe # value" # base_url = "http://localhost:18300"\n',
       'utf8',
     );
@@ -115,6 +121,128 @@ describe('Codex provider recursion prevention', () => {
       stream: false,
     })).rejects.toThrow('backend should not start');
     expect(backend.starts).toHaveLength(1);
+  });
+
+  it('ignores a dormant Codex provider that points back to the proxy', async () => {
+    const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
+    temporaryDirectories.push(codexHome);
+    await writeFile(
+      resolve(codexHome, 'config.toml'),
+      `model_provider = "openai"
+[model_providers.openai]
+base_url = "https://api.openai.com/v1"
+[model_providers.agent_proxy]
+base_url = "http://127.0.0.1:18300/v1"
+`,
+      'utf8',
+    );
+    process.env.CODEX_HOME = codexHome;
+    const backend = new RecordingBackend();
+    const provider = new CodexProvider(config(), backend, 18300);
+
+    await expect(provider.execute({
+      messages: [{ role: 'user', content: 'test' }],
+      model: 'gpt-5.6-sol',
+      stream: false,
+    })).rejects.toThrow('backend should not start');
+    expect(backend.starts).toHaveLength(1);
+  });
+
+  it('honors a Codex CLI provider override before creating a pane', async () => {
+    const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
+    temporaryDirectories.push(codexHome);
+    await writeFile(
+      resolve(codexHome, 'config.toml'),
+      `model_provider = "openai"
+[model_providers.openai]
+base_url = "https://api.openai.com/v1"
+[model_providers.agent_proxy]
+base_url = "http://127.0.0.1:18300/v1"
+`,
+      'utf8',
+    );
+    process.env.CODEX_HOME = codexHome;
+    const backend = new RecordingBackend();
+    const provider = new CodexProvider(
+      config({ extra_args: ['-c', 'model_provider="agent_proxy"'] }),
+      backend,
+      18300,
+    );
+
+    await expect(provider.execute({
+      messages: [{ role: 'user', content: 'test' }],
+      model: 'gpt-5.6-sol',
+      stream: false,
+    })).rejects.toThrow(/routes provider traffic back/);
+    expect(backend.starts).toHaveLength(0);
+  });
+
+  it('uses the selected Codex profile instead of the dormant root provider', async () => {
+    const codexHome = await mkdtemp(resolve(tmpdir(), 'agent-proxy-recursion-'));
+    temporaryDirectories.push(codexHome);
+    await writeFile(
+      resolve(codexHome, 'config.toml'),
+      `model_provider = "agent_proxy"
+[model_providers.agent_proxy]
+base_url = "http://127.0.0.1:18300/v1"
+[model_providers.openai]
+base_url = "https://api.openai.com/v1"
+[profiles.safe]
+model_provider = "openai"
+`,
+      'utf8',
+    );
+    process.env.CODEX_HOME = codexHome;
+    const backend = new RecordingBackend();
+    const provider = new CodexProvider(
+      config({ extra_args: ['--profile', 'safe'] }),
+      backend,
+      18300,
+    );
+
+    await expect(provider.execute({
+      messages: [{ role: 'user', content: 'test' }],
+      model: 'gpt-5.6-sol',
+      stream: false,
+    })).rejects.toThrow('backend should not start');
+    expect(backend.starts).toHaveLength(1);
+  });
+
+  it('rejects an active Grok custom model before creating a pane', async () => {
+    const home = await mkdtemp(resolve(tmpdir(), 'agent-proxy-grok-recursion-'));
+    temporaryDirectories.push(home);
+    const grokDirectory = resolve(home, '.grok');
+    await mkdir(grokDirectory);
+    await writeFile(
+      resolve(grokDirectory, 'config.toml'),
+      `[model.agent-proxy]
+base_url = "http://localhost:18300/v1"
+[model.safe]
+base_url = "https://api.x.ai/v1"
+[models]
+default = "safe"
+`,
+      'utf8',
+    );
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const backend = new RecordingBackend();
+      const provider = new GrokProvider(
+        config({ default_model: 'agent-proxy' }),
+        backend,
+        18300,
+      );
+      await expect(provider.execute({
+        messages: [{ role: 'user', content: 'test' }],
+        model: 'agent-proxy',
+        stream: false,
+      })).rejects.toThrow(/routes provider traffic back/);
+      expect(backend.starts).toHaveLength(0);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
   });
 
   it('uses the default proxy port when the environment value is invalid', () => {

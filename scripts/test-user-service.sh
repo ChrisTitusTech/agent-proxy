@@ -18,10 +18,14 @@ done
 
 grep -Eq '^After=.*herdr\.service' "$PROXY_UNIT"
 grep -Eq '^Wants=.*herdr\.service' "$PROXY_UNIT"
-grep -q '^ExecStart=/usr/bin/env herdr server$' "$HERDR_UNIT"
+grep -q '^EnvironmentFile="@CONFIG_DIR@/agent-proxy.env"$' "$HERDR_UNIT"
+grep -q '^ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/herdr/server.js"$' \
+	"$HERDR_UNIT"
 grep -q '@DATA_DIR@/current/packages/server/dist/index.js' "$PROXY_UNIT"
 grep -q '^RuntimeDirectory=agent-proxy$' "$PROXY_UNIT"
 grep -q '^RuntimeDirectoryMode=0700$' "$PROXY_UNIT"
+grep -q '^RuntimeDirectory=agent-proxy$' "$HERDR_UNIT"
+grep -q '^RuntimeDirectoryMode=0700$' "$HERDR_UNIT"
 grep -q '"%t/agent-proxy"' "$PROXY_UNIT"
 grep -q '^ExecStart=/usr/bin/env node "@DATA_DIR@/current/packages/server/dist/index.js"$' "$PROXY_UNIT"
 

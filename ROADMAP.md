@@ -141,6 +141,10 @@ Acceptance criteria:
   the localhost API.
 - Cancellation and shutdown leave no worker, provider, or pane in a false
   working state.
+- Staged Codex image inputs use the shared owner-only XDG runtime directory so
+  separate private temporary namespaces cannot hide them from Herdr workers.
+- The Herdr unit reads the configured binary through the release launcher, and
+  failed upgrades restore the prior symlink, units, and service state.
 - Concurrent client sessions do not share pane, provider thread, output, or
   tool state.
 - The repository contains no active dedicated-service-user deployment path.
@@ -198,6 +202,10 @@ Completion evidence:
 - All built-in and generic CLI-provider inference now shares the typed Herdr
   execution backend. Provider login probes remain current-user admin actions
   and do not perform inference.
+- Exact-head review regression coverage now reserves starting panes, recreates
+  TTL-expired panes, retries or closes on terminal reporting failure, reports
+  opaque session metadata, checks enabled-provider readiness without
+  inference, and detects active Codex and Grok localhost recursion.
 
 ## Phase 5: Provider reliability
 
@@ -249,6 +257,9 @@ Completion evidence:
   distinct panes and execute concurrently.
 - Provider stress, fallback/accounting, cancellation, and live Herdr load
   suites leave no worker or pane falsely working.
+- Upgrade activation rollback, shared-runtime image staging, provider
+  readiness, active-provider recursion, and pane retention races are covered
+  by the Phase 4 lifecycle gate and the full unit suite.
 
 ## Phase 6: Desktop-user security and privacy
 
