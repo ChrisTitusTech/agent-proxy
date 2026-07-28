@@ -1,33 +1,148 @@
 # agent-proxy roadmap
 
-This roadmap implements [SPEC.md](./SPEC.md) in small phases. A phase is
+This roadmap implements [SPEC.md](./SPEC.md) in reviewable phases. A phase is
 complete only when its acceptance criteria and validation commands pass.
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
+
+## Current direction
+
+`agent-proxy` is a per-login-user desktop service. Local applications call its
+localhost API, and every inference request routed to a built-in CLI executes as
+a Herdr-managed agent owned by that same user.
+
+The former machine-wide installation under a dedicated `agent-proxy` account
+is superseded. Its completed tests remain useful historical evidence, but its
+ownership, authentication, filesystem, and service model are not the target
+for future releases.
 
 ## Phase 0: Repository cleanup
 
 Status: Complete
 
+Completed work:
+
+- Renamed the project from `star-cliproxy` to `agent-proxy`.
+- Retained Claude Code, Codex, Google Antigravity, and Grok as built-in agents.
+- Removed legacy Gemini and Copilot provider implementations.
+- Removed obsolete analyses, duplicate documentation, and superseded POCs.
+- Added an English-only specification, roadmap, and focused README.
+
+## Phase 1: Legacy Linux service baseline
+
+Status: Superseded
+
+Historical result:
+
+- Built a versioned release and root installer.
+- Ran under a dedicated non-root system account.
+- Added systemd hardening, persistence, backup, rollback, and shutdown tests.
+
+Why it is superseded:
+
+- The dedicated account cannot naturally share the logged-in user's Herdr
+  session or normal provider authentication.
+- Root-owned `/opt`, `/etc`, and `/var` paths conflict with the single-user
+  desktop product boundary.
+- Headless provider children are not visible as Herdr agents.
+
+The Phase 4 implementation removes this deployment path after equivalent
+user-owned lifecycle coverage exists.
+
+## Phase 2: OpenAI Responses compatibility
+
+Status: Complete
+
+Completed: 2026-07-23
+
+Delivered:
+
+- Dedicated `/v1/responses` route and schemas.
+- String and item-array input normalization.
+- Function tools, tool choice, reasoning, images, and output items.
+- Ordered SSE events and terminal failures.
+- Bounded response continuation and client isolation.
+- Cancellation, timeout, and provider-independent contract tests.
+
+The protocol adapter remains reusable, but Phase 4 must move its provider
+execution behind the Herdr launcher.
+
+## Phase 3: Native clients and Open WebUI compatibility
+
+Status: Complete, with deployment evidence superseded
+
+Completed: 2026-07-26
+
+Delivered:
+
+- Sanitized native-client compatibility harness.
+- Live Codex Responses validation.
+- Open WebUI discovery, streaming, cancellation, isolation, tools, and
+  native/Docker/Podman topology coverage.
+- Subscription readiness and reauthentication diagnostics.
+- Provider-independent offline coverage for Claude and Grok.
+
+Limitations:
+
+- Claude live inference was waived because no subscription was available.
+- Grok live inference was waived after device login failed.
+- Live validation used the former service-account deployment.
+- GitHub Copilot was not part of the live client matrix.
+
+Phase 4 must rerun the enabled matrix as the logged-in user with Herdr
+visibility as a required assertion. Detailed Phase 3 acceptance criteria,
+versions, validation commands, waivers, and sanitized evidence locations remain
+available in [docs/phase-3-evidence.md](./docs/phase-3-evidence.md).
+
+## Phase 4: User-owned Herdr execution
+
+Status: Ready to begin
+
+Purpose:
+
+- Replace the machine-wide service with a per-user login service.
+- Ensure every built-in provider invocation is a Herdr-managed agent.
+- Allow Copilot, Open WebUI, native clients, and SDKs to create visible agents
+  through the localhost API.
+- Remove superseded headless, service-account, and unused extension paths.
+
 Scope:
 
-- Rename the project from `star-cliproxy` to `agent-proxy`.
-- Credit the upstream `starhunt/star-cliproxy` project.
-- Make source, documentation, errors, tests, configuration, and dashboard copy
-  English-only.
-- Keep Claude Code, Codex, Google Antigravity, and Grok as built-in CLIs.
-- Remove legacy Gemini and Copilot provider implementations.
-- Remove the unused plugin loader, old analyses, historical plans, duplicate
-  Korean documentation, and superseded POCs.
-- Add a focused README, example environment, specification, and roadmap.
+- Install releases, configuration, state, logs, and runtime files in XDG user
+  directories.
+- Add a systemd user unit and login-start integration for Herdr and
+  `agent-proxy`.
+- Add a typed Herdr launcher and structured worker protocol.
+- Create or reuse panes by client session, provider, and model.
+- Route Chat Completions, Responses, and Messages provider attempts through the
+  launcher.
+- Preserve streaming, tools, cancellation, timeout, fallback, and shutdown.
+- Prevent child-provider recursion into the localhost proxy.
+- Add Copilot CLI BYOK compatibility coverage.
+- Remove the root installer, dedicated-user unit, and provider paths that
+  bypass the required Herdr execution contract.
+- Add a durable unused-code and dependency gate.
 
 Acceptance criteria:
 
-- `rg` finds no Hangul text in shipped files.
-- Built-in provider registries and defaults contain exactly the four supported
-  CLIs.
-- The package lock matches the renamed workspaces.
-- Typecheck, tests, build, and shell validation pass.
+- A normal user installs, upgrades, rolls back, backs up, and uninstalls
+  without root.
+- `systemctl --user` starts Herdr before `agent-proxy` accepts inference.
+- All created files are owned by the current user with restrictive
+  permissions.
+- Every built-in provider attempt appears in the expected Herdr session.
+- Health, discovery, and admin-only calls create no agent panes.
+- If Herdr is unavailable, inference returns an actionable `503` and no
+  headless provider starts.
+- Copilot CLI and Open WebUI complete streaming text and one tool loop through
+  the localhost API.
+- Cancellation and shutdown leave no worker, provider, or pane in a false
+  working state.
+- Concurrent client sessions do not share pane, provider thread, output, or
+  tool state.
+- The repository contains no active dedicated-service-user deployment path.
+- Static dead-code analysis reports no unexplained files, exports, or
+  dependencies.
 
 Validation:
 
@@ -36,257 +151,136 @@ npm ci
 npm run typecheck
 npm test
 npm run build
-bash -n start.sh
+npm run lint:dead-code
+scripts/validate-shell.sh
+git diff --check
+scripts/test-user-install.sh
+scripts/test-user-service.sh
+scripts/test-herdr-launcher.sh
+scripts/test-client-compat.sh --client copilot --require-live
+scripts/test-client-compat.sh --client codex --require-live
+OPEN_WEBUI_MODELS=gpt-5.6-sol \
+  scripts/test-open-webui-compat.sh --all --require-live
 ```
 
-Pause point: review the reduced repository and product boundary before changing
-wire-protocol behavior.
+Rollback:
 
-## Phase 1: Linux service baseline
+- A first-time user-owned installation with no previous release is removed
+  cleanly; its preexisting CLI-owned provider state is left untouched.
+- A migration first backs up legacy configuration and database state without
+  modifying the machine-wide installation. Until the migration is accepted,
+  rollback stops the user services and restores that preserved legacy
+  deployment and state.
+- After the machine-wide deployment is intentionally removed, rollback is only
+  available to a preserved user-owned release and user-data backup.
+- Keep the API healthy for diagnostics but reject inference if the Herdr
+  launcher cannot be restored.
+- Never roll back to invisible headless execution.
 
-Status: Complete
+Pause point: review the current-user trust boundary, Herdr pane lifecycle, and
+Copilot tool permissions before enabling tool-capable profiles by default.
 
-Scope:
-
-- Add a production installer or package layout.
-- Add a hardened systemd unit and environment file template.
-- Run as a dedicated non-root service user.
-- Validate enabled CLI binaries and writable state paths at startup.
-- Implement graceful shutdown with a bounded drain timeout.
-- Document install, upgrade, rollback, backup, and uninstall procedures.
-
-Acceptance criteria:
-
-- A clean Linux VM can install, start, stop, restart, and upgrade the service.
-- Service restart preserves configuration, keys, mappings, and SQLite data.
-- `systemd-analyze security` findings are reviewed and documented.
-- Termination leaves no provider child processes.
-- An external health probe passes after restart.
-
-Rollback: retain the previous binary/package and a pre-upgrade SQLite backup.
-
-Validation evidence is tracked in [TASKS.md](./TASKS.md), including the
-installer lifecycle, restart persistence, external health probe, provider
-process-group termination, release preflight, and systemd security review.
-
-## Phase 2: OpenAI Responses compatibility
-
-Status: Complete
-
-Completed: 2026-07-23
-
-Scope:
-
-- Move `/v1/responses` from the application bootstrap into a dedicated route.
-- Define request and response schemas.
-- Preserve instructions, input items, function tools, tool choice, reasoning
-  settings, and output items.
-- Implement valid Responses SSE event ordering and terminal errors.
-- Define response IDs, `previous_response_id`, and session retention.
-- Add cancellation, timeout, and retry semantics.
-
-Acceptance criteria:
-
-- OpenAI SDK Responses calls pass for streaming and non-streaming text.
-- One complete function-tool loop passes.
-- Invalid requests return compatible error objects and HTTP status codes.
-- Disconnecting a client terminates or detaches from the provider safely.
-- Responses contract tests are provider-independent.
-
-Pause point: do not call the endpoint drop-in compatible until every enabled
-production provider passes its Phase 3 live client tests.
-
-## Phase 3: Native CLI and Open WebUI compatibility
-
-Status: Complete
-
-Entry gate verified: 2026-07-23
-
-Completed: 2026-07-26
-
-Codex passed the live native-client, service-account, and Open WebUI matrix.
-Claude live validation was explicitly waived because no Claude subscription is
-available. Grok live validation was explicitly waived after its xAI device
-login would not complete. The waived providers remain offline-tested and are
-disabled in the completed Codex-only production profile.
-
-Scope:
-
-- Test Claude Code against `/v1/messages`.
-- Test Codex against `/v1/responses` with a custom model provider.
-- Test Grok Build against `/v1/responses` with a custom model.
-- Test a pinned Open WebUI release against `/v1/models` and
-  `/v1/chat/completions`.
-- Validate Codex ChatGPT and supported Grok subscription logins from the same
-  service account and `HOME` used by systemd.
-- Test Open WebUI in native, Docker, and Podman connection topologies.
-- Document exact supported client versions and configuration.
-- Add protocol fixtures captured from non-secret test sessions.
-- Document Open WebUI background model requests and separate configuration for
-  embeddings, retrieval, speech, and image generation.
-
-Acceptance criteria:
-
-- Unmodified Claude Code completes a text request and one tool loop when a
-  subscription is available; this installation records an explicit live-test
-  waiver.
-- Unmodified Codex completes a coding request and one tool loop.
-- Unmodified Grok completes a coding request and one tool loop when its
-  subscription login is available; this installation records an explicit
-  live-test waiver.
-- Open WebUI discovers every enabled provider alias without a custom Pipe.
-- Open WebUI completes non-streaming text, streaming text, cancellation or a
-  documented timeout-bounded detach, and one advertised function-tool loop.
-- Concurrent Open WebUI chats cannot observe each other's provider session
-  context.
-- Missing and expired subscription logins produce actionable, sanitized
-  reauthentication errors.
-- Native, Docker, and Podman connection instructions pass against the supported
-  host matrix.
-- Streaming output renders incrementally in every client that supports it.
-- Two concurrent client sessions cannot observe each other's context.
-- Compatibility failures identify the unsupported field or event.
-
-Rollback: keep Chat Completions available while Responses compatibility
-stabilizes.
-
-## Phase 4: Provider reliability
+## Phase 5: Provider reliability
 
 Status: Planned
 
 Scope:
 
-- Normalize provider lifecycle, timeout, abort, and cleanup behavior.
-- Add bounded queues and backpressure.
-- Classify retryable and non-retryable failures.
-- Harden Codex resume and app-server concurrency.
-- Harden Claude SDK and channel-worker isolation.
-- Validate Antigravity model labels at startup.
-- Add native Grok streaming when supported by the installed CLI.
-- Classify executable, authentication, quota, upstream, and model-availability
-  failures separately.
-- Bound Open WebUI background-request amplification and account for every
-  generated provider request.
+- Normalize pane and provider lifecycle terminal states.
+- Add bounded provider queues and backpressure.
+- Classify executable, Herdr, login, quota, model, validation, timeout,
+  upstream, and internal failures.
+- Make retry, fallback, and accounting idempotent.
+- Harden Codex resume and persistent-session concurrency.
+- Harden Claude session and tool isolation.
+- Validate Antigravity labels and buffered streaming.
+- Add native Grok streaming when supported.
+- Recover cleanly from authentication expiry.
+- Stress concurrent Copilot and Open WebUI request patterns.
 
 Acceptance criteria:
 
-- Queue saturation returns a documented status without process growth.
+- Every pane and request reaches exactly one terminal state.
+- Queue saturation creates no pane and causes no process growth.
 - Provider crashes do not crash the API server.
-- Every request reaches one terminal state.
-- Retry and fallback do not duplicate global or per-key accounting.
-- Authentication expiry does not crash the service and recovery does not
-  require replacing the proxy API key.
-- Buffered providers are labeled accurately and produce one valid terminal
-  stream sequence.
-- Stress tests leave no zombie or orphan provider processes.
+- Retry and fallback do not duplicate accounting or leave stale panes.
+- Stress tests leave no zombie, orphan, or falsely working process.
 
-Rollback: keep the last validated provider mode available, disable new session
-reuse or native-streaming paths independently, and retain bounded queues and
-process cleanup during rollback.
+Validation:
 
-## Phase 5: Security and privacy
+```bash
+npm run typecheck
+npm test
+scripts/test-provider-stress.sh
+scripts/test-herdr-load.sh
+```
 
-Status: Planned
-
-Scope:
-
-- Add startup checks for weak or empty secrets.
-- Minimize the environment inherited by child processes.
-- Add configurable debug retention and secure defaults.
-- Audit export/import for credential leakage.
-- Add request-size, prompt-size, and concurrency abuse tests.
-- Publish reverse-proxy TLS and firewall examples.
-- Define a chat-only provider profile with a dedicated working directory and
-  constrained filesystem, command, and network access.
-- Define a separate opt-in tool-enabled profile and document the trust boundary
-  between Open WebUI tools and provider-native CLI tools.
-- Verify hardened systemd settings still permit only the required CLI
-  executable, credential, state, and network access.
-
-Acceptance criteria:
-
-- Secret scanning finds no committed credentials.
-- Redaction tests cover all supported provider credential formats.
-- Debug capture is disabled by default.
-- Admin and data-plane credentials are independently revocable.
-- Open WebUI receives only a proxy key and cannot read provider credential
-  stores.
-- Chat-only acceptance tests cannot modify the repository or unrelated host
-  paths.
-- A documented threat model covers prompt injection, command injection, SSRF,
-  cross-session data leakage, and denial of service.
-
-Pause point: review the chat-only defaults, tool-enabled opt-in, service
-hardening, and Open WebUI network exposure before changing production
-permission defaults.
-
-## Phase 6: Observability and operations
+## Phase 6: Desktop-user security and privacy
 
 Status: Planned
 
 Scope:
 
-- Add structured JSON logging for production.
-- Add Prometheus-compatible metrics.
-- Distinguish process, provider, queue, and dependency health.
-- Add database backup and restore commands.
-- Add an operator runbook for common failures.
-- Add sanitized provider-authentication readiness and reauthentication
-  diagnostics.
-- Add deployment diagnostics for Node.js runtime mismatch, inaccessible CLI
-  paths, wrong service-account `HOME`, container networking, and Open WebUI
-  model-discovery failures.
-- Document how to control or reroute Open WebUI background model requests.
+- Reject weak or placeholder credentials.
+- Minimize provider and worker environments.
+- Add chat-only and explicit tool-enabled permission profiles.
+- Constrain runtime job files and Herdr socket usage.
+- Harden debug retention, export/import, and redaction.
+- Test prompt, body, tool-schema, and concurrency abuse limits.
+- Publish the desktop-user threat model.
+- Add release secret scanning.
 
 Acceptance criteria:
 
-- Metrics expose request rate, latency, failures, fallbacks, queue depth, active
-  requests, and provider availability.
-- Logs correlate a request across routing and provider execution without prompt
-  content.
-- Health and diagnostics distinguish missing login, expired login, quota
-  exhaustion, upstream outage, and executable failure where the CLI supports
-  that distinction.
-- Backup and restore are verified on a fresh instance.
-- Alert examples cover service down, provider down, queue saturation, and
-  repeated authentication failures.
-- The Open WebUI runbook recovers model discovery, chat, and streaming from
-  each documented failure without exposing subscription credentials.
+- Localhost callers still require a valid proxy key.
+- Chat-only prompts cannot modify unrelated user files.
+- Herdr metadata and retained panes expose no credentials or prompt content.
+- Provider-native tools require explicit operator opt-in.
+- Secret scanning covers source, releases, logs, fixtures, and Herdr evidence.
 
-Rollback: keep metrics exporters and enhanced diagnostics optional, preserve a
-pre-migration database backup, and retain the previous operator runbook until
-the new recovery rehearsal passes.
-
-## Phase 7: Stable release
+## Phase 7: Observability and user operations
 
 Status: Planned
 
 Scope:
 
-- Complete the upstream licensing, attribution, and notices review.
-- Decide the future of generic CLI and HTTP adapters.
-- Freeze the supported endpoint subset and CLI version matrix.
-- Freeze the supported Open WebUI version and optional-capability matrix.
-- Add release notes, checksums, and reproducible artifacts.
-- Run upgrade and rollback rehearsals.
-- Run the full systemd plus Open WebUI acceptance suite with authenticated
-  Codex and Grok subscription sessions.
+- Add structured logs and Prometheus-compatible metrics.
+- Distinguish API, Herdr, provider, authentication, queue, and dependency
+  health.
+- Add user-data backup and restore commands.
+- Add Herdr pane and session diagnostics.
+- Publish recovery runbooks for Copilot and Open WebUI.
+- Add login-session startup and notification diagnostics.
+- Build one sanitized user acceptance command.
 
 Acceptance criteria:
 
-- All quality gates in `SPEC.md` pass.
-- Documentation matches the shipped configuration and endpoints.
-- A clean install and an in-place upgrade both pass on supported Linux targets.
-- The exact Node.js runtime, service account, CLI paths, credential home, and
-  Open WebUI topology used by production pass preflight and live acceptance.
-- A pinned Open WebUI release discovers both subscription-backed models and
-  passes text, streaming, cancellation, isolation, and advertised tool-loop
-  tests.
-- Open WebUI optional capabilities and background-request behavior match the
-  published capability matrix.
-- Known limitations are explicit.
-- The release contains the required upstream attribution and license notices.
+- Logs correlate an API request through its Herdr pane and provider execution.
+- Metrics expose request, queue, pane, provider, failure, and cancellation
+  behavior with bounded cardinality.
+- Backup and restore pass in isolated XDG directories.
+- The runbook recovers missing Herdr, model discovery, login, streaming, and
+  stale-pane failures.
 
-Rollback: retain the previous signed release, configuration backup, and SQLite
-backup until clean-install, upgrade, rollback, and Open WebUI acceptance
-evidence is reviewed.
+## Phase 8: Stable desktop release
+
+Status: Planned
+
+Scope:
+
+- Complete licensing, attribution, and notices review.
+- Freeze supported Linux, Herdr, client, and provider versions.
+- Freeze the endpoint and capability matrix.
+- Produce reproducible user-owned release artifacts.
+- Rehearse clean install, upgrade, rollback, logout, and next-login startup.
+- Run the complete Copilot, Codex, and Open WebUI acceptance matrix.
+- Publish release notes and known limitations.
+
+Acceptance criteria:
+
+- Every quality gate in `SPEC.md` passes.
+- A clean desktop user can install and operate the service without root.
+- Login starts Herdr and the proxy in the correct order.
+- Every inference request is visible in Herdr.
+- Documentation matches the shipped user-owned paths and permissions.
+- No unexplained skips, review findings, secrets, or dead code remain.

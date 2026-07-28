@@ -19,19 +19,16 @@ npm ci
 npm run typecheck
 npm test
 npm run build
-bash -n start.sh
-find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
-shellcheck start.sh
-find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
-shfmt -d start.sh scripts/*.sh scripts/client-compat/runners/*.sh
+npm run lint:dead-code
+scripts/validate-shell.sh
 scripts/test-client-compat-self-test.sh
-scripts/test-linux-install.sh
-scripts/test-linux-service.sh
-scripts/test-release.sh
-systemd-analyze verify packaging/systemd/agent-proxy.service
-systemd-analyze security --offline=yes \
-  packaging/systemd/agent-proxy.service
+git diff --check
 ```
+
+The legacy Linux installer and service tests remain historical until Phase 4
+replaces them with `test-user-install.sh`, `test-user-service.sh`, and
+`test-herdr-launcher.sh`. Run the phase-specific commands from `TASKS.md` when
+those scripts exist.
 
 Tests that need an unavailable CLI must skip cleanly. Unit tests must not read,
 modify, or delete a developer's normal provider sessions or credentials.
@@ -54,8 +51,9 @@ RUN_CODEX_INTEGRATION=1 npm test -- \
 5. Update documentation when behavior or configuration changes.
 6. Run the complete validation suite before opening the pull request.
 
-Provider executables must be spawned directly with argument arrays. Do not
-construct shell command strings from request or configuration data.
+Provider executables must run inside Herdr through structured owner-only IPC.
+Do not construct shell command strings from request or configuration data, and
+do not add a direct headless fallback.
 
 ## Compatibility claims
 

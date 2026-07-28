@@ -1,14 +1,15 @@
 # agent-proxy specification
 
-Last updated: 2026-07-23
+Last updated: 2026-07-27
 
 ## 1. Purpose
 
-`agent-proxy` is a Linux server that exposes stable HTTP APIs in front of
-locally installed AI command-line tools. A client sends an OpenAI- or
-Anthropic-compatible request, the server selects a configured CLI backend,
-executes it under the service account, and translates the result back into the
-client's expected protocol.
+`agent-proxy` is a single-user Linux desktop gateway that exposes localhost
+OpenAI- and Anthropic-compatible APIs in front of AI command-line agents.
+Applications such as GitHub Copilot, Open WebUI, SDK clients, and local
+automation send inference requests to the gateway. The gateway launches or
+reuses the selected CLI agent inside the current user's Herdr session and
+translates the result back to the caller's protocol.
 
 The first-class backends are:
 
@@ -21,379 +22,302 @@ The project originates from
 [starhunt/star-cliproxy](https://github.com/starhunt/star-cliproxy). This
 specification defines the narrower contract for the `agent-proxy` refactor.
 
-## 2. Product goals
+## 2. Product boundary
 
-1. Run as a durable, non-root Linux service.
-2. Present drop-in API endpoints to Claude Code, Codex, Grok Build, Open WebUI,
-   OpenAI SDKs, and Anthropic SDKs.
-3. Reuse CLI authentication already established for the service account.
-4. Route model aliases to one or more CLI backends with ordered fallback.
-5. Preserve streaming, tool calls, usage metadata, cancellation, and session
-   identity across protocol translation where the backend supports them.
-6. Protect the service with API keys, rate limits, input validation, secret
-   redaction, and safe child-process execution.
-7. Provide enough health and request telemetry to operate the service without
-   exposing prompts or credentials by default.
-8. Keep source, documentation, logs, errors, and the dashboard English-only.
+### 2.1 Goals
 
-## 3. Non-goals
+1. Run entirely as the logged-in desktop user.
+2. Start the Herdr server and `agent-proxy` in that user's login session.
+3. Require authentication for inference, model, and administration requests on
+   a loopback listener by default; allow only a minimal unauthenticated
+   liveness response.
+4. Launch or reuse every selected CLI backend as a Herdr-managed agent.
+5. Make API-originated agents visible and controllable in Herdr regardless of
+   which local application submitted the request.
+6. Reuse the current user's normal CLI authentication and configuration.
+7. Preserve streaming, tool calls, cancellation, usage, and session identity
+   across supported protocol translations.
+8. Route model aliases to one or more CLI backends with bounded fallback.
+9. Keep configuration, state, releases, logs, sockets, and credentials owned by
+   the current user.
+10. Keep source, documentation, logs, errors, and dashboard text English-only.
 
-- Reimplementing the Claude Code, Codex, Antigravity, or Grok agent runtimes.
-- Managing provider accounts, subscriptions, browser login, or credential
-  refresh.
-- Circumventing provider terms, quotas, billing, or technical restrictions.
-- Replacing Open WebUI's embedding, speech, image-generation, or retrieval
-  engines when a CLI backend does not implement those endpoint types.
-- Providing public multi-tenant hosting without an external identity layer.
-- Claiming protocol compatibility before the relevant acceptance suite passes.
-- Supporting legacy Gemini CLI or GitHub Copilot CLI as built-in backends.
-- Treating the dashboard as a required data-plane dependency.
+### 2.2 Non-goals
 
-## 4. Users
+- Running a machine-wide or multi-user inference service.
+- Creating a dedicated `agent-proxy` Unix account.
+- Installing releases under `/opt` or mutable state under `/etc` or `/var`.
+- Launching hidden provider processes outside Herdr.
+- Adopting an already-running headless process into a Herdr terminal.
+- Reimplementing the supported agent runtimes.
+- Managing provider subscriptions or bypassing provider terms and quotas.
+- Exposing a public multi-tenant API without a separate identity layer.
+- Claiming compatibility before the relevant acceptance matrix passes.
+- Treating health, model discovery, or admin requests as agent invocations.
 
-### 4.1 Operator
+## 3. User and ownership contract
 
-Installs and authenticates supported CLIs, configures the service, manages
-model mappings and keys, and monitors health.
+One `agent-proxy` instance belongs to one interactive Linux user.
 
-### 4.2 API client
+- The process UID and GID must match the user who owns the Herdr session.
+- Provider children must run with that same UID and GID.
+- Provider authentication must come from that user's normal home and XDG
+  directories.
+- The installer must not require root for normal install, upgrade, rollback,
+  backup, or uninstall operations.
+- Files created by the installer or runtime must remain owned by the current
+  user.
+- A second Linux user receives a separate configuration, database, proxy and
+  admin keys, Herdr session, and proxy instance. Provider credentials remain
+  in that user's CLI-owned state.
+- Simultaneous user sessions must use independently configurable ports.
 
-Uses an existing SDK or CLI against `agent-proxy` by changing its base URL and
-credential. The client should not require application code changes for the
-supported subset of its native protocol.
+The supported locations are:
 
-### 4.3 Open WebUI user
+| Purpose | Default |
+| --- | --- |
+| Configuration | `${XDG_CONFIG_HOME:-$HOME/.config}/agent-proxy` |
+| Releases and durable data | `${XDG_DATA_HOME:-$HOME/.local/share}/agent-proxy` |
+| Operational state | `${XDG_STATE_HOME:-$HOME/.local/state}/agent-proxy` |
+| Runtime sockets and jobs | `${XDG_RUNTIME_DIR}/agent-proxy` |
+| User service unit | `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user` |
 
-Uses a supported Open WebUI release as the chat frontend. Open WebUI connects
-with a proxy API key and never receives provider subscription credentials.
-The user can select advertised Codex and Grok aliases, stream text, cancel a
-request, and use only the tool capabilities explicitly enabled by the
-operator.
+Secrets and generated state must use owner-only permissions.
 
-## 5. Compatibility contract
+## 4. Herdr execution contract
+
+### 4.1 Required behavior
+
+Every authenticated data-plane request that selects a built-in CLI provider
+must execute through the current user's Herdr server.
+
+The launcher must:
+
+1. Connect to the expected Herdr server and verify protocol compatibility.
+2. Create or reuse a dedicated `agent-proxy` workspace and API-agent tab.
+3. Create or reuse a pane using the authenticated client/session identity,
+   provider, and model.
+4. Run the actual provider CLI in that pane as the current user.
+5. Preserve structured stdout, stderr, exit status, and streaming events for
+   the API adapter without scraping rendered terminal text.
+6. Report provider, model, request ID, session ID, state, and elapsed time to
+   Herdr without exposing prompts or credentials.
+7. Map API cancellation, timeout, and proxy shutdown to the Herdr-managed
+   process and wait for bounded termination.
+8. Mark the pane terminal state exactly once and retain or close completed panes
+   according to a configurable policy.
+
+Health, model discovery, and admin-only requests must not spawn agents.
+
+### 4.2 Availability
+
+Herdr is a required runtime dependency for built-in CLI inference.
+
+- The Herdr server must start with the user's login session.
+- `agent-proxy` must verify Herdr readiness before accepting inference work.
+- If Herdr is unavailable or incompatible, inference returns an actionable
+  `503` error.
+- The proxy must not silently fall back to a direct headless spawn.
+- Health output must distinguish API health from Herdr execution readiness.
+
+### 4.3 Sessions and panes
+
+- Requests with the same explicit client session ID may reuse one compatible
+  agent pane and provider thread.
+- Requests without an explicit session ID must receive an isolated request
+  session; the API key alone must not merge unrelated conversations.
+- Model, provider, working-directory, or permission-profile changes invalidate
+  incompatible reusable state.
+- Concurrent turns for one pane must be serialized unless the provider proves
+  safe concurrent execution.
+- Different client sessions must never observe each other's terminal output,
+  provider thread, tool results, or retained prompt state.
+- Pane/session storage must have bounded size and configurable expiration.
+
+### 4.4 Recursion prevention
+
+Before launching an agent, the proxy must reject configurations where the
+child CLI would route its own model traffic back to the same `agent-proxy`
+listener. Diagnostics must identify the conflicting provider configuration
+without printing credentials.
+
+## 5. API contract
 
 ### 5.1 Required endpoints
 
 | Endpoint | Contract | Primary consumers |
 | --- | --- | --- |
-| `POST /v1/responses` | OpenAI Responses API subset | Codex, Grok, OpenAI SDKs |
-| `POST /v1/chat/completions` | OpenAI Chat Completions subset | Open WebUI and general OpenAI-compatible clients |
-| `POST /v1/messages` | Anthropic Messages API subset | Claude Code, Anthropic SDKs |
+| `POST /v1/responses` | OpenAI Responses subset | Codex, Copilot SDK, OpenAI SDKs |
+| `POST /v1/chat/completions` | OpenAI Chat Completions subset | Copilot CLI, Open WebUI |
+| `POST /v1/messages` | Anthropic Messages subset | Claude Code, Anthropic SDKs |
 | `GET /v1/models` | OpenAI model list | Discovery and client validation |
-| `GET /health` | Service and provider summary | Probes and operators |
+| `GET /health` | Minimal liveness; authenticated API and Herdr readiness | Probes and operators |
 | `/admin/*` | Authenticated management API | Dashboard and automation |
 
-### 5.2 Definition of drop-in
+Unsupported embedding, retrieval, speech, image-generation, and reranking
+capabilities must not be advertised for CLI providers.
 
-An endpoint is called drop-in only when all of the following are true:
+### 5.2 Definition of compatible
 
-1. The unmodified target client can be pointed at the server through its
-   documented base URL and credential settings.
-2. Non-streaming text requests pass an end-to-end acceptance test.
-3. Streaming events are valid for the client protocol and arrive incrementally
-   when the backend provides incremental output.
-4. Function or tool calls round-trip through at least one complete tool loop.
-5. Client cancellation terminates or safely detaches from the backend process.
-6. Protocol errors use the expected HTTP status, content type, and error shape.
-7. Multi-turn identity is isolated between distinct client sessions.
-8. Compatibility is tested against pinned and documented client versions.
+An endpoint is compatible with a target client only when:
 
-### 5.3 Responses API requirements
+1. The unmodified client can use the documented base URL and proxy credential.
+2. Non-streaming and streaming text pass end-to-end.
+3. One complete function-tool loop passes when tools are advertised.
+4. A direct client disconnect terminates the Herdr-managed provider process.
+   If an intermediary accepts cancellation without closing its upstream
+   request, the proxy may use a configured bounded detach: provider work
+   remains tracked until exit or timeout, its pane remains working until that
+   terminal state, and the logical request is accounted exactly once with the
+   detach outcome recorded.
+5. Errors use the expected status, content type, and protocol shape.
+6. Concurrent sessions remain isolated.
+7. The agent appears in Herdr for the full provider execution.
+8. Client and Herdr versions are pinned in sanitized acceptance evidence.
 
-`POST /v1/responses` must accept at least:
+### 5.3 OpenAI Responses
+
+`POST /v1/responses` must support:
 
 - `model`
-- `input` as a string or input-item array
+- string or item-array `input`
 - `instructions`
 - `stream`
-- `tools` with function tools
-- `tool_choice`
+- function tools and `tool_choice`
+- supported reasoning fields
 - `max_output_tokens`
-- `previous_response_id` or an equivalent documented session mechanism
+- `previous_response_id` or the documented session mechanism
 
-Non-streaming responses must include a stable response ID, status, model,
-output items, text content, and usage when available.
+Streaming must use valid Server-Sent Events with exactly one terminal
+`response.completed`, `response.incomplete`, or `response.failed` event. Tool
+calls and results must round-trip without changing IDs or arguments.
 
-Streaming responses must use Server-Sent Events and maintain valid event order.
-At minimum, the adapter must support response creation, output item creation,
-content part creation, text deltas, completed text, completed output items, and
-a terminal completed or failed response event.
+### 5.4 Chat Completions
 
-The reference contract is the
-[OpenAI Responses API streaming reference](https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta).
-Codex custom providers use a configurable `base_url` and Responses wire
-protocol, as represented by the
-[official Codex configuration schema](https://github.com/openai/codex/blob/main/codex-rs/core/config.schema.json).
+`POST /v1/chat/completions` must support ordered messages, supported content
+parts, streaming, function tools, tool choice, token limits, and reasoning
+fields. Roles, tool IDs, tool results, finish reasons, usage, and SSE framing
+must remain compatible.
 
-### 5.4 Chat Completions requirements
+### 5.5 Anthropic Messages
 
-`POST /v1/chat/completions` must accept:
+`POST /v1/messages` must support messages, system content, streaming, tools,
+tool choice, token limits, and supported thinking configuration. Tool-use and
+tool-result blocks, images, stop reasons, usage, and event order must survive
+translation.
 
-- `model`
-- ordered `messages`
-- text and supported image content parts
-- `stream`
-- function `tools` and `tool_choice`
-- `max_tokens`
-- `temperature`
-- supported reasoning-effort fields
+## 6. Client contract
 
-The adapter must preserve roles, tool call IDs, tool results, finish reasons,
-usage, and OpenAI-compatible SSE framing.
+### 6.1 GitHub Copilot
 
-### 5.5 Anthropic Messages requirements
+Copilot CLI and supported Copilot applications may connect as an
+OpenAI-compatible provider at `http://127.0.0.1:8300/v1`. The acceptance matrix
+must cover model discovery where applicable, streaming, tool calling,
+cancellation, session isolation, and Herdr visibility.
 
-`POST /v1/messages` must accept:
+### 6.2 Open WebUI
 
-- `model`
-- `messages`
-- `system`
-- `stream`
-- `tools` and `tool_choice`
-- `max_tokens`
-- supported thinking configuration
+Open WebUI must connect through its normal OpenAI-compatible settings without a
+custom Pipe. Optional capabilities that the CLI providers do not implement
+must use separately configured services. Background model requests must be
+disabled or explicitly routed and accounted for.
 
-Streaming must use Anthropic event names and ordering. Tool-use content blocks,
-tool-result inputs, stop reasons, and usage must survive conversion.
+### 6.3 Native agent clients
 
-Claude Code gateway configuration is based on Anthropic's documented
-[`ANTHROPIC_BASE_URL` gateway support](https://docs.anthropic.com/en/docs/claude-code/llm-gateway).
+Native Claude Code, Codex, and Grok clients may target the compatible proxy
+endpoint. A native client calling `agent-proxy` and the provider CLI launched by
+the proxy are separate processes. The child must use a configuration that
+reaches the upstream provider rather than recursively calling the proxy.
 
-### 5.6 Grok client compatibility
+## 7. Provider contract
 
-Grok Build must be able to select an `agent-proxy` custom model with a
-configured `base_url` and environment-backed key. This follows xAI's documented
-[custom model configuration](https://docs.x.ai/build/overview).
+Every built-in provider must implement:
 
-### 5.7 Open WebUI compatibility
+- Stable provider and model identity.
+- Configuration and executable validation.
+- Authentication-readiness reporting.
+- Herdr-managed non-streaming and streaming execution.
+- Timeout, abort, and process-tree cleanup.
+- Compatible errors with secrets and user paths redacted.
+- Explicit capability metadata.
+- Model and reasoning translation.
 
-A supported Open WebUI release must connect through its standard
-OpenAI-compatible connection settings without a custom Pipe or middleware
-plugin. This follows Open WebUI's documented
-[OpenAI-compatible connection flow](https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-openai-compatible/).
-The compatibility contract includes:
+Direct `child_process.spawn` execution is allowed only inside the
+Herdr-launched worker that owns the pane. Route handlers and provider adapters
+must not bypass the Herdr launcher.
 
-- `GET /v1/models` discovery with bearer authentication.
-- Non-streaming and streaming text through `POST /v1/chat/completions`.
-- Codex and Grok aliases backed by CLI subscription sessions owned by the
-  proxy service account.
-- Cancellation, timeout reporting, and isolation between concurrent Open
-  WebUI chats.
-- One complete Open WebUI function-tool loop for each backend that advertises
-  tool calling.
-- Clear behavior when a backend provides only buffered output.
-- A pinned Open WebUI version and documented native, Docker, and Podman
-  connection URLs.
+## 8. Routing and accounting
 
-Optional Open WebUI capabilities such as embeddings, retrieval, speech, and
-image generation must use a separately configured compatible backend unless
-the selected provider explicitly implements the required endpoint. Unsupported
-capabilities must not be advertised as working.
+1. A public model alias maps to ordered provider/model targets.
+2. Disabled or unhealthy targets are skipped according to documented policy.
+3. Queueing, retry, and fallback are bounded.
+4. One logical request is counted once across retries and fallback.
+5. Every provider attempt is correlated with its Herdr pane and request ID.
+6. A provider failure may fall back only after the first pane reaches a
+   terminal state.
+7. Queue saturation returns a retryable error without creating a pane.
 
-Open WebUI background work, including title, tag, follow-up, and memory-related
-model requests, must be documented. Operators must be able to route that work
-to a separate model or disable it so subscription usage is not multiplied
-without their knowledge.
+## 9. Security
 
-## 6. Provider contract
+Running providers as the desktop user is an explicit trust decision.
 
-Every provider must implement:
+- The listener defaults to `127.0.0.1`.
+- An unauthenticated `GET /health` response is limited to generic liveness.
+  Provider names, Herdr readiness, versions, paths, and configuration require
+  authentication.
+- Data-plane and admin tokens remain independent.
+- API keys are stored as one-way hashes.
+- Empty, weak, or placeholder production credentials fail startup.
+- Local processes are not automatically trusted merely because they share the
+  user's UID.
+- Provider arguments use arrays and never shell interpolation.
+- Job control files and sockets use owner-only permissions under
+  `XDG_RUNTIME_DIR`.
+- Provider environments use allowlists.
+- Prompts and raw output are not durably retained by default. Bounded in-memory
+  normalized input and output retained for Responses
+  `previous_response_id` continuation is the explicit exception; `store:
+  false` disables retention of the new response.
+- Logs and Herdr metadata never contain provider tokens, proxy keys, prompt
+  bodies, account identifiers, or unsanitized home paths.
+- Chat-only and tool-enabled profiles are separate and explicit.
 
-- A stable provider name.
-- Configuration validation.
-- Health detection without consuming a model request when possible.
-- Non-streaming execution.
-- Streaming execution or an explicitly marked buffered fallback.
-- Timeout and abort handling.
-- Child-process cleanup.
-- Debug metadata with secrets redacted.
-- Model and reasoning-option translation.
-- Authentication readiness reporting that distinguishes an unavailable
-  executable, a missing login, an expired login, and an upstream outage where
-  the CLI exposes enough information to do so safely.
+The threat model must cover malicious localhost applications, prompt
+injection, command execution, filesystem access as the desktop user, Herdr
+socket control, cross-session leakage, recursion, and denial of service.
 
-### 6.1 Claude Code
+## 10. Login-session operations
 
-Supported modes may include CLI print mode, Claude Agent SDK, and the managed
-channel worker. Mode-specific state must not leak between clients.
+The supported deployment uses systemd user services or an equivalent
+login-session supervisor.
 
-### 6.2 Codex
+- Herdr starts before `agent-proxy` accepts inference requests.
+- Normal startup does not require root or lingering after logout.
+- Logging out may stop the proxy and its agents after bounded cleanup.
+- Upgrade and rollback preserve user configuration, proxy keys, mappings,
+  provider authentication, and SQLite state.
+- Shutdown stops new work, cancels or drains active panes within a bound,
+  closes SQLite, and exits without orphaned workers.
+- The operator can inspect both services with `systemctl --user` and
+  `journalctl --user`.
 
-Supported modes may include `codex exec`, `codex exec resume`, and persistent
-`codex app-server`. Resume and app-server sessions must be keyed by an explicit
-client session ID plus model.
+## 11. Dashboard and observability
 
-### 6.3 Google Antigravity
+The dashboard remains optional and must:
 
-Antigravity remains a first-class backend. The adapter must pass the exact
-model display name expected by the installed CLI and must clearly label its
-buffered streaming fallback when the CLI does not emit incremental output.
+- Authenticate with the admin token.
+- Show Herdr readiness and compatibility.
+- List active and retained API-originated agent panes.
+- Distinguish unavailable executables, missing login, expired login, quota,
+  upstream, timeout, and Herdr failures.
+- Manage keys, mappings, limits, and supported provider settings.
+- Avoid becoming a data-plane dependency.
 
-### 6.4 Grok Build
+Metrics and logs must correlate endpoint, request ID, model alias, provider,
+Herdr pane, queue time, execution time, fallback, cancellation, and terminal
+state without prompt content.
 
-The adapter must support headless execution, model selection, reasoning effort,
-plain-text parsing, and buffered streaming fallback when incremental output is
-not available.
-
-### 6.5 Subscription-backed CLI authentication
-
-Codex and Grok subscription access is provided only through the official CLI
-authentication mechanisms documented by
-[Codex](https://learn.chatgpt.com/docs/auth) and
-[Grok Build](https://docs.x.ai/build/enterprise#authentication). The proxy
-must:
-
-- Run the CLI with the service account's own home and credential store.
-- Never copy a developer's cached credentials into the service account
-  automatically.
-- Never expose provider access or refresh tokens to Open WebUI, the dashboard,
-  logs, exports, or proxy API clients.
-- Validate login readiness during deployment and through an operator-invoked
-  diagnostic without printing secrets.
-- Treat provider-managed token refresh as a CLI responsibility.
-- Return a clear reauthentication error when a cached session is missing,
-  invalid, or expired.
-- Document separate login and verification steps for Codex ChatGPT accounts
-  and supported Grok subscription accounts.
-
-Live acceptance tests must use dedicated non-secret test sessions or an
-operator-approved account and must record only sanitized evidence.
-
-## 7. Routing and sessions
-
-1. A public model alias maps to one or more provider/model targets.
-2. Lower numeric priority is attempted first.
-3. Disabled or unhealthy providers are skipped according to a documented
-   policy.
-4. Fallback must not double-charge global or per-key rate limits.
-5. A client session identifier must be accepted through
-   `X-Agent-Proxy-Session-Id`.
-6. The server must never merge two explicit client session identifiers.
-7. Session state must have a configurable time-to-live and bounded storage.
-8. Model changes invalidate incompatible provider sessions.
-
-Responses continuation uses an in-memory response store. Entries are scoped to
-the authenticated API key or explicit `X-Agent-Proxy-Session-Id`, bounded by
-`responses.max_entries`, and expire after `responses.retention_ttl_ms`.
-Top-level `instructions` are not retained and must be sent on each request.
-`store: false` prevents the new response from being retained. Continuation does
-not survive a service restart; clients receive an explicit
-`response_not_found` error and must replay their retained input items.
-
-## 8. Security
-
-### 8.1 Authentication
-
-- Data-plane endpoints accept bearer tokens and Anthropic-style `x-api-key`.
-- Admin endpoints use a separate admin token.
-- Stored API keys are one-way hashed.
-- Secret comparisons are timing safe.
-- Empty production credentials fail startup.
-
-### 8.2 Process safety
-
-- Provider executables are configured as paths, not shell command strings.
-- Arguments are passed as arrays without shell interpolation.
-- Built-in executable paths cannot be changed through the runtime admin API.
-- The service runs as a dedicated non-root user.
-- Working directories are explicit and constrained by operator policy.
-- Child processes receive only the environment variables they require.
-- A chat-only execution profile uses a dedicated working directory and
-  read-only or equivalently constrained provider settings.
-- Provider-native tools that can modify files, execute commands, or access the
-  network require an explicit tool-enabled profile.
-- Open WebUI function tools and provider-native CLI tools are documented as
-  separate trust boundaries.
-
-### 8.3 Data handling
-
-- Prompts and raw provider output are not retained unless debug capture is
-  explicitly enabled.
-- Debug records redact API keys, authorization headers, cookies, tokens, and
-  known provider secret formats.
-- Logs have configurable retention.
-- Exports do not include recoverable credentials.
-
-## 9. Linux operations
-
-The supported production deployment is a systemd service on a current Linux
-distribution.
-
-Required operational behavior:
-
-- The runtime used by `ExecStart` satisfies the supported Node.js version
-  before installation or upgrade modifies the active release.
-- Configuration is loaded from an operator-owned file and environment file.
-- State and logs use Linux filesystem hierarchy locations selected at install
-  time.
-- Startup validates configuration, required directories, credentials, and
-  enabled CLI executables before listening.
-- `SIGTERM` stops new work, aborts or drains active requests within a bounded
-  grace period, terminates children, flushes state, and exits.
-- Health checks distinguish server health from individual provider health.
-- A documented reverse-proxy example provides TLS and request-size limits.
-- Upgrade and rollback procedures preserve configuration and SQLite data.
-- Enabled CLI binaries are installed in paths visible to the hardened service
-  and are executable by the service account.
-- Codex and Grok authentication is completed and verified as the same account
-  and `HOME` used by systemd.
-- The operator runbook covers native Open WebUI and containerized Open WebUI
-  networking without exposing the proxy directly to an untrusted network.
-
-Containers are optional. A container deployment must explicitly provide CLI
-binaries and the authenticated service-user state; it must not imply that host
-credentials are automatically available.
-
-## 10. Configuration
-
-Configuration precedence is:
-
-1. Built-in defaults.
-2. YAML configuration.
-3. Environment substitution for secrets and deployment-specific values.
-4. Validated runtime overrides stored in SQLite.
-
-Unknown keys may be ignored for forward compatibility, but invalid known
-values must fail startup with a path-specific English error.
-
-The example configuration must include only supported built-in providers and
-must never contain real credentials.
-
-The example configuration must also document chat-only and tool-enabled
-provider profiles, including their working-directory, sandbox, permission, and
-network implications.
-
-## 11. Observability
-
-Each request receives a request ID. Metrics and logs must expose:
-
-- Endpoint and response status.
-- Selected public model alias.
-- Provider and actual model.
-- Queue time and execution latency.
-- Fallback attempts.
-- Token usage when reported or clearly marked estimates when inferred.
-- Provider authentication availability without account identifiers or token
-  material.
-- Cancellation and timeout reason.
-- Active request and queue depth counts.
-
-Health, metrics, and normal logs must not include prompt bodies.
-
-## 12. Dashboard
-
-The dashboard is an optional operator interface over `/admin/*`. It must:
-
-- Remain English-only.
-- Require the admin token.
-- Show provider health, active requests, recent errors, and usage.
-- Distinguish missing or expired provider authentication from general provider
-  failure without displaying credential contents.
-- Manage keys, model mappings, rate limits, and allowed provider settings.
-- Clearly distinguish persisted settings from restart-required settings.
-- Avoid becoming a runtime dependency of data-plane endpoints.
-
-## 13. Quality gates
+## 12. Quality gates
 
 Every release must pass:
 
@@ -402,35 +326,29 @@ npm ci
 npm run typecheck
 npm test
 npm run build
-bash -n start.sh
+npm run lint:dead-code
+scripts/validate-shell.sh
+git diff --check
 ```
 
-Additional release gates:
+The user-owned Herdr phase additionally requires:
 
-- No Hangul text remains in shipped source or documentation.
-- No references to removed built-in providers remain in defaults or UI lists.
-- No secrets are present in tracked files.
-- API contract tests cover success, streaming, tool calls, cancellation, and
-  protocol error shapes.
-- End-to-end tests cover supported versions of Claude Code, Codex, and Grok
-  against a real Linux service.
-- End-to-end tests cover a pinned Open WebUI release discovering Codex and Grok
-  aliases and completing text, streaming, cancellation, isolation, and one
-  advertised function-tool loop.
-- A deployment acceptance test runs the exact systemd runtime, service account,
-  CLI paths, `HOME`, and authentication state used in production.
-- Native, Docker, and Podman Open WebUI connection instructions are exercised
-  on the supported deployment matrix.
-- Antigravity backend smoke tests run when the CLI is available.
+- Installer lifecycle tests using isolated XDG directories.
+- systemd user-unit verification.
+- A fake-provider Herdr launcher contract suite.
+- Streaming, cancellation, timeout, and shutdown tests.
+- A real Herdr smoke test under the current user.
+- Copilot CLI and Open WebUI localhost acceptance.
+- Proof that every provider attempt appears in Herdr.
+- Proof that no direct headless provider spawn remains.
+- A clean dead-code report with documented dynamic entry points.
 
-## 14. Open decisions
+## 13. Open decisions
 
-1. Confirm upstream licensing, attribution, and notice obligations before
-   redistribution.
-2. Define the minimum supported versions of all four CLIs.
-3. Decide whether generic CLI and HTTP adapters remain in the first stable
-   release or move to a later extension package.
-4. Choose the production reverse proxy and packaging format.
-5. Freeze the supported Open WebUI version and decide which optional Open WebUI
-   capabilities are included in the stable compatibility claim.
-6. Define the default chat-only and opt-in tool-enabled execution profiles.
+1. Define the pane retention default after successful and failed requests.
+2. Define the client-session derivation used when a client cannot send
+   `X-Agent-Proxy-Session-Id`.
+3. Decide whether one pane represents a conversation or one provider attempt.
+4. Define the minimum supported Herdr and provider CLI versions.
+5. Confirm upstream licensing, attribution, and notice obligations.
+6. Decide whether any generic adapter belongs in the stable desktop release.

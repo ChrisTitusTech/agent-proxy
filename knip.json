@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/client-compat/redact.mjs",
+        "scripts/openwebui/compat.mjs"
+      ]
+    },
+    "packages/server": {
+      "entry": [
+        "src/channel-bridge/start.ts",
+        "src/channel-bridge/mcp-reporter.ts"
+      ],
+      "ignoreDependencies": [
+        "pino-pretty"
+      ]
+    }
+  }
+}
