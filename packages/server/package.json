@@ -12,7 +12,7 @@
   "dependencies": {
     "@agent-proxy/shared": "*",
     "@fastify/cors": "^11.3.0",
-    "@fastify/rate-limit": "^11.1.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@libsql/client": "^0.17.4",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
