@@ -24,10 +24,10 @@
     "shell-quote": "^1.8.4"
   },
   "devDependencies": {
-    "concurrently": "^10.0.4",
-    "knip": "^6.29.0",
-    "openai": "^7.0.0",
+    "concurrently": "^10.0.5",
+    "knip": "^6.32.2",
+    "openai": "^7.5.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
